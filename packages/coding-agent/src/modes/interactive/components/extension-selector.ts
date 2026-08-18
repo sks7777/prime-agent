@@ -15,7 +15,7 @@ export interface ExtensionSelectorOptions {
 	getRows?: () => number;
 }
 
-const PREFERRED_VISIBLE_OPTIONS = 8;
+const PREFERRED_VISIBLE_OPTIONS = 15;
 const OPTION_LIST_RESERVED_BASE_ROWS = 5;
 const OPTION_SCROLL_INDICATOR_ROWS = 1;
 
