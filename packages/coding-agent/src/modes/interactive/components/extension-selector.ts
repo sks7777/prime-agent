@@ -16,7 +16,7 @@ export interface ExtensionSelectorOptions {
 }
 
 const PREFERRED_VISIBLE_OPTIONS = 15;
-const OPTION_LIST_RESERVED_BASE_ROWS = 5;
+const OPTION_LIST_RESERVED_BASE_ROWS = 3;
 const OPTION_SCROLL_INDICATOR_ROWS = 1;
 
 function splitTitleAndDescription(value: string): { title: string; description?: string; descriptionRows: number } {
