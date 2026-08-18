@@ -3771,6 +3771,7 @@ export class InteractiveMode {
 			},
 			getToolsExpanded: () => this.toolOutputExpanded,
 			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
+			bell: () => this.ui.terminal.write("\x07"),
 		};
 	}
 
@@ -5285,15 +5286,39 @@ export class InteractiveMode {
 				this.setHiddenThinkingLabel(getPayloadString(payload, "label"));
 				return undefined;
 			}
+			case "custom": {
+				const customId = request.id;
+				const widgetKey = `custom:${customId}`;
+				(this as any)._customCleanup = (this as any)._customCleanup || new Map();
+
+				// Capture keys and forward to daemon
+				const keyUnsubscribe = this.ui.addInputListener((data: string): { consume?: boolean } | undefined => {
+					if (!(this as any)._customCleanup.has(widgetKey)) return undefined;
+					void this.agentConnection.respondToExtensionUiRequest(customId, { key: data } as any).catch(() => {});
+					return { consume: true };
+				});
+
+				// Store cleanup - called when setWidget receives undefined for this widgetKey
+				(this as any)._customCleanup.set(widgetKey, () => {
+					keyUnsubscribe();
+					(this as any)._customCleanup.delete(widgetKey);
+				});
+
+				// Return undefined = no response sent to daemon.
+				// The daemon resolves custom() internally via done().
+				// The daemon clears the widget via setWidget(undefined) when done.
+				return undefined;
+			}
 			case "setWidget": {
 				const key = getPayloadString(payload, "widgetKey");
 				if (key) {
+					const widgetLines = getPayloadStringArray(payload, "widgetLines");
 					const placement = getPayloadWidgetPlacement(payload, "widgetPlacement");
-					this.setExtensionWidget(
-						key,
-						getPayloadStringArray(payload, "widgetLines"),
-						placement ? { placement } : undefined,
-					);
+					// If this is a custom widget being cleared, run cleanup
+					if (widgetLines === undefined && (this as any)._customCleanup?.has(key)) {
+						(this as any)._customCleanup.get(key)?.();
+					}
+					this.setExtensionWidget(key, widgetLines, placement ? { placement } : undefined);
 				}
 				return undefined;
 			}
@@ -5309,6 +5334,10 @@ export class InteractiveMode {
 				if (text !== undefined) {
 					this.editor.setText(text);
 				}
+				return undefined;
+			}
+			case "bell": {
+				this.ui.terminal.write("\x07");
 				return undefined;
 			}
 			default:

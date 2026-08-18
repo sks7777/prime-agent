@@ -859,10 +859,16 @@ export type DaemonErrorInfo =
 export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced" | "update";
 export type DaemonClosingReason = "shutdown" | "update";
 
-export type DaemonExtensionUIResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
+export type DaemonExtensionUIResponse =
+	| { value: string }
+	| { confirmed: boolean }
+	| { cancelled: true }
+	| { key: string };
 
 export function isDaemonDialogExtensionUiRequest(method: string): boolean {
-	return method === "select" || method === "confirm" || method === "input" || method === "editor";
+	return (
+		method === "select" || method === "confirm" || method === "input" || method === "editor" || method === "custom"
+	);
 }
 
 /**

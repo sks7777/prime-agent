@@ -217,8 +217,99 @@ function createExtensionUIContext(
 		setFooter: () => {},
 		setHeader: () => {},
 		setTitle: (title) => emitUiRequest("setTitle", { title }),
-		async custom<T>(): Promise<T> {
-			return undefined as T;
+		async custom<T>(
+			factory: (tui: any, theme: any, keybindings: any, done: (result: T) => void) => any,
+			options?: { overlay?: boolean; overlayOptions?: any },
+		): Promise<T> {
+			if (!hasExtensionUiClientForMethod(state, "custom")) {
+				return undefined as T;
+			}
+			const requestId = randomUUID();
+			const widgetKey = `custom:${requestId}`;
+			broadcast(state, {
+				type: "extension_ui_request",
+				activeSessionId: state.activeSessionId,
+				id: requestId,
+				method: "custom",
+				payload: { overlay: options?.overlay ?? false, widgetKey },
+			});
+			let component: any;
+			let closed = false;
+			const currentWidth = 120;
+
+			// Proxy TUI: requestRender → re-render component → send via setWidget
+			const proxyTui = {
+				height: 40,
+				requestRender: () => {
+					if (closed) return;
+					try {
+						const lines = component?.render?.(currentWidth) ?? [];
+						if (Array.isArray(lines) && lines.length > 0) {
+							emitUiRequest("setWidget", { widgetKey, widgetLines: lines, widgetPlacement: "aboveEditor" });
+						}
+					} catch {
+						/* render error */
+					}
+				},
+				setFocus: () => {},
+			};
+
+			// Proxy keybindings: match against raw key data
+			const proxyKeybindings = {
+				matches: (data: string, binding: string) => {
+					const defaults: Record<string, string> = {
+						"tui.select.up": "\x1b[A",
+						"tui.select.down": "\x1b[B",
+						"tui.select.confirm": "\r",
+						"tui.select.cancel": "\x1b",
+						"tui.input.tab": "\t",
+						"tui.input.escape": "\x1b",
+						"tui.input.enter": "\r",
+						"app.clear": "\x03",
+					};
+					return defaults[binding] !== undefined && data === defaults[binding];
+				},
+			};
+
+			return new Promise<T>((resolveCustom) => {
+				const finish = (result: T) => {
+					if (closed) return;
+					closed = true;
+					emitUiRequest("setWidget", { widgetKey, widgetLines: undefined });
+					state.extensionUiRequests.delete(requestId);
+					resolveCustom(result);
+				};
+
+				// Store handler for key events from client
+				state.extensionUiRequests.set(requestId, {
+					resolve: (response: any) => {
+						if ("key" in response) {
+							// Forward key event to component
+							if (!closed && component?.handleInput) {
+								try {
+									component.handleInput(response.key);
+								} catch {}
+							}
+						} else if ("cancelled" in response) {
+							finish(undefined as T);
+						} else if ("value" in response) {
+							finish(response.value as T);
+						}
+					},
+				});
+
+				// Create the component by calling the factory
+				Promise.resolve(factory(proxyTui, theme, proxyKeybindings, finish))
+					.then((c: any) => {
+						if (closed) return;
+						component = c;
+						// Initial render
+						proxyTui.requestRender();
+					})
+					.catch(() => {
+						/* factory error */ finish(undefined as T);
+					});
+			});
 		},
 		pasteToEditor: (text) => emitUiRequest("setEditorText", { text }),
 		setEditorText: (text) => emitUiRequest("setEditorText", { text }),
@@ -243,6 +334,7 @@ function createExtensionUIContext(
 		setTheme: () => ({ success: false, error: "Theme switching is not supported in daemon mode" }),
 		getToolsExpanded: () => false,
 		setToolsExpanded: () => {},
+		bell: () => emitUiRequest("bell", {}),
 	};
 }
 
