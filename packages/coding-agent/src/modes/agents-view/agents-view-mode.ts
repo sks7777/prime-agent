@@ -16,6 +16,7 @@ import {
 import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import { normalizeLayoutInput } from "../../core/layout-normalize.js";
 import { SessionManager } from "../../core/session-manager.js";
 import {
 	BUILTIN_SLASH_COMMANDS,
@@ -717,6 +718,7 @@ export class AgentsViewMode implements Component, Focusable {
 		initTheme(options.uiServices.settingsManager.getTheme(), true);
 
 		this.ui = new TUI(new ProcessTerminal(), options.uiServices.settingsManager.getShowHardwareCursor());
+		this.ui.addInputListener((data) => ({ data: normalizeLayoutInput(data) }));
 		this.ui.setClearOnShrink(options.uiServices.settingsManager.getClearOnShrink());
 		this.ui.terminal.setTitle(`${APP_TITLE} - Agents`);
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
