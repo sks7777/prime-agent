@@ -833,3 +833,14 @@ export interface AgentHarnessOptions<
 }
 
 export type { AgentHarness } from "./agent-harness.js";
+
+export interface ShellExecOptions {
+	command?: string;
+	timeout?: number;
+	cwd?: string;
+	env?: Record<string, string>;
+	abortSignal?: AbortSignal;
+	inheritEnv?: boolean;
+	onStdout?: (data: string) => void;
+	onStderr?: (data: string) => void;
+}
