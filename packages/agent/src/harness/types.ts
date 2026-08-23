@@ -1,8 +1,17 @@
 import type { ImageContent, Model, SimpleStreamOptions, TextContent, Transport } from "@earendil-works/pi-ai";
-import type { AgentEvent, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../index.js";
+import type { Static, TSchema } from "typebox";
+import type {
+	AgentEvent,
+	AgentMessage,
+	AgentTool,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	QueueMode,
+	ThinkingLevel,
+} from "../types.js";
+/** Result of a fallible operation. Expected failures are returned as `ok: false` instead of thrown. */
 import type { Session } from "./session/session.js";
 
-/** Result of a fallible operation. Expected failures are returned as `ok: false` instead of thrown. */
 export type Result<TValue, TError> = { ok: true; value: TValue } | { ok: false; error: TError };
 
 /** Create a successful {@link Result}. */
@@ -250,6 +259,8 @@ export interface ExecutionEnvExecOptions {
 	timeout?: number;
 	/** Abort signal used to terminate the command. Defaults to no abort signal. */
 	abortSignal?: AbortSignal;
+	/** Whether to inherit the parent process environment. Default: true. */
+	inheritEnv?: boolean;
 	/** Called with stdout chunks as they are produced. */
 	onStdout?: (chunk: string) => void;
 	/** Called with stderr chunks as they are produced. */
@@ -843,4 +854,27 @@ export interface ShellExecOptions {
 	inheritEnv?: boolean;
 	onStdout?: (data: string) => void;
 	onStderr?: (data: string) => void;
+}
+
+export type AgentHarnessTool<
+	TContext extends object | undefined,
+	TParameters extends TSchema = TSchema,
+	TDetails = unknown,
+> = Omit<AgentTool<TParameters, TDetails>, "execute"> & {
+	execute(
+		toolCallId: string,
+		params: Static<TParameters>,
+		signal: AbortSignal | undefined,
+		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
+		context: TContext,
+	): Promise<AgentToolResult<TDetails>>;
+};
+
+export type AgentHarnessToolContextSource<TContext extends object | undefined> =
+	| TContext
+	| (() => TContext | Promise<TContext>);
+
+export interface AgentHarnessStreamOptions {
+	transport?: Transport;
+	providerRequestTimeoutMs?: number;
 }
