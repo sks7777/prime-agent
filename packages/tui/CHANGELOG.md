@@ -1,168 +1,18 @@
 # Changelog
 
-## [0.8.0] - 2026-08-21
-
-## [0.7.4] - 2026-08-19
-
-## [0.7.3] - 2026-08-17
-
-- Fixed hyperlinks not being clickable in fullscreen mode on terminals that gate native link handling while mouse reporting is active (e.g. Ghostty); left-clicking a link now opens it directly.
-
-## [0.7.2] - 2026-08-11
-
-## [0.7.1] - 2026-08-07
-
-## [0.7.0] - 2026-08-05
-
-## [0.6.1] - 2026-08-05
-
-## [0.6.0] - 2026-08-04
-
-## [0.5.1] - 2026-08-04
-
-## [0.5.0] - 2026-08-03
-
-## [0.4.0] - 2026-08-01
-
-## [0.3.3] - 2026-07-23
-
-- Changed `SelectList` selection cursor from `→` to `›` for consistency with tree and user-message selectors.
-- Changed slash-command autocomplete to show argument hints and source tags inline, selected descriptions separately, and directional hidden-result counts.
-
-
-## [0.3.2] - 2026-07-20
-
-- Removed the fullscreen image fallback instruction and kept fullscreen overlays from emitting terminal graphics ([#437](https://github.com/PrimeIntellect-ai/prime-agent/pull/437) by [@snimu](https://github.com/snimu)).
-- Changed the fullscreen follow shortcut from `Alt+Down` to `Ctrl+Shift+Down` for more reliable terminal input ([ENG-4684](https://linear.app/primeintellect/issue/ENG-4684/altdown-doesnt-work)).
-- Fixed terminal width, slicing, and wrapping helpers misreading standard CSI and DCS escape sequences.
-- Fixed autocomplete popups overlapping the prompt's top edge.
-
-## [0.3.1] - 2026-07-15
-
-- Fixed fullscreen Markdown table selections copying borders instead of tab-separated cell content ([ENG-4629](https://linear.app/primeintellect/issue/ENG-4629/respect-table-boundaries-when-selecting)).
-- Fixed fullscreen drag selection so holding at a transcript edge scrolls through offscreen text ([ENG-4644](https://linear.app/primeintellect/issue/ENG-4644/copy-issues)).
-- Fixed slash-command and skill autocomplete not appearing for references typed in the middle of prompts ([ENG-4628](https://linear.app/primeintellect/issue/ENG-4628/support-skill-and-command-autocomplete-mid-prompt)).
-- Fixed focused full-pane overlays becoming slow to navigate on wider terminals.
-- Fixed plain-text truncation emitting ANSI resets, marked shortened descriptions with an ellipsis, and rendered autocomplete in content-sized popup surfaces that close when editing leaves the completion context ([ENG-4542](https://linear.app/primeintellect/issue/ENG-4542/command-descriptions-are-cut-off-on-narrow-screens)).
-
-## [0.3.0] - 2026-07-13
-
-- Fixed fullscreen TUI handoffs temporarily releasing raw input and leaking keyboard-protocol timers, which caused flicker and echoed arrow escape sequences while opening sessions.
-
-## [0.2.9] - 2026-07-13
-
-- Fixed fullscreen dock selection so prompt text can be copied ([#342](https://github.com/PrimeIntellect-ai/prime-agent/pull/342)).
-
-## [0.2.8] - 2026-07-09
-
-## [0.2.7] - 2026-07-08
-
-- Fixed full TUI redraws to preserve terminal scrollback on resize and shrink redraws ([#331](https://github.com/PrimeIntellect-ai/prime-agent/pull/331) by [@sethkarten](https://github.com/sethkarten)).
-- Fixed fullscreen overlays that request native mouse behavior suspending mouse tracking while visible.
-- Added fullscreen handoff support so callers can switch alternate-screen views without replaying content into primary scrollback.
-
-## [0.2.6] - 2026-07-06
-
-- Fixed fullscreen overlay selection so login URLs can be copied.
-
-## [0.2.5] - 2026-07-06
-
-- Added fullscreen viewport rendering with alternate-screen scrolling, follow controls, mouse selection, and clipboard copy hooks ([#316](https://github.com/PrimeIntellect-ai/prime-agent/pull/316)).
-
-## [0.2.4] - 2026-07-01
-
-## [0.2.3] - 2026-06-30
-
-## [0.2.2] - 2026-06-25
-
-- Added `fuzzyFilterScored`, returning scored matches so callers can break ties by recency; `fuzzyFilter` delegates to it unchanged ([#251](https://github.com/PrimeIntellect-ai/prime-agent/issues/251)).
-- Changed the editor to expose `rlmChildLabel` (whitespace-normalized full prompt) and centralized the "still working" pulse glyph in `working-icon.ts` for shared use across panels and lists ([#247](https://github.com/PrimeIntellect-ai/prime-agent/issues/247)).
-
-## [0.2.1] - 2026-06-23
-
-## [0.2.0] - 2026-06-23
+## [0.74.1] - 2026-05-16
 
 ### Added
 
-- Added an optional `commandColor` to the editor theme so a leading slash command stays highlighted while its argument is being typed.
-- Added editor support for atomic pasted-image markers, resolving markers by presence so undo and dequeue keep them intact.
-
-## [0.1.9] - 2026-06-22
-
-## [0.1.8] - 2026-06-21
-
-## [0.1.7] - 2026-06-18
+- Added markdown list-item wrapping that preserves indentation for wrapped continuation lines ([#4327](https://github.com/earendil-works/pi-mono/pull/4327) by [@Perlence](https://github.com/Perlence)).
 
 ### Fixed
 
-- Fixed TUI flicker when attaching to long or streaming sessions by only preserving scrollback when the transcript grows, not when it shrinks.
-
-## [0.1.6] - 2026-06-17
-
-### Fixed
-
-- Fixed the viewport not staying anchored when collapsing or expanding tool output, preserving scrollback images instead of forcing a full redraw.
-
-## [0.1.5] - 2026-06-16
-
-### Fixed
-
-- Fixed `Alt+Up`/`Alt+Down` key matching in non-kitty terminals so the bindings are recognized outside kitty's keyboard protocol.
-- Fixed autocomplete to respect slash-command alias resolution so aliased commands complete to their canonical form.
-
-## [0.1.4] - 2026-06-15
-
-## [0.1.3] - 2026-06-12
-
-## [0.1.2] - 2026-06-12
-
-## [0.1.1] - 2026-06-11
-
-## [0.1.0] - 2026-06-11
-
-## [0.0.10] - 2026-06-08
-
-### Added
-
-- Added an optional `promptPrefix` to the editor that renders a leading prompt indicator with correct wrapping and padding, with overridable hooks for subclasses.
-
-### Changed
-
-- Changed `Editor.cancelAutocomplete` from private to protected so subclasses can cancel autocomplete before handling interrupts.
-
-## [0.0.9] - 2026-06-04
-
-## [0.0.8] - 2026-06-04
-
-## [0.0.7] - 2026-06-01
-
-## [0.0.6] - 2026-05-27
-
-## [0.0.5] - 2026-05-26
-
-### Added
-
-- Added a terminal-colors module that probes the terminal's default foreground/background via OSC queries and exposes helpers to adapt surfaces to dark or light terminals.
-
-## [0.0.4] - 2026-05-21
-
-## [0.0.2] - 2026-05-20
-
-### Added
-
-- Added `VersionedRenderCache` for width/version-keyed render caching of expensive TUI components.
-- Added optional background surface rendering for editor components.
-- Added scrollback overlay rendering for full-screen overlays that should preserve native terminal scrollback.
-
-### Fixed
-
-- Fixed raw tabs in rendered TUI lines to preserve painted backgrounds across indentation.
-
-## [0.0.1] - 2026-05-18
-
-### Added
-
-- Added marquee TUI components and a Prime-branded theme as part of the initial Prime Agent fork from pi-mono.
+- Fixed markdown task-list checkbox rendering ([#4379](https://github.com/earendil-works/pi-mono/pull/4379) by [@Perlence](https://github.com/Perlence)).
+- Fixed markdown rendering robustness for very large markdown files ([#4463](https://github.com/earendil-works/pi-mono/pull/4463) by [@ndanielherrera](https://github.com/ndanielherrera)).
+- Fixed Kitty image placement when the viewport is shorter than the rendered image ([#4461](https://github.com/earendil-works/pi-mono/pull/4461) by [@xu0o0](https://github.com/xu0o0)).
+- Fixed WezTerm Kitty keyboard protocol edge cases so escape handling remains correct ([#4482](https://github.com/earendil-works/pi-mono/pull/4482) by [@Felixoid](https://github.com/Felixoid)).
+- Fixed inline image rendering to cap portrait images by height instead of always scaling them to the configured maximum width.
 
 ## [0.74.0] - 2026-05-07
 

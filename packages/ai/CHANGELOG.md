@@ -1,177 +1,27 @@
 # Changelog
 
-## [0.8.0] - 2026-08-21
-
-- Added endpoint binding to MCP OAuth credentials: tokens record the URL they were issued for, and refreshes carry the original binding forward without ever inferring one for unbound legacy credentials.
-- Added Fast mode (service_tier `priority`) support for OpenAI API-key models GPT-5.4/GPT-5.5/GPT-5.6, and corrected the GPT-5.6 fast-pricing multiplier from 2.5x to 2x per OpenAI's pricing table ([#1595](https://github.com/PrimeIntellect-ai/prime-agent/discussions/1595)).
-- Fixed path-scoped protected-resource discovery and resource-bound refresh for MCP OAuth servers.
-
-## [0.7.4] - 2026-08-19
-
-## [0.7.3] - 2026-08-17
-
-- Added provider-derived reasoning levels for OpenRouter and Prime Inference models, including sparse, mandatory, toggle-only, and explicit-off capabilities.
-- Added Qwen 3.8 Max to the featured Prime Inference catalog ([#1247](https://github.com/PrimeIntellect-ai/prime-agent/pull/1247) by [@eliebak](https://github.com/eliebak)).
-- Refreshed generated provider catalogs, removed retired routes, and aligned provider defaults and cross-provider handoff fixtures with models currently served.
-
-## [0.7.2] - 2026-08-11
-
-## [0.7.1] - 2026-08-07
-
-## [0.7.0] - 2026-08-05
-
-## [0.6.1] - 2026-08-05
-
-## [0.6.0] - 2026-08-04
-
-### Removed
-
-- Removed the groq `qwen/qwen3-32b` reasoning-effort special case and its test; groq delisted the model, which broke CI catalog regeneration.
-
-## [0.5.1] - 2026-08-04
-
-## [0.5.0] - 2026-08-03
-
-## [0.4.0] - 2026-08-01
-
-### Changed
-
-- Updated the model catalog snapshot with Claude Opus 5 across supported providers, Gemini 3.5/3.6 Flash models, Kimi K3 variants, and the current 103-model Prime Inference catalog; removed the discontinued `gpt-5-chat`, `gpt-5-codex`, and `laguna-m.1` routes.
-- Corrected generated catalog metadata for Opus 5 adaptive thinking, Copilot Claude routing, gateway reasoning tags, Kimi K3 variants, and unsupported Google and batch routes; excluded Gemini Live, Deep Research, and Computer Use models.
-
-## [0.3.3] - 2026-07-23
-
-- Fixed Vertex Gemini 2.5 Flash-Lite minimal reasoning requests to use the supported 512-token thinking budget.
-
-## [0.3.2] - 2026-07-20
-
-- Added Kimi K3 to the Prime Inference and OpenRouter model catalogs with multimodal input and mandatory max reasoning.
-- Fixed prompt caching and retention-aware cache-cost estimates for Anthropic models routed through Prime Inference ([ENG-4723](https://linear.app/primeintellect/issue/ENG-4723)).
-
-## [0.3.1] - 2026-07-15
-
-- Added provider service-tier forwarding to shared stream options.
-- Removed team-gated internal Prime Inference routes from the public model catalog so clients can discover them from authenticated team catalogs instead.
-- Fixed the generated Nemotron 3 Ultra output cap being dropped when OpenRouter omits max completion tokens ([#420](https://github.com/PrimeIntellect-ai/prime-agent/pull/420)).
-
-## [0.3.0] - 2026-07-13
-
-## [0.2.9] - 2026-07-13
-
-## [0.2.8] - 2026-07-09
-
-- Registered the full Prime Inference catalog (97 models, up from 32) instead of a curated whitelist; context/output limits, vision, and reasoning now come from OpenRouter metadata with a small override table for limits the gateway enforces differently (verified against the live API), and raw/duplicate variants (BF16, HF-cased, `zai-org/`, fine-tune outputs) are skipped.
-- Fixed Prime Inference context windows that disagreed with the live gateway: `anthropic/claude-sonnet-4.5` capped at 200k (route rejects longer prompts), `z-ai/glm-5.2` and `internal/glm-5.2-fast` raised to 1M, `minimax/minimax-m3` corrected to 512k, `nvidia/nemotron-3-*` corrected to their enforced 262k/131k windows.
-- Removed `prime-intellect/intellect-3`, which no longer serves (404 from the gateway).
-- Added an optional `featured` flag to `Model` so pickers can pin flagship models above a provider's long tail; set for 30 Prime Inference flagships.
-- Added GPT-5.6 Sol, Terra, and Luna to OpenAI API-key and Codex subscription model catalogs, with their 1.05M API / 272k Codex context windows and `low` through `max` reasoning support.
-
-## [0.2.7] - 2026-07-08
-
-- Added `internal/glm-5.2-fast` to the Prime Inference model catalog.
-- Added Claude Sonnet 5 to the Anthropic and Prime Inference model catalogs.
-
-## [0.2.6] - 2026-07-06
-
-## [0.2.5] - 2026-07-06
-
-- Added Claude Fable 5 to the Prime Inference model catalog and refreshed generated model metadata ([#317](https://github.com/PrimeIntellect-ai/prime-agent/pull/317)).
-- Changed provider stream failures to preserve classified causes, raw stop reasons, and request IDs instead of collapsing them into generic unknown errors ([#313](https://github.com/PrimeIntellect-ai/prime-agent/pull/313)).
-
-## [0.2.4] - 2026-07-01
-
-- Added Claude Fable 5 support on the Anthropic and Bedrock providers, handling its always-on adaptive thinking by never sending an explicit `thinking: disabled` or sampling params (which Fable rejects with a 400) ([#302](https://github.com/PrimeIntellect-ai/prime-agent/issues/302)).
-- Fixed the `openai-completions` and `openai-responses` providers serializing empty tool results as a literal "(see attached image)" placeholder; the placeholder is now gated on the result actually having images, matching the google-shared and mistral providers ([#290](https://github.com/PrimeIntellect-ai/prime-agent/issues/290)).
-
-## [0.2.3] - 2026-06-30
-
-- Added a `./mcp` entry point with a built-in MCP server catalog (Linear, Notion) and generic OAuth 2.1 (PKCE + dynamic client registration) providers stored as `mcp:<server>` in `auth.json`; the local OAuth callback server tries a range of ports so a stale or concurrent login can't block sign-in ([#280](https://github.com/PrimeIntellect-ai/prime-agent/issues/280)).
-- Added the `qwen/qwen3-30b-a3b-instruct-2507` model to the Prime Inference catalog ([#284](https://github.com/PrimeIntellect-ai/prime-agent/issues/284)).
-
-## [0.2.2] - 2026-06-25
-
-- Added a curated `vision` flag on Prime Inference model metadata so vision-capable models advertise `["text", "image"]` input, since the Prime Inference models API reports no modality data ([#261](https://github.com/PrimeIntellect-ai/prime-agent/issues/261)).
-- Changed Prime Inference model names to drop the redundant ` (Prime Inference)` suffix at the generator source ([#252](https://github.com/PrimeIntellect-ai/prime-agent/issues/252)).
-- Fixed the declared context window for Prime Inference Claude Opus 4.6/4.7/4.8 and Sonnet 4.6 to 200k (the route lacks the long-context beta), and added `calculatePromptTokens` so context budgeting counts prompt tokens only ([#246](https://github.com/PrimeIntellect-ai/prime-agent/issues/246)).
-
-## [0.2.1] - 2026-06-23
-
-## [0.2.0] - 2026-06-23
+## [0.74.1] - 2026-05-16
 
 ### Added
 
-- Added a `max` thinking level (above `xhigh`) and mapped each adaptive Claude family to the effort levels its API actually supports: Opus 4.6 / Sonnet 4.6 expose `max` (no `xhigh`); Opus 4.7 / Opus 4.8 / Fable 5 / Mythos 5 expose both `xhigh` and `max`; Mythos Preview exposes `max`. Adaptive thinking detection now also covers Opus 4.8 and the Fable/Mythos families on both the Anthropic and Bedrock providers.
+- Added image generation APIs, image model metadata, and built-in OpenRouter image generation support ([#3887](https://github.com/earendil-works/pi-mono/pull/3887) by [@cristinaponcela](https://github.com/cristinaponcela)).
+- Added Together AI as a built-in OpenAI-compatible provider with generated model metadata and `TOGETHER_API_KEY` authentication ([#3624](https://github.com/earendil-works/pi-mono/pull/3624) by [@Nutlope](https://github.com/Nutlope)).
 
 ### Fixed
 
-- Fixed callers passing `reasoning: "xhigh"` directly from sending an effort the model lacks; the thinking level is now clamped to the model's supported levels before mapping to an Anthropic effort.
-
-## [0.1.9] - 2026-06-22
-
-## [0.1.8] - 2026-06-21
-
-## [0.1.7] - 2026-06-18
-
-### Added
-
-- Added the `glm-5.2`, `minimax-m3`, and `kimi-k2.7-code` models from Prime Inference, and marked the MiniMax `minimax-m*` and Moonshot `kimi*` families as reasoning models in the registry generator.
-
-## [0.1.6] - 2026-06-17
-
-## [0.1.5] - 2026-06-16
-
-## [0.1.4] - 2026-06-15
-
-## [0.1.3] - 2026-06-12
-
-## [0.1.2] - 2026-06-12
-
-## [0.1.1] - 2026-06-11
-
-## [0.1.0] - 2026-06-11
-
-### Added
-
-- Added Claude Opus 4.8 to the curated Prime Inference model list.
-
-## [0.0.10] - 2026-06-08
-
-## [0.0.9] - 2026-06-04
-
-## [0.0.8] - 2026-06-04
-
-### Removed
-
-- Removed the `x-ai/grok-code-fast-1` model from the Prime Inference catalog.
-
-## [0.0.7] - 2026-06-01
-
-### Fixed
-
-- Fixed OAuth callback pages to use Prime butterfly branding on a black background.
-
-## [0.0.6] - 2026-05-27
-
-## [0.0.5] - 2026-05-26
-
-### Changed
-
-- Changed the Fireworks model catalog to point the turbo router at `kimi-k2p6-turbo` and refresh the available Fireworks models.
-
-## [0.0.4] - 2026-05-21
-
-## [0.0.2] - 2026-05-20
-
-### Added
-
-- Added Prime Inference as an OpenAI-compatible built-in provider using `PRIME_API_KEY` authentication, curated model generation, and Prime-specific request compatibility.
-- Added GLM 5 and GLM 5.1 to the Prime Inference model catalog with Z.ai-style thinking compatibility.
-
-### Fixed
-
+- Fixed GitHub Copilot model availability to ignore generic `GH_TOKEN` and `GITHUB_TOKEN` environment variables, requiring OAuth login or `COPILOT_GITHUB_TOKEN` instead ([#4485](https://github.com/earendil-works/pi/issues/4485)).
+- Fixed `openai-completions` streams to surface an error when the stream ends before any terminal `finish_reason`, so truncated responses can retry instead of being accepted as success ([#4345](https://github.com/earendil-works/pi/issues/4345)).
+- Fixed Fireworks provider caching compatibility by adding session affinity headers and model metadata compat settings ([#4358](https://github.com/earendil-works/pi-mono/pull/4358) by [@yanirz](https://github.com/yanirz)).
+- Fixed OpenAI Codex WebSocket transport to respect proxy environment variables under Bun ([#4354](https://github.com/earendil-works/pi-mono/pull/4354) by [@haoqixu](https://github.com/haoqixu)).
+- Fixed OpenRouter cache usage normalization to preserve cached-token semantics without treating cached tokens as cache writes.
+- Fixed Bedrock proxy handling to preserve `NO_PROXY` exclusions while using HTTP(S)-only proxy agents.
+- Fixed compiled Bun binaries failing to start outside the repo when Bedrock proxy support tried to resolve `proxy-from-env` from external `node_modules` ([#4513](https://github.com/earendil-works/pi/issues/4513)).
+- Fixed GitHub Copilot Claude test coverage to use the current Claude Sonnet 4.6 model ID.
 - Fixed OpenAI Responses requests for models that support disabling reasoning to send `reasoning.effort: "none"` when thinking is off.
-
-## [0.0.1] - 2026-05-18
+- Fixed Inception Mercury 2 tool calling on OpenRouter by marking `off` as unsupported in `thinkingLevelMap`, so the openai-completions provider omits the reasoning param instead of defaulting to `{reasoning:{effort:"none"}}` (which puts Mercury 2 in instant mode, disabling tool calls).
+- Fixed OpenAI Codex SSE retries to honor `retry-after-ms` and `retry-after` headers before falling back to exponential backoff.
+- Fixed context overflow detection for LiteLLM-wrapped OpenAI-compatible errors using `exceeds the model's maximum context length of ... tokens` wording ([#4563](https://github.com/earendil-works/pi/issues/4563)).
+- Fixed `streamSimple()` defaults to respect model output limits above 32000 tokens instead of clamping provider requests to 32000 ([#4539](https://github.com/earendil-works/pi/issues/4539)).
 
 ## [0.74.0] - 2026-05-07
 

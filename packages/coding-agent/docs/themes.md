@@ -1,4 +1,4 @@
-> Prime Agent can create themes. Ask it to build one for your setup.
+> pi can create themes. Ask it to build one for your setup.
 
 # Themes
 
@@ -16,11 +16,11 @@ Themes are JSON files that define colors for the TUI.
 
 ## Locations
 
-Prime Agent loads themes from:
+Pi loads themes from:
 
 - Built-in: `dark`, `light`
-- Global: `~/.prime/agent/themes/*.json`
-- Project: `.prime/agent/themes/*.json`
+- Global: `~/.pi/agent/themes/*.json`
+- Project: `.pi/themes/*.json`
 - Packages: `themes/` directories or `pi.themes` entries in `package.json`
 - Settings: `themes` array with files or directories
 - CLI: `--theme <path>` (repeatable)
@@ -37,22 +37,22 @@ Select a theme via `/settings` or in `settings.json`:
 }
 ```
 
-On first run, Prime Agent detects your terminal background and defaults to `dark` or `light`.
+On first run, pi detects your terminal background and defaults to `dark` or `light`.
 
 ## Creating a Custom Theme
 
 1. Create a theme file:
 
 ```bash
-mkdir -p ~/.prime/agent/themes
-vim ~/.prime/agent/themes/my-theme.json
+mkdir -p ~/.pi/agent/themes
+vim ~/.pi/agent/themes/my-theme.json
 ```
 
 2. Define the theme with all required colors (see [Color Tokens](#color-tokens)):
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+  "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
   "name": "my-theme",
   "vars": {
     "primary": "#00aaff",
@@ -79,7 +79,6 @@ vim ~/.prime/agent/themes/my-theme.json
     "toolPendingBg": "#1e1e2e",
     "toolSuccessBg": "#1e2e1e",
     "toolErrorBg": "#2e1e1e",
-    "toolPanelBg": "#2d2d38",
     "toolTitle": "primary",
     "toolOutput": "",
     "mdHeading": "#ffaa00",
@@ -117,13 +116,13 @@ vim ~/.prime/agent/themes/my-theme.json
 
 3. Select the theme via `/settings`.
 
-**Hot reload:** When you edit the currently active custom theme file, Prime Agent reloads it automatically for immediate visual feedback.
+**Hot reload:** When you edit the currently active custom theme file, pi reloads it automatically for immediate visual feedback.
 
 ## Theme Format
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+  "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
   "name": "my-theme",
   "vars": {
     "blue": "#0066cc",
@@ -164,7 +163,7 @@ Every theme must define all 51 color tokens. There are no optional colors.
 | `text` | Default text (usually `""`) |
 | `thinkingText` | Thinking block text |
 
-### Backgrounds & Content (12 colors)
+### Backgrounds & Content (11 colors)
 
 | Token | Purpose |
 |-------|---------|
@@ -177,7 +176,6 @@ Every theme must define all 51 color tokens. There are no optional colors.
 | `toolPendingBg` | Tool box (pending) |
 | `toolSuccessBg` | Tool box (success) |
 | `toolErrorBg` | Tool box (error) |
-| `toolPanelBg` | Tool panel background |
 | `toolTitle` | Tool title |
 | `toolOutput` | Tool output text |
 
@@ -270,7 +268,7 @@ Four formats are supported:
 
 ### Terminal Compatibility
 
-Prime Agent uses 24-bit RGB colors. Most modern terminals support this (iTerm2, Kitty, WezTerm, Windows Terminal, VS Code). For older terminals with only 256-color support, Prime Agent falls back to the nearest approximation.
+Pi uses 24-bit RGB colors. Most modern terminals support this (iTerm2, Kitty, WezTerm, Windows Terminal, VS Code). For older terminals with only 256-color support, pi falls back to the nearest approximation.
 
 Check truecolor support:
 
