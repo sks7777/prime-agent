@@ -435,6 +435,7 @@ export interface JsonlSessionMetadata extends SessionMetadata {
 	cwd: string;
 	path: string;
 	parentSessionPath?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetadata> {
@@ -457,6 +458,7 @@ export type { Session } from "./session/session.js";
 
 export interface SessionCreateOptions {
 	id?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface SessionForkOptions {
