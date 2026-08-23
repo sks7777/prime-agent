@@ -58,17 +58,29 @@ function getAliases(): Record<string, string> {
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
 	const piAiEntry = resolveWorkspaceOrImport("ai/dist/index.js", "@earendil-works/pi-ai");
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
+	const piAiMcpEntry = resolveWorkspaceOrImport("ai/dist/mcp.js", "@earendil-works/pi-ai/mcp");
+	const piAiBedrockEntry = resolveWorkspaceOrImport(
+		"ai/dist/bedrock-provider.js",
+		"@earendil-works/pi-ai/bedrock-provider",
+	);
+	const piAiCompatEntry = resolveWorkspaceOrImport("ai/src/compat.ts", "@earendil-works/pi-ai/compat");
 
 	_aliases = {
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@earendil-works/pi-ai": piAiEntry,
+		"@earendil-works/pi-ai/mcp": piAiMcpEntry,
+		"@earendil-works/pi-ai/bedrock-provider": piAiBedrockEntry,
+		"@earendil-works/pi-ai/compat": piAiCompatEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
 		"@mariozechner/pi-tui": piTuiEntry,
 		"@mariozechner/pi-ai": piAiEntry,
+		"@mariozechner/pi-ai/mcp": piAiMcpEntry,
+		"@mariozechner/pi-ai/bedrock-provider": piAiBedrockEntry,
+		"@mariozechner/pi-ai/compat": piAiCompatEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,

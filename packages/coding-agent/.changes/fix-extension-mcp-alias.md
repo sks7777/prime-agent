@@ -1,0 +1,1 @@
+- Fixed extension loading crash when a transitive import resolves `@earendil-works/pi-ai/mcp` or `@earendil-works/pi-ai/compat` through jiti aliases.

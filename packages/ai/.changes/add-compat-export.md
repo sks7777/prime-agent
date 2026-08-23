@@ -1,0 +1,1 @@
+- Added `./compat` subpath export re-exporting `streamSimple` and `completeSimple` for extensions that import from `@earendil-works/pi-ai/compat`.
