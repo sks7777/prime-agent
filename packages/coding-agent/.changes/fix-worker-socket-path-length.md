@@ -1,0 +1,1 @@
+- Fixed daemon startup timeout on macOS by shortening the descriptor key in worker socket filenames from `worker-<12key>-<id>.sock` to `worker-<7key>-<id>.sock`, keeping the full path within the 104-byte Unix socket path limit.

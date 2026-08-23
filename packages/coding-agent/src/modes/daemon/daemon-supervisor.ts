@@ -542,7 +542,7 @@ function workerSocketPath(supervisorSocketPath: string, workerId: string): strin
 	if (process.platform === "win32") {
 		return `\\\\.\\pipe\\prime-agent-worker-${key}-${workerId.slice(0, 12)}`;
 	}
-	return join(defaultDaemonSocketDir(), `worker-${key}-${workerId.slice(0, 12)}.sock`);
+	return join(defaultDaemonSocketDir(), `worker-${key.slice(0, 7)}-${workerId.slice(0, 12)}.sock`);
 }
 
 function looksLikeSessionPath(selector: string): boolean {
