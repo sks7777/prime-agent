@@ -77,6 +77,9 @@ export interface ProviderResponse {
 }
 
 export interface StreamOptions {
+	samplingParams?: Record<string, unknown>;
+	env?: ProviderEnv;
+	fetch?: typeof globalThis.fetch;
 	temperature?: number;
 	maxTokens?: number;
 	signal?: AbortSignal;
@@ -209,19 +212,23 @@ export interface ToolCall {
 export interface Usage {
 	input: number;
 	output: number;
+	reasoning?: number;
 	cacheRead: number;
 	cacheWrite: number;
+	cacheWrite1h?: number;
 	totalTokens: number;
 	cost: {
 		input: number;
 		output: number;
+		reasoning?: number;
 		cacheRead: number;
 		cacheWrite: number;
+		cacheWrite1h?: number;
 		total: number;
 	};
 }
 
-export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted";
 
 export interface UserMessage {
 	role: "user";
@@ -230,6 +237,8 @@ export interface UserMessage {
 }
 
 export interface AssistantMessage {
+	/** Provider's raw stop/finish reason. */
+	rawStopReason?: string;
 	role: "assistant";
 	content: (TextContent | ThinkingContent | ToolCall)[];
 	api: Api;
@@ -246,6 +255,8 @@ export interface AssistantMessage {
 }
 
 export interface ToolResultMessage<TDetails = any> {
+	/** Tool names added by the provider. */
+	addedToolNames?: string[];
 	role: "toolResult";
 	toolCallId: string;
 	toolName: string;
@@ -260,6 +271,7 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 import type { TSchema } from "typebox";
 
 export interface Tool<TParameters extends TSchema = TSchema> {
+	constrainedSampling?: unknown;
 	name: string;
 	description: string;
 	parameters: TParameters;
@@ -290,7 +302,7 @@ export type AssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
-	| { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse">; message: AssistantMessage }
+	| { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse" | "pending">; message: AssistantMessage }
 	| { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
 
 /**
@@ -340,6 +352,10 @@ export interface OpenAIResponsesCompat {
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
 	supportsLongCacheRetention?: boolean;
+
+	supportsOpenAIGrammarTools?: boolean;
+
+	supportsStrictMode?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
@@ -364,6 +380,21 @@ export interface AnthropicMessagesCompat {
 
 	/** Whether to allow empty thinking signatures. Default: false. */
 	allowEmptySignature?: boolean;
+
+	/** Whether to send session-affinity headers. Default: false. */
+	sendSessionAffinityHeaders?: boolean;
+
+	/** Whether the provider supports supportsCacheControlOnTools. Default: false. */
+	supportsCacheControlOnTools?: boolean;
+
+	/** Whether the provider supports supportsTemperature. Default: false. */
+	supportsTemperature?: boolean;
+
+	/** Whether the provider supports supportsStrictTools. Default: false. */
+	supportsStrictTools?: boolean;
+
+	/** Whether the provider supports supportsToolReferences. Default: false. */
+	supportsToolReferences?: boolean;
 }
 
 /**
@@ -469,9 +500,11 @@ export interface Model<TApi extends Api> {
 	input: ("text" | "image")[];
 	cost: {
 		input: number; // $/million tokens
-		output: number; // $/million tokens
+		output: number;
+		reasoning?: number; // $/million tokens
 		cacheRead: number; // $/million tokens
-		cacheWrite: number; // $/million tokens
+		cacheWrite: number;
+		cacheWrite1h?: number; // $/million tokens
 	};
 	contextWindow: number;
 	maxTokens: number;
@@ -494,7 +527,31 @@ export interface Model<TApi extends Api> {
 		? OpenAICompletionsCompat
 		: TApi extends "openai-responses"
 			? OpenAIResponsesCompat
-			: TApi extends "anthropic-messages"
-				? AnthropicMessagesCompat
-				: never;
+			: TApi extends "azure-openai-responses"
+				? OpenAIResponsesCompat
+				: TApi extends "anthropic-messages"
+					? AnthropicMessagesCompat
+					: TApi extends "bedrock-converse-stream"
+						? OpenAICompletionsCompat
+						: TApi extends "google-generative-ai"
+							? OpenAICompletionsCompat
+							: TApi extends "google-vertex"
+								? OpenAICompletionsCompat
+								: TApi extends "mistral-conversations"
+									? OpenAICompletionsCompat
+									: TApi extends "openai-codex-responses"
+										? OpenAIResponsesCompat
+										: TApi extends "cloudflare"
+											? OpenAICompletionsCompat
+											: TApi extends "openrouter-images"
+												? OpenAICompletionsCompat
+												: Record<string, unknown>;
 }
+
+export type ProviderStreams = Record<string, unknown>;
+
+export type ProviderEnv = Record<string, string | undefined>;
+
+export type ProviderHeaders = Record<string, string | null>;
+
+export type FetchFunction = typeof globalThis.fetch;
