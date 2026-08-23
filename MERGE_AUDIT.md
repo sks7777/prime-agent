@@ -617,3 +617,86 @@
 6. "deferred" stop reason — блокирует reducer.ts, session/context.ts
 7. SessionStorage interface — блокирует session/memory.ts, storage package
 
+
+
+---
+
+## 12. Результаты восстановления Приоритет 1-2
+
+### Восстановлено файлов: 83 (из 576 отсутствующих)
+
+**Приоритет 1 — Тривиально (добавлено как есть, fix .ts imports):**
+
+| Файлы | Статус | Примечания |
+|-------|--------|-----------|
+| `packages/protocol/` (14 файлов) | ✅ Добавлено | CBOR codec, wire protocol. Package.json exports исправлены на src/ |
+| `packages/telemetry/` (11 файлов) | ✅ Добавлено | Telemetry contracts. Package.json exports исправлены на src/ |
+| `packages/agent/src/harness/events.ts` | ✅ Добавлено | Harness events |
+| `packages/agent/src/harness/result.ts` | ✅ Добавлено | Harness result types |
+| `packages/agent/src/harness/telemetry.ts` | ✅ Добавлено | Harness telemetry. Импорт изменён на @earendil-works/pi-telemetry (через tsconfig paths) |
+| `packages/agent/src/search/` (2 файла) | ✅ Добавлено | Search index, scanning. Требует session/types.ts (создан минимальный) |
+| `packages/agent/src/stream-fn.ts` | ✅ Добавлено | Stream function |
+| `packages/agent/docs/` (3 файла) | ✅ Добавлено | harness.md, search.md, telemetry-schema.md |
+| `packages/coding-agent/docs/` (3 файла) | ✅ Добавлено | environment-variables.md, llama-cpp.md, security.md |
+| `.pi/extensions/redraws.ts`, `.pi/extensions/tps.ts`, `.pi/prompts/cl.md` | ✅ Добавлено | PI config files |
+| `packages/coding-agent/src/extensions/llama/` (5 файлов) | ❌ Не добавлено | Требует ModelRuntime API (getProviderAuth, refresh с провайдерами) — отложено на Приоритет 3 |
+
+**Приоритет 2 — Средне (требует добавления типов/интерфейсов):**
+
+| Файлы | Статус | Примечания |
+|-------|--------|-----------|
+| `packages/client/` (22 файла) | ✅ Добавлено | Session client, Unix transport. Package.json exports исправлены, tsconfig paths добавлены |
+| `packages/agent/src/harness/tools/` (10 файлов) | ✅ Добавлено | AgentHarnessTool, ShellCaptureProgress типы добавлены в harness/types.ts. ShellCaptureProgress/Result обновлены в shell-output.ts. TruncationResult импортирован. inheritEnv добавлен в ExecutionEnvExecOptions |
+| `packages/agent/src/harness/session/types.ts` | ✅ Создан минимальный | SessionMetadata (createdAt: number), Entry, SessionStorage (getEntries, findEntries, getLabel) |
+| `packages/agent/src/harness/session/jsonl/` (5 файлов) | ❌ Не добавлено | Требует assertJsonSerializable из session.ts, SessionRepo из types.ts, JsonlSessionMetadata совместимости. Глубокая несовместимость PI vs earendil SessionMetadata (string vs number createdAt) |
+| `packages/agent/src/harness/session/memory.ts` | ❌ Не добавлено | InMemorySessionStorage не реализует PI SessionStorage interface (нет getLeafId, setLeafId, createEntryId, getPathToRoot, getEntries) |
+| `packages/agent/src/harness/reducer.ts` | ❌ Не добавлено | Требует "deferred" в StopReason, DeferredHandle type, AssistantMessage.deferred field. Добавлено в pi-ai types.ts, но удалено из-за cascade-эффектов на session/context.ts |
+| `packages/ai/src/providers/` (80 файлов) | ❌ Не добавлено | Earendil провайдеры имеют другие экспорты, несовместимые с PI index.ts. Требует адаптации index.ts или разделения на отдельные модули |
+| `packages/coding-agent/src/utils/` (5 из 7) | ✅ Частично добавлено | abort.ts, image-resize-core.ts, image-resize-worker.ts, management-http.ts, open-browser.ts. image-process.ts и tool-result-images.ts удалены (зависят от earendil image-convert API) |
+| `packages/server/` (22 файла) | ❌ Не добавлено | ToolCall и Usage type mismatches. Protocol type constraints несовместимы с PI типами |
+| `packages/session-backends/sqlite-node/` | ✅ Обновлено | Файлы обновлены из v0.84.2. Требует SessionEntryCursorOptions type (не добавлено) |
+
+### Добавленные типы в PI для совместимости:
+
+| Тип | Файл | Назначение |
+|-----|------|-----------|
+| `AgentHarnessTool` | `packages/agent/src/harness/types.ts` | Harness tool with context |
+| `AgentHarnessToolContextSource` | `packages/agent/src/harness/types.ts` | Tool context provider |
+| `AgentHarnessStreamOptions` | `packages/agent/src/harness/types.ts` | Stream options for harness |
+| `ShellCaptureProgress` | `packages/agent/src/harness/utils/shell-output.ts` | Shell execution progress (output, truncation, fullOutputPath, lastLineBytes) |
+| `inheritEnv` | `ExecutionEnvExecOptions` в `harness/types.ts` | Whether to inherit parent process env |
+| `uuidv7` re-export | `packages/ai/src/index.ts` | Re-export from uuid package for harness session backends |
+| `RpcExtensionUIRequest/Response` export | `packages/coding-agent/src/index.ts` | Re-export from rpc-types.ts for server/client packages |
+| tsconfig paths | `tsconfig.json` | Path mappings for @earendil-works/pi-protocol, pi-client, pi-telemetry |
+
+### Остаются отсутствующими (493 файла):
+
+| Категория | Файлов | Блокер |
+|-----------|--------|--------|
+| ai/src/providers (новые) | 79 | Разные экспорты, несовместимые с PI index.ts |
+| coding-agent/test (новые) | 63 | Зависят от новых модулей и API |
+| ai/test (новые) | 63 | Зависят от новых провайдеров и API |
+| coding-agent/test/suite/regressions | 45 | Зависят от новых фич |
+| ai/src/api | 26 | Требует compat.ts рефакторинг |
+| coding-agent/src/core | 14 | Требует ModelRuntime migration |
+| agent/test/harness | 13 | Требует fauxProvider API |
+| tui/test | 11 | Требует fullscreen TUI API |
+| server | 9 | ToolCall/Usage type mismatches |
+| ai/src/utils | 9 | Требует compat.ts изменения |
+| ai/src | 9 | Image types, base, model catalog |
+| ai/src/auth/oauth | 8 | Требует auth storage рефакторинг |
+| coding-agent/src/modes | 7 | TUI API несовместимости |
+| tui/src | 6 | Fullscreen TUI API |
+| evals | 6 | Требует fauxProvider API |
+| coding-agent/src/cli | 6 | Experimental CLI |
+| agent/test/harness/session | 6 | Session API несовместимости |
+| tui/src/components | 5 | Fullscreen TUI components |
+
+### Итоговая полнота переноса после Приоритет 1-2:
+
+| Метрика | До | После | Изменение |
+|---------|-----|-------|-----------|
+| Отсутствующих файлов earendil | 576 | 493 | +83 восстановлено |
+| Файлов в merge/earendil-iterative | 1353 | 1436 | +83 файла |
+| Тестов проходит | 5662 | 5662 | Без изменений (0 сбоев) |
+| npm run check | PASS | PASS | Без изменений |
