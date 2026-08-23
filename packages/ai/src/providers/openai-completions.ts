@@ -173,7 +173,6 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 
 			let textBlock: TextContent | null = null;
 			let thinkingBlock: ThinkingContent | null = null;
-			let hasFinishReason = false;
 			const toolCallBlocksByIndex = new Map<number, StreamingToolCallBlock>();
 			const toolCallBlocksById = new Map<string, StreamingToolCallBlock>();
 			const blocks = output.content as StreamingBlock[];
@@ -297,7 +296,6 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 					if (finishReasonResult.errorMessage) {
 						output.errorMessage = finishReasonResult.errorMessage;
 					}
-					hasFinishReason = true;
 				}
 
 				if (choice.delta) {
@@ -399,9 +397,6 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			}
 			if (output.stopReason === "error") {
 				throw new Error(output.errorMessage || "Provider returned an error stop reason");
-			}
-			if (!hasFinishReason) {
-				throw new Error("Stream ended without finish_reason");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -599,15 +594,6 @@ function buildParams(
 			openRouterParams.reasoning = compat.supportsReasoningEffort
 				? { effort: model.thinkingLevelMap?.off ?? "none" }
 				: { enabled: false };
-		}
-	} else if (compat.thinkingFormat === "together" && model.reasoning) {
-		const togetherParams = params as Omit<typeof params, "reasoning_effort"> & {
-			reasoning?: { enabled: boolean };
-			reasoning_effort?: string;
-		};
-		togetherParams.reasoning = { enabled: !!options?.reasoningEffort };
-		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
-			togetherParams.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		}
 	} else if (options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) {
 		(params as any).reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
@@ -1031,17 +1017,17 @@ function parseChunkUsage(
 	cacheWriteCost?: number,
 ): AssistantMessage["usage"] {
 	const promptTokens = rawUsage.prompt_tokens || 0;
-	const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
+	const reportedCachedTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
 	const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;
 
-	// Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read
-	// tokens (hits). OpenAI does not document or emit cache_write_tokens, but
-	// OpenRouter-compatible providers can include it as a separate write count.
-	// OpenRouter's own provider/tests affirm the separate mapping:
-	// https://github.com/OpenRouterTeam/ai-sdk-provider/pull/409
-	// Do not subtract writes from cached_tokens, otherwise spec-compliant
-	// providers are under-reported. DS4 mirrors this contract too:
-	// https://github.com/antirez/ds4/pull/29
+	// Normalize to pi-ai semantics:
+	// - cacheRead: hits from cache created by previous requests only
+	// - cacheWrite: tokens written to cache in this request
+	// Some OpenAI-compatible providers (observed on OpenRouter) report cached_tokens
+	// as (previous hits + current writes). In that case, remove cacheWrite from cacheRead.
+	const cacheReadTokens =
+		cacheWriteTokens > 0 ? Math.max(0, reportedCachedTokens - cacheWriteTokens) : reportedCachedTokens;
+
 	const input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
 	// OpenAI completion_tokens already includes reasoning_tokens.
 	const outputTokens = rawUsage.completion_tokens || 0;
@@ -1093,8 +1079,6 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	const baseUrl = model.baseUrl;
 
 	const isZai = provider === "zai" || baseUrl.includes("api.z.ai");
-	const isTogether =
-		provider === "together" || baseUrl.includes("api.together.ai") || baseUrl.includes("api.together.xyz");
 	const isMoonshot = provider === "moonshotai" || provider === "moonshotai-cn" || baseUrl.includes("api.moonshot.");
 	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || baseUrl.includes("api.cloudflare.com");
 	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrl.includes("gateway.ai.cloudflare.com");
@@ -1105,7 +1089,6 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		baseUrl.includes("cerebras.ai") ||
 		provider === "xai" ||
 		baseUrl.includes("api.x.ai") ||
-		isTogether ||
 		baseUrl.includes("chutes.ai") ||
 		baseUrl.includes("deepseek.com") ||
 		isZai ||
@@ -1116,8 +1099,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		isCloudflareAiGateway ||
 		isPrimeInference;
 
-	const useMaxTokens =
-		baseUrl.includes("chutes.ai") || isMoonshot || isCloudflareAiGateway || isPrimeInference || isTogether;
+	const useMaxTokens = baseUrl.includes("chutes.ai") || isMoonshot || isCloudflareAiGateway || isPrimeInference;
 
 	const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
 	const isDeepSeek = provider === "deepseek" || baseUrl.includes("deepseek.com");
@@ -1128,7 +1110,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	return {
 		supportsStore: !isNonStandard,
 		supportsDeveloperRole: !isNonStandard,
-		supportsReasoningEffort: !isGrok && !isZai && !isMoonshot && !isTogether && !isCloudflareAiGateway,
+		supportsReasoningEffort: !isGrok && !isZai && !isMoonshot && !isCloudflareAiGateway,
 		supportsUsageInStreaming: true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: false,
@@ -1139,18 +1121,16 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 			? "deepseek"
 			: isZai
 				? "zai"
-				: isTogether
-					? "together"
-					: provider === "openrouter" || baseUrl.includes("openrouter.ai")
-						? "openrouter"
-						: "openai",
+				: provider === "openrouter" || baseUrl.includes("openrouter.ai")
+					? "openrouter"
+					: "openai",
 		openRouterRouting: {},
 		vercelGatewayRouting: {},
 		zaiToolStream: false,
-		supportsStrictMode: !isMoonshot && !isCloudflareAiGateway && !isPrimeInference && !isTogether,
+		supportsStrictMode: !isMoonshot && !isCloudflareAiGateway && !isPrimeInference,
 		cacheControlFormat,
 		sendSessionAffinityHeaders: false,
-		supportsLongCacheRetention: !(isTogether || isCloudflareWorkersAI || isCloudflareAiGateway),
+		supportsLongCacheRetention: !(isCloudflareWorkersAI || isCloudflareAiGateway),
 	};
 }
 
