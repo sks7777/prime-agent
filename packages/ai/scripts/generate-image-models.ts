@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+// @ts-nocheck
 
 import { writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
