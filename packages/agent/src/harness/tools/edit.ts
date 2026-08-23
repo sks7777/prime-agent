@@ -52,7 +52,9 @@ function prepareEditArguments(input: unknown): EditToolInput {
 		try {
 			const parsed: unknown = JSON.parse(args.edits);
 			if (Array.isArray(parsed)) args.edits = parsed;
-		} catch {}
+		} catch {
+			/* JSON.parse fails for non-JSON string, leave as-is */
+		}
 	}
 
 	const legacy = args as LegacyEditToolInput;
