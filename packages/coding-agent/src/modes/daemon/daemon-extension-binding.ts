@@ -288,7 +288,9 @@ function createExtensionUIContext(
 							if (!closed && component?.handleInput) {
 								try {
 									component.handleInput(response.key);
-								} catch {}
+								} catch {
+									// Extension UI component may throw on unexpected key input
+								}
 							}
 						} else if ("cancelled" in response) {
 							finish(undefined as T);
