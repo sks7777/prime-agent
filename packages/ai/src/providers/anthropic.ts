@@ -175,6 +175,7 @@ function getAnthropicCompat(model: Model<"anthropic-messages">): Required<Anthro
 		supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
 		forceAdaptiveThinking: model.compat?.forceAdaptiveThinking ?? false,
+		allowEmptySignature: model.compat?.allowEmptySignature ?? false,
 	};
 }
 

@@ -361,6 +361,9 @@ export interface AnthropicMessagesCompat {
 	 * Default: false.
 	 */
 	forceAdaptiveThinking?: boolean;
+
+	/** Whether to allow empty thinking signatures. Default: false. */
+	allowEmptySignature?: boolean;
 }
 
 /**
