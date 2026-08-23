@@ -1,4 +1,4 @@
-import type { ThinkingLevel, ThinkingLevelMap } from "../src/types.ts";
+import type { ThinkingLevel, ThinkingLevelMap } from "../src/types.js";
 
 export type ModelsDevReasoningOption =
 	| { type: "toggle" }

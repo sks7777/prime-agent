@@ -15,7 +15,7 @@ export interface ModelDataManifest {
 }
 
 const MODEL_DATA_IMPORT_PATTERN =
-	/^import \{ [A-Z][A-Z0-9_]*_MODELS \} from "\.\/providers\/([^"/]+)\.models\.ts";$/gm;
+	/^import \{ [A-Z][A-Z0-9_]*_MODELS \} from "\.\/providers\/([^"/]+)\.models\.js";$/gm;
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
@@ -37,6 +37,13 @@ function describeSetDifference(expected: readonly string[], actual: readonly str
 	return [missing.length > 0 ? `missing: ${missing.join(", ")}` : "", extra.length > 0 ? `extra: ${extra.join(", ")}` : ""]
 		.filter(Boolean)
 		.join("; ");
+}
+
+export function assertExactModelIds(label: string, expected: Iterable<string>, actual: Iterable<string>): void {
+	const expectedIds = Array.from(new Set(expected)).sort();
+	const actualIds = Array.from(new Set(actual)).sort();
+	if (sameStrings(expectedIds, actualIds)) return;
+	throw new Error(`${label} model IDs do not match (${describeSetDifference(expectedIds, actualIds)})`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

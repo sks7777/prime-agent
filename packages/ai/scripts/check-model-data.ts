@@ -2,7 +2,7 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateGeneratedModelData } from "./model-data.ts";
+import { validateGeneratedModelData } from "./model-data.js";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
