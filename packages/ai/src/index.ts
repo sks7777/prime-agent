@@ -1,6 +1,7 @@
 export type { Static, TSchema } from "typebox";
 export { Type } from "typebox";
-
+// Re-export uuidv7 for harness session backends
+export { v7 as uuidv7 } from "uuid";
 export * from "./api-registry.js";
 export * from "./env-api-keys.js";
 export * from "./log.js";
