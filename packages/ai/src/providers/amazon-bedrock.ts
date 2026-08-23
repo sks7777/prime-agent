@@ -20,7 +20,6 @@ import {
 	type ToolConfiguration,
 	ToolResultStatus,
 } from "@aws-sdk/client-bedrock-runtime";
-import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { DocumentType } from "@smithy/types";
 import { calculateCost, clampThinkingLevel } from "../models.js";
 import type {
@@ -43,7 +42,6 @@ import type {
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
-import { createHttpProxyAgentsForTarget } from "../utils/node-http-proxy.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { recordStreamFailure, streamFailureFromStopReason } from "../utils/stream-failure.js";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampReasoning } from "./simple-options.js";
@@ -154,12 +152,26 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 				};
 			}
 
-			const proxyAgents = createHttpProxyAgentsForTarget(model.baseUrl);
-			if (proxyAgents) {
+			if (
+				process.env.HTTP_PROXY ||
+				process.env.HTTPS_PROXY ||
+				process.env.NO_PROXY ||
+				process.env.http_proxy ||
+				process.env.https_proxy ||
+				process.env.no_proxy
+			) {
+				const nodeHttpHandler = await import("@smithy/node-http-handler");
+				const proxyAgent = await import("proxy-agent");
+
+				const agent = new proxyAgent.ProxyAgent();
+
 				// Bedrock runtime uses NodeHttp2Handler by default since v3.798.0, which is based
 				// on `http2` module and has no support for http agent.
-				// Use NodeHttpHandler to support HTTP(S) proxy agents.
-				config.requestHandler = new NodeHttpHandler(proxyAgents);
+				// Use NodeHttpHandler to support http agent.
+				config.requestHandler = new nodeHttpHandler.NodeHttpHandler({
+					httpAgent: agent,
+					httpsAgent: agent,
+				});
 			} else if (process.env.AWS_BEDROCK_FORCE_HTTP1 === "1") {
 				const nodeHttpHandler = await import("@smithy/node-http-handler");
 				config.requestHandler = new nodeHttpHandler.NodeHttpHandler();

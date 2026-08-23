@@ -117,6 +117,8 @@ Use a chain: first have scout find the ipython tool, then have planner suggest i
 - Shows all tasks with live status (⏳ running, ✓ done, ✗ failed)
 - Updates as each task makes progress
 - Shows "2/3 done, 1 running" status
+- Returns each completed task's final output to the parent model, capped at 50 KB per task
+- Returns failure diagnostics from stderr/error messages when a child exits before producing output
 
 **Tool call formatting**:
 - `$ command` for bash
@@ -171,5 +173,6 @@ Project agents override user agents with the same name when `agentScope: "both"`
 ## Limitations
 
 - Output truncated to last 10 items in collapsed view (expand to see all)
+- Parallel model-visible output is capped at 50 KB per task; full results remain in tool details
 - Agents discovered fresh on each invocation (allows editing mid-session)
 - Parallel mode limited to 8 tasks, 4 concurrent
