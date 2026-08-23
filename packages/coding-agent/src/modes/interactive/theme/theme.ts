@@ -35,70 +35,73 @@ const ThemeJsonSchema = Type.Object({
 	$schema: Type.Optional(Type.String()),
 	name: Type.String(),
 	vars: Type.Optional(Type.Record(Type.String(), ColorValueSchema)),
-	colors: Type.Object({
-		// Core UI (10 colors)
-		accent: ColorValueSchema,
-		border: ColorValueSchema,
-		borderAccent: ColorValueSchema,
-		borderMuted: ColorValueSchema,
-		success: ColorValueSchema,
-		error: ColorValueSchema,
-		warning: ColorValueSchema,
-		muted: ColorValueSchema,
-		dim: ColorValueSchema,
-		text: ColorValueSchema,
-		thinkingText: ColorValueSchema,
-		// Backgrounds & Content Text (12 colors)
-		selectedBg: ColorValueSchema,
-		userMessageBg: ColorValueSchema,
-		userMessageText: ColorValueSchema,
-		customMessageBg: ColorValueSchema,
-		customMessageText: ColorValueSchema,
-		customMessageLabel: ColorValueSchema,
-		toolPendingBg: ColorValueSchema,
-		toolSuccessBg: ColorValueSchema,
-		toolErrorBg: ColorValueSchema,
-		toolDiffAddedBg: ColorValueSchema,
-		toolDiffRemovedBg: ColorValueSchema,
-		toolPanelBg: ColorValueSchema,
-		toolTitle: ColorValueSchema,
-		toolOutput: ColorValueSchema,
-		// Markdown (10 colors)
-		mdHeading: ColorValueSchema,
-		mdLink: ColorValueSchema,
-		mdLinkUrl: ColorValueSchema,
-		mdCode: ColorValueSchema,
-		mdCodeBlock: ColorValueSchema,
-		mdCodeBlockBorder: ColorValueSchema,
-		mdQuote: ColorValueSchema,
-		mdQuoteBorder: ColorValueSchema,
-		mdHr: ColorValueSchema,
-		mdListBullet: ColorValueSchema,
-		// Tool Diffs (3 colors)
-		toolDiffAdded: ColorValueSchema,
-		toolDiffRemoved: ColorValueSchema,
-		toolDiffText: ColorValueSchema,
-		toolDiffContext: ColorValueSchema,
-		// Syntax Highlighting (9 colors)
-		syntaxComment: ColorValueSchema,
-		syntaxKeyword: ColorValueSchema,
-		syntaxFunction: ColorValueSchema,
-		syntaxVariable: ColorValueSchema,
-		syntaxString: ColorValueSchema,
-		syntaxNumber: ColorValueSchema,
-		syntaxType: ColorValueSchema,
-		syntaxOperator: ColorValueSchema,
-		syntaxPunctuation: ColorValueSchema,
-		// Thinking Level Borders (6 colors)
-		thinkingOff: ColorValueSchema,
-		thinkingMinimal: ColorValueSchema,
-		thinkingLow: ColorValueSchema,
-		thinkingMedium: ColorValueSchema,
-		thinkingHigh: ColorValueSchema,
-		thinkingXhigh: ColorValueSchema,
-		// Bash Mode (1 color)
-		bashMode: ColorValueSchema,
-	}),
+	colors: Type.Object(
+		{
+			// Core UI (10 colors)
+			accent: ColorValueSchema,
+			border: ColorValueSchema,
+			borderAccent: ColorValueSchema,
+			borderMuted: ColorValueSchema,
+			success: ColorValueSchema,
+			error: ColorValueSchema,
+			warning: ColorValueSchema,
+			muted: ColorValueSchema,
+			dim: ColorValueSchema,
+			text: ColorValueSchema,
+			thinkingText: ColorValueSchema,
+			// Backgrounds & Content Text (12 colors)
+			selectedBg: ColorValueSchema,
+			userMessageBg: ColorValueSchema,
+			userMessageText: ColorValueSchema,
+			customMessageBg: ColorValueSchema,
+			customMessageText: ColorValueSchema,
+			customMessageLabel: ColorValueSchema,
+			toolPendingBg: ColorValueSchema,
+			toolSuccessBg: ColorValueSchema,
+			toolErrorBg: ColorValueSchema,
+			toolDiffAddedBg: Type.Optional(ColorValueSchema),
+			toolDiffRemovedBg: Type.Optional(ColorValueSchema),
+			toolPanelBg: Type.Optional(ColorValueSchema),
+			toolTitle: ColorValueSchema,
+			toolOutput: ColorValueSchema,
+			// Markdown (10 colors)
+			mdHeading: ColorValueSchema,
+			mdLink: ColorValueSchema,
+			mdLinkUrl: ColorValueSchema,
+			mdCode: ColorValueSchema,
+			mdCodeBlock: ColorValueSchema,
+			mdCodeBlockBorder: ColorValueSchema,
+			mdQuote: ColorValueSchema,
+			mdQuoteBorder: ColorValueSchema,
+			mdHr: ColorValueSchema,
+			mdListBullet: ColorValueSchema,
+			// Tool Diffs (3 colors)
+			toolDiffAdded: ColorValueSchema,
+			toolDiffRemoved: ColorValueSchema,
+			toolDiffText: Type.Optional(ColorValueSchema),
+			toolDiffContext: ColorValueSchema,
+			// Syntax Highlighting (9 colors)
+			syntaxComment: ColorValueSchema,
+			syntaxKeyword: ColorValueSchema,
+			syntaxFunction: ColorValueSchema,
+			syntaxVariable: ColorValueSchema,
+			syntaxString: ColorValueSchema,
+			syntaxNumber: ColorValueSchema,
+			syntaxType: ColorValueSchema,
+			syntaxOperator: ColorValueSchema,
+			syntaxPunctuation: ColorValueSchema,
+			// Thinking Level Borders (6 colors)
+			thinkingOff: ColorValueSchema,
+			thinkingMinimal: ColorValueSchema,
+			thinkingLow: ColorValueSchema,
+			thinkingMedium: ColorValueSchema,
+			thinkingHigh: ColorValueSchema,
+			thinkingXhigh: ColorValueSchema,
+			// Bash Mode (1 color)
+			bashMode: ColorValueSchema,
+		},
+		{ additionalProperties: true },
+	),
 	export: Type.Optional(
 		Type.Object({
 			pageBg: Type.Optional(ColorValueSchema),
@@ -755,6 +758,15 @@ function loadThemeJson(name: string): ThemeJson {
 	return parseThemeJsonContent(name, content);
 }
 
+// Defaults for colors added after the initial schema.  Themes predating these
+// additions (e.g. upstream pi themes from awesome-pi-themes) omit them; we fill
+// in sensible defaults so they keep working without requiring every theme to
+// know about fork-specific extensions.
+const DEFAULT_TOOL_DIFF_ADDED_BG = "#015f00";
+const DEFAULT_TOOL_DIFF_REMOVED_BG = "#5e0000";
+const DEFAULT_TOOL_DIFF_TEXT = "#9aa0a6";
+const DEFAULT_TOOL_PANEL_BG = "";
+
 function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string): Theme {
 	const colorMode = mode ?? detectColorMode();
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
@@ -778,6 +790,11 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 			fgColors[key as ThemeColor] = value;
 		}
 	}
+	// Backfill optional colors that may be absent from older/upstream themes.
+	if (bgColors.toolDiffAddedBg === undefined) bgColors.toolDiffAddedBg = DEFAULT_TOOL_DIFF_ADDED_BG;
+	if (bgColors.toolDiffRemovedBg === undefined) bgColors.toolDiffRemovedBg = DEFAULT_TOOL_DIFF_REMOVED_BG;
+	if (bgColors.toolPanelBg === undefined) bgColors.toolPanelBg = DEFAULT_TOOL_PANEL_BG;
+	if (fgColors.toolDiffText === undefined) fgColors.toolDiffText = DEFAULT_TOOL_DIFF_TEXT;
 	return new Theme(fgColors, bgColors, colorMode, {
 		name: themeJson.name,
 		sourcePath,

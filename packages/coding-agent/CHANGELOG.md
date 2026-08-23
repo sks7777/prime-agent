@@ -67,6 +67,8 @@
 - Fixed URLs not opening on click in fullscreen mode on terminals such as Ghostty; clicking a link in the transcript, dock, or overlays now opens it in the browser.
 - Fixed ctrl+p ("Toggle agent message expansion") only toggling received agent messages; it now expands and collapses sent agent messages together with received ones.
 
+- Changed `toolDiffAddedBg`, `toolDiffRemovedBg`, `toolDiffText`, and `toolPanelBg` to optional theme colors with defaults, so upstream pi themes (e.g. awesome-pi-themes) load without missing-color errors.
+
 ## [0.7.2] - 2026-08-11
 
 - Fixed Down Arrow focusing the Agents View entry before moving a nonempty prompt cursor to the end ([ENG-5147](https://linear.app/primeintellect/issue/ENG-5147/keep-down-arrow-in-the-prompt-until-the-cursor-reaches-the-end)).

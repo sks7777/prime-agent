@@ -3,7 +3,10 @@
 	"title": "Pi Coding Agent Theme",
 	"description": "Theme schema for Pi coding agent",
 	"type": "object",
-	"required": ["name", "colors"],
+	"required": [
+		"name",
+		"colors"
+	],
 	"properties": {
 		"$schema": {
 			"type": "string",
@@ -55,9 +58,6 @@
 				"toolPendingBg",
 				"toolSuccessBg",
 				"toolErrorBg",
-				"toolDiffAddedBg",
-				"toolDiffRemovedBg",
-				"toolPanelBg",
 				"toolTitle",
 				"toolOutput",
 				"mdHeading",
@@ -72,7 +72,6 @@
 				"mdListBullet",
 				"toolDiffAdded",
 				"toolDiffRemoved",
-				"toolDiffText",
 				"toolDiffContext",
 				"syntaxComment",
 				"syntaxKeyword",
@@ -313,7 +312,7 @@
 					"description": "Editor border color in bash mode"
 				}
 			},
-			"additionalProperties": false
+			"additionalProperties": true
 		},
 		"export": {
 			"type": "object",
