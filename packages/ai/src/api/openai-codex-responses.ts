@@ -812,10 +812,14 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
 		signal?.removeEventListener("abort", onAbort);
 		try {
 			await reader.cancel();
-		} catch {}
+		} catch {
+			/* ignored */
+		}
 		try {
 			reader.releaseLock();
-		} catch {}
+		} catch {
+			/* ignored */
+		}
 	}
 }
 
@@ -1017,7 +1021,9 @@ function isWebSocketSessionExpired(entry: CachedWebSocketConnection): boolean {
 function closeWebSocketSilently(socket: WebSocketLike, code = 1000, reason = "done"): void {
 	try {
 		socket.close(code, reason);
-	} catch {}
+	} catch {
+		/* ignored */
+	}
 }
 
 function scheduleSessionWebSocketExpiry(sessionId: string, accountId: string, entry: CachedWebSocketConnection): void {
@@ -1566,7 +1572,9 @@ async function parseErrorResponse(response: Response): Promise<{ message: string
 			}
 			message = err.message || friendlyMessage || message;
 		}
-	} catch {}
+	} catch {
+		/* ignored */
+	}
 
 	return { message, friendlyMessage };
 }

@@ -467,10 +467,14 @@ async function* readMistralEvents(
 		signal.removeEventListener("abort", onAbort);
 		try {
 			await reader.cancel();
-		} catch {}
+		} catch {
+			/* ignored */
+		}
 		try {
 			reader.releaseLock();
-		} catch {}
+		} catch {
+			/* ignored */
+		}
 	}
 }
 
