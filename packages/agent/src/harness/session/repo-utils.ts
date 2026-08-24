@@ -13,8 +13,8 @@ export function createSessionId(): string {
 	return uuidv7();
 }
 
-export function createTimestamp(): string {
-	return new Date().toISOString();
+export function createTimestamp(): number {
+	return Date.now();
 }
 
 export function toSession<TMetadata extends SessionMetadata>(storage: SessionStorage<TMetadata>): Session<TMetadata> {

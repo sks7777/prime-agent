@@ -57,7 +57,7 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 		if (this.leafId !== null && !this.byId.has(this.leafId)) {
 			throw new SessionError("invalid_session", `Entry ${this.leafId} not found`);
 		}
-		this.metadata = options?.metadata ?? ({ id: uuidv7(), createdAt: new Date().toISOString() } as TMetadata);
+		this.metadata = options?.metadata ?? ({ id: uuidv7(), createdAt: Date.now() } as TMetadata);
 	}
 
 	async getMetadata(): Promise<TMetadata> {

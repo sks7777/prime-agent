@@ -131,7 +131,7 @@ function leafIdAfterEntry(entry: SessionTreeEntry): string | null {
 function headerToSessionMetadata(header: SessionHeader, path: string): JsonlSessionMetadata {
 	return {
 		id: header.id,
-		createdAt: header.timestamp,
+		createdAt: new Date(header.timestamp).getTime(),
 		cwd: header.cwd,
 		path,
 		parentSessionPath: header.parentSession,

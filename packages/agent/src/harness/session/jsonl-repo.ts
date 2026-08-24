@@ -62,11 +62,11 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 		);
 	}
 
-	private async createSessionFilePath(cwd: string, sessionId: string, timestamp: string): Promise<string> {
+	private async createSessionFilePath(cwd: string, sessionId: string, timestamp: number): Promise<string> {
 		return getFileSystemResultOrThrow(
 			await this.fs.joinPath([
 				await this.getSessionDir(cwd),
-				`${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`,
+				`${new Date(timestamp).toISOString().replace(/[:.]/g, "-")}_${sessionId}.jsonl`,
 			]),
 			`Failed to resolve session file path for ${sessionId}`,
 		);

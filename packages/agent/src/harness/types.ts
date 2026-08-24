@@ -439,7 +439,8 @@ export interface SessionContext {
 
 export interface SessionMetadata {
 	id: string;
-	createdAt: string;
+	createdAt: number;
+	parentSessionId?: string;
 }
 
 export interface JsonlSessionMetadata extends SessionMetadata {
