@@ -1566,6 +1566,52 @@ export class ModelRegistry {
 			});
 		}
 	}
+
+	/**
+	 * Earendil-compatible: get provider auth (API key + base URL).
+	 * Returns undefined when the provider is not configured.
+	 */
+	async getProviderAuth(providerId: string): Promise<
+		| {
+				auth: { apiKey: string; baseUrl?: string };
+				env?: Record<string, string | undefined>;
+		  }
+		| undefined
+	> {
+		const apiKey = await this.authStorage.getApiKey(providerId);
+		if (!apiKey) return undefined;
+		const model = this.getAll().find((m) => m.provider === providerId);
+		return {
+			auth: { apiKey, baseUrl: model?.baseUrl },
+		};
+	}
+
+	/**
+	 * Earendil-compatible: async scoped refresh.
+	 * Wraps PI's sync refresh() in a Promise and optionally scopes to specific providers.
+	 */
+	async refreshAsync(options?: {
+		providers?: string[];
+		signal?: AbortSignal;
+	}): Promise<{ aborted: boolean; errors: Map<string, Error> }> {
+		const errors = new Map<string, Error>();
+		try {
+			if (options?.signal?.aborted) {
+				return { aborted: true, errors };
+			}
+			this.refresh();
+			if (options?.providers?.length) {
+				await this.refreshAvailableModels();
+			}
+		} catch (error) {
+			if (options?.providers) {
+				for (const p of options.providers) {
+					errors.set(p, error as Error);
+				}
+			}
+		}
+		return { aborted: options?.signal?.aborted ?? false, errors };
+	}
 }
 
 /**
