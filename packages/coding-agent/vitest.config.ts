@@ -26,6 +26,7 @@ export default defineConfig({
 		// booting real kernels in one shard starve the neighbouring kernel tests that
 		// rely on the 30s default timeout. `test:kernel` runs them on their own.
 		tagsFilter: ["!process-stress", "!kernel-heavy"],
+		exclude: ["**/.earendil/**"],
 		server: {
 			deps: {
 				external: [/@silvia-odwyer\/photon-node/],
