@@ -1,4 +1,4 @@
-import type { ImageContent, Model, SimpleStreamOptions, TextContent, Transport } from "@earendil-works/pi-ai";
+import type { ImageContent, Model, Models, SimpleStreamOptions, TextContent, Transport } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "typebox";
 import type {
 	AgentEvent,
@@ -552,6 +552,8 @@ export interface ContextEvent {
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
 	model: Model<any>;
+	/** Mutable model store for provider resolution. */
+	models?: Models;
 	sessionId: string;
 	streamOptions: AgentHarnessStreamOptions;
 }
@@ -559,6 +561,8 @@ export interface BeforeProviderRequestEvent {
 export interface BeforeProviderPayloadEvent {
 	type: "before_provider_payload";
 	model: Model<any>;
+	/** Mutable model store for provider resolution. */
+	models?: Models;
 	payload: unknown;
 }
 
@@ -616,6 +620,8 @@ export interface SessionTreeEvent {
 export interface ModelUpdateEvent {
 	type: "model_update";
 	model: Model<any>;
+	/** Mutable model store for provider resolution. */
+	models?: Models;
 	previousModel: Model<any> | undefined;
 	source: "set" | "restore";
 }
@@ -794,6 +800,8 @@ export interface TreePreparation {
 
 export interface GenerateBranchSummaryOptions {
 	model: Model<any>;
+	/** Mutable model store for provider resolution. */
+	models?: Models;
 	apiKey: string;
 	headers?: Record<string, string>;
 	signal: AbortSignal;
@@ -827,6 +835,8 @@ export interface AgentHarnessOptions<
 				env: ExecutionEnv;
 				session: Session;
 				model: Model<any>;
+				/** Mutable model store for provider resolution. */
+				models?: Models;
 				thinkingLevel: ThinkingLevel;
 				activeTools: TTool[];
 				resources: AgentHarnessResources<TSkill, TPromptTemplate>;
@@ -837,6 +847,8 @@ export interface AgentHarnessOptions<
 	/** Curated stream/provider request options. Snapshotted at turn start. */
 	streamOptions?: AgentHarnessStreamOptions;
 	model: Model<any>;
+	/** Mutable model store for provider resolution. */
+	models?: Models;
 	thinkingLevel?: ThinkingLevel;
 	activeToolNames?: string[];
 	steeringMode?: QueueMode;

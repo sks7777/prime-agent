@@ -103,3 +103,29 @@ export function modelsAreEqual<TApi extends Api>(
 	if (!a || !b) return false;
 	return a.id === b.id && a.provider === b.provider;
 }
+
+// Lightweight mutable model store for testing (fauxProvider adapter)
+export interface Models {
+	getProviders(): readonly { id: string; name?: string }[];
+	getModels(provider?: string): readonly Model<Api>[];
+	getModel(provider: string, id: string): Model<Api> | undefined;
+	addProvider(provider: { id: string; name?: string }): void;
+	addModel(model: Model<Api>): void;
+}
+
+export function createModels(): Models {
+	const providers: { id: string; name?: string }[] = [];
+	const models: Model<Api>[] = [];
+
+	return {
+		getProviders: () => providers,
+		getModels: (provider?: string) => (provider ? models.filter((m) => m.provider === provider) : models),
+		getModel: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
+		addProvider: (p) => {
+			if (!providers.find((x) => x.id === p.id)) providers.push(p);
+		},
+		addModel: (m) => {
+			if (!models.find((x) => x.provider === m.provider && x.id === m.id)) models.push(m);
+		},
+	};
+}

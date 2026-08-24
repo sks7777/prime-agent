@@ -497,3 +497,41 @@ export function registerFauxProvider(options: RegisterFauxProviderOptions = {}):
 		},
 	};
 }
+
+// Adapter: earendil-compatible fauxProvider API
+
+export interface FauxProviderState {
+	callCount: number;
+	deferredFetchCount: number;
+	cancelledDeferred: unknown[];
+}
+
+export interface FauxProviderHandle {
+	provider: { id: string };
+	api: string;
+	models: [Model<string>, ...Model<string>[]];
+	getModel(): Model<string>;
+	getModel(modelId: string): Model<string> | undefined;
+	state: FauxProviderState;
+	setResponses: (responses: FauxResponseStep[]) => void;
+	appendResponses: (responses: FauxResponseStep[]) => void;
+	getPendingResponseCount: () => number;
+}
+
+export function fauxProvider(options: RegisterFauxProviderOptions = {}): FauxProviderHandle {
+	const reg = registerFauxProvider(options);
+	return {
+		provider: { id: options.provider ?? DEFAULT_PROVIDER },
+		api: reg.api,
+		models: reg.models,
+		getModel: reg.getModel,
+		state: {
+			callCount: 0,
+			deferredFetchCount: 0,
+			cancelledDeferred: [],
+		},
+		setResponses: reg.setResponses,
+		appendResponses: reg.appendResponses,
+		getPendingResponseCount: reg.getPendingResponseCount,
+	};
+}
