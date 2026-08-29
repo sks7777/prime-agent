@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { Input } from "./components/input.js";
 import type { Component, Focusable } from "./tui.js";
 import { getGraphemeSegmenter, stripTerminalSequences, truncateToWidth, visibleWidth } from "./utils.js";

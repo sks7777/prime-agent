@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getWordSegmenter, isWhitespaceChar, PUNCTUATION_REGEX } from "./utils.js";
 
 const wordSegmenter = getWordSegmenter();

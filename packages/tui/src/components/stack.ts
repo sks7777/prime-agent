@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { LAYOUT_NODE, type LayoutViewport, type StackLayoutEntry, type StackLayoutNode } from "../layout-node.js";
 import { type Component, Container } from "../tui.js";
 

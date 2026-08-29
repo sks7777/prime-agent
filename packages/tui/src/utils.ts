@@ -895,7 +895,7 @@ function wrapSingleLine(line: string, width: number): string[] {
 	return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
 }
 
-const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
 // Fast path for the common CSI form. The shared scanner handles the wider CSI
 // grammar, control strings, malformed sequences, and ordinary two-byte escapes.
 const COMMON_CSI_REGEX = /\x1b\[[0-9;:?<=>]*[\x40-\x7e]/g;
@@ -1379,4 +1379,87 @@ export function extractSegments(
 	}
 
 	return { before, beforeWidth, after, afterWidth };
+}
+
+// Earendil-compatible helpers for alt-screen rendering
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+
+export interface GraphemeCellRange {
+	start: number;
+	end: number;
+}
+
+export function getGraphemeCellRange(line: string, column: number): GraphemeCellRange | undefined {
+	let currentCol = 0;
+	let i = 0;
+	while (i < line.length) {
+		const ansi = extractAnsiCode(line, i);
+		if (ansi) {
+			i += ansi.length;
+			continue;
+		}
+		let textEnd = i;
+		while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
+		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
+			const width = graphemeWidth(segment);
+			if (width > 0 && column >= currentCol && column < currentCol + width) {
+				return { start: currentCol, end: currentCol + width };
+			}
+			currentCol += width;
+		}
+		i = textEnd;
+	}
+	return undefined;
+}
+
+export function getOsc8LinkAtColumn(line: string, column: number): string | undefined {
+	let activeUrl: string | undefined;
+	let currentCol = 0;
+	let i = 0;
+	while (i < line.length) {
+		const ansi = extractAnsiCode(line, i);
+		if (ansi) {
+			const hyperlink = /^\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)$/.exec(ansi.code);
+			if (hyperlink) activeUrl = hyperlink[1] || undefined;
+			i += ansi.length;
+			continue;
+		}
+		let textEnd = i;
+		while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
+		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
+			const width = segment === "\t" ? 3 : graphemeWidth(segment);
+			if (column >= currentCol && column < currentCol + width) return activeUrl;
+			currentCol += width;
+		}
+		i = textEnd;
+	}
+	return undefined;
+}
+
+export function getWordSegmenter(): Intl.Segmenter {
+	return wordSegmenter;
+}
+
+export function stripTerminalSequences(str: string): string {
+	if (!str.includes("\x1b")) return str;
+	let result = "";
+	let i = 0;
+	while (i < str.length) {
+		const ansi = extractAnsiCode(str, i);
+		if (ansi) {
+			i += ansi.length;
+			continue;
+		}
+		result += str[i];
+		i++;
+	}
+	return result;
+}
+
+export const cjkBreakRegex =
+	/[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]/u;
+export function getGraphemeSegmenter(): Intl.Segmenter {
+	return graphemeSegmenter;
 }

@@ -40,6 +40,21 @@ export interface Keybindings {
 	"tui.select.pageDown": true;
 	"tui.select.confirm": true;
 	"tui.select.cancel": true;
+	// Alternate-screen viewport navigation
+	"tui.altScreen.pageUp": true;
+	"tui.altScreen.pageDown": true;
+	"tui.altScreen.halfPageUp": true;
+	"tui.altScreen.halfPageDown": true;
+	"tui.altScreen.lineUp": true;
+	"tui.altScreen.lineDown": true;
+	"tui.altScreen.previousPrompt": true;
+	"tui.altScreen.nextPrompt": true;
+	"tui.altScreen.search": true;
+	"tui.altScreen.searchNext": true;
+	"tui.altScreen.searchPrevious": true;
+	"tui.altScreen.searchClose": true;
+	"tui.altScreen.top": true;
+	"tui.altScreen.bottom": true;
 }
 
 export type Keybinding = keyof Keybindings;

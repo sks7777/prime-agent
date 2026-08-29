@@ -133,4 +133,14 @@ export {
 	TUI,
 	type TuiStopOptions,
 } from "./tui.js";
+export {
+	compositeTuiLine,
+	isViewportTUI,
+	TuiBase,
+	type TuiInputListener,
+	type TuiInputListenerResult,
+	type TuiMode,
+	VIEWPORT_TUI,
+	type ViewportTUI,
+} from "./tui-base.js";
 export { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "./utils.js";

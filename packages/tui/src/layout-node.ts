@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { Component } from "./tui.js";
 
 export const LAYOUT_NODE = Symbol.for("@earendil-works/pi-tui/layout-node");

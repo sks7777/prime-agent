@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { allocateStackSizes, Stack, type StackChild, type StackOptions, visibleStackEntries } from "./stack.js";
 
 export class VStack extends Stack {

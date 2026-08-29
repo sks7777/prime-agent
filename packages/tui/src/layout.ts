@@ -1,9 +1,9 @@
-// @ts-nocheck
 import type { ScrollView } from "./components/scroll-view.js";
 import { allocateStackSizes, visibleStackEntries } from "./components/stack.js";
 import { getLayoutNode } from "./layout-node.js";
 import { cropKittyImageLine, getKittyImageMetadata, isImageLine } from "./terminal-image.js";
-import { type Component, CURSOR_MARKER, compositeTuiLine } from "./tui.js";
+import { type Component, CURSOR_MARKER } from "./tui.js";
+import { compositeTuiLine } from "./tui-base.js";
 import { extractAnsiCode, getGraphemeCellRange, sliceByColumn, visibleWidth } from "./utils.js";
 
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;

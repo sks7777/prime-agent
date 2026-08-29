@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { compositeTuiLine } from "../tui.js";
+import { compositeTuiLine } from "../tui-base.js";
 import { visibleWidth } from "../utils.js";
 import { allocateStackSizes, Stack, type StackChild, type StackOptions, visibleStackEntries } from "./stack.js";
 

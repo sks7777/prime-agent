@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
 	AltScreenSearchComponent,
 	type AltScreenSearchMatch,
@@ -29,16 +28,8 @@ import {
 	setCapabilities,
 	type TerminalCapabilities,
 } from "./terminal-image.js";
-import {
-	type Component,
-	CURSOR_MARKER,
-	compositeTuiLine,
-	type OverlayHandle,
-	TuiBase,
-	type TuiStopOptions,
-	VIEWPORT_TUI,
-	type ViewportTUI,
-} from "./tui.js";
+import { type Component, CURSOR_MARKER, type OverlayHandle, type TuiStopOptions } from "./tui.js";
+import { compositeTuiLine, TuiBase, VIEWPORT_TUI, type ViewportTUI } from "./tui-base.js";
 import {
 	extractAnsiCode,
 	getGraphemeCellRange,
@@ -184,8 +175,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private selectionInitialRange?: SelectionRange;
 	private lastClick?: ClickTarget;
 	private selectionDragPointer?: { x: number; y: number };
-	private selectionAutoScrollDirection: -1 | 0 | 1 = 0;
-	private selectionAutoScrollTimer?: NodeJS.Timeout;
+	private altSelectionAutoScrollDirection: -1 | 0 | 1 = 0;
+	private altSelectionAutoScrollTimer?: NodeJS.Timeout;
 	private selectionPressActive = false;
 	private scrollbarDrag?: ScrollbarDrag;
 	private scrollbarHover?: ScrollView;
@@ -198,7 +189,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
-	private readonly copySelection?: (text: string) => Promise<boolean>;
+	private readonly onCopySelection?: (text: string) => Promise<boolean>;
 
 	constructor(
 		terminal: Terminal,
@@ -221,7 +212,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
-		this.copySelection = options.copySelection;
+		this.onCopySelection = options.copySelection;
 		this.addInputListener((data) => this.handleViewportInput(data));
 	}
 
@@ -253,7 +244,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStart(): void {
-		this.stopSelectionAutoScroll();
+		this.stopAltSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
 		this.stopScrollbarDrag();
@@ -294,14 +285,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override beforeTerminalStop(_options: TuiStopOptions): void {
 		this.closeSearch();
-		this.stopSelectionAutoScroll();
+		this.stopAltSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
 		this.stopScrollbarDrag();
 		this.flashes.dispose();
 		if (!this.altScreenActive) return;
 		this.terminal.write(
-			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
+			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteAltKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
 		);
 		this.uploadedKittyImages.clear();
 	}
@@ -331,7 +322,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
-	private deleteKittyImages(): string {
+	private deleteAltKittyImages(): string {
 		return this.imageProtocol === "kitty" ? deleteAllKittyImages() : "";
 	}
 
@@ -542,7 +533,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const hadActiveSelection = this.selectionPressActive;
 			const hadNonEmptyActiveSelection = hadActiveSelection && this.getSelectionBounds() !== undefined;
 			this.selectionPressActive = false;
-			this.stopSelectionAutoScroll();
+			this.stopAltSelectionAutoScroll();
 			this.stopScrollbarHover();
 			this.stopScrollbarDrag();
 			this.pressedUrl = undefined;
@@ -765,7 +756,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (event.release || (event.button & 32) !== 0 || (event.button & 3) !== 0) return false;
 		const target = this.getScrollbarTargetAt(event.x, event.y);
 		if (!target) return false;
-		this.stopSelectionAutoScroll();
+		this.stopAltSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.selectionAnchor = undefined;
 		this.selectionFocus = undefined;
@@ -894,15 +885,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return count;
 	}
 
-	private updateSelectionAutoScroll(event: SgrMouseEvent): void {
+	private updateAltSelectionAutoScroll(event: SgrMouseEvent): void {
 		const scrollView = this.selectionAnchor?.scrollView;
 		if (!scrollView || !this.currentLayout) {
-			this.stopSelectionAutoScroll();
+			this.stopAltSelectionAutoScroll();
 			return;
 		}
 		const box = getScrollViewBox(this.currentLayout, scrollView);
 		if (!box || box.rect.height <= 0 || box.clip.height <= 0) {
-			this.stopSelectionAutoScroll();
+			this.stopAltSelectionAutoScroll();
 			return;
 		}
 		const visibleTop = Math.max(0, box.rect.y, box.clip.y);
@@ -912,27 +903,27 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			box.clip.y + box.clip.height - 1,
 		);
 		this.selectionDragPointer = { x: event.x, y: event.y };
-		this.selectionAutoScrollDirection = event.y <= visibleTop ? -1 : event.y >= visibleBottom ? 1 : 0;
-		if (this.selectionAutoScrollDirection === 0) {
-			this.stopSelectionAutoScroll();
+		this.altSelectionAutoScrollDirection = event.y <= visibleTop ? -1 : event.y >= visibleBottom ? 1 : 0;
+		if (this.altSelectionAutoScrollDirection === 0) {
+			this.stopAltSelectionAutoScroll();
 			return;
 		}
-		if (this.selectionAutoScrollTimer) return;
-		this.selectionAutoScrollTimer = setInterval(() => this.autoScrollSelection(), 50);
-		this.selectionAutoScrollTimer.unref();
+		if (this.altSelectionAutoScrollTimer) return;
+		this.altSelectionAutoScrollTimer = setInterval(() => this.autoScrollSelection(), 50);
+		this.altSelectionAutoScrollTimer.unref();
 	}
 
 	private autoScrollSelection(): void {
 		const scrollView = this.selectionAnchor?.scrollView;
 		const pointer = this.selectionDragPointer;
-		const direction = this.selectionAutoScrollDirection;
+		const direction = this.altSelectionAutoScrollDirection;
 		if (!scrollView || !pointer || direction === 0) {
-			this.stopSelectionAutoScroll();
+			this.stopAltSelectionAutoScroll();
 			return;
 		}
 		const remaining = scrollView.scrollBy(direction);
 		if (remaining === direction) {
-			this.stopSelectionAutoScroll();
+			this.stopAltSelectionAutoScroll();
 			return;
 		}
 		const point = this.getScrollSelectionPoint(scrollView, pointer.x, pointer.y);
@@ -940,12 +931,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.requestRender();
 	}
 
-	private stopSelectionAutoScroll(): void {
-		if (this.selectionAutoScrollTimer) {
-			clearInterval(this.selectionAutoScrollTimer);
-			this.selectionAutoScrollTimer = undefined;
+	private stopAltSelectionAutoScroll(): void {
+		if (this.altSelectionAutoScrollTimer) {
+			clearInterval(this.altSelectionAutoScrollTimer);
+			this.altSelectionAutoScrollTimer = undefined;
 		}
-		this.selectionAutoScrollDirection = 0;
+		this.altSelectionAutoScrollDirection = 0;
 		this.selectionDragPointer = undefined;
 	}
 
@@ -957,7 +948,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (event.release) {
 			if (!this.selectionPressActive) return;
 			this.selectionPressActive = false;
-			this.stopSelectionAutoScroll();
+			this.stopAltSelectionAutoScroll();
 			if (!this.selectionAnchor) return;
 			this.updateSelectionFocus(point);
 			const clickedUrl =
@@ -989,11 +980,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.lastClick = undefined;
 			this.pressedUrl = undefined;
 			this.updateSelectionFocus(point);
-			this.updateSelectionAutoScroll(event);
+			this.updateAltSelectionAutoScroll(event);
 			this.requestRender();
 			return;
 		}
-		this.stopSelectionAutoScroll();
+		this.stopAltSelectionAutoScroll();
 		this.selectionPressActive = true;
 		const scrollView =
 			!this.hasOverlay() && this.currentLayout
@@ -1081,8 +1072,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		// verified success path) when the host app provides one. A bare OSC 52 write can show
 		// "Copied!" while leaving the system clipboard untouched (e.g. macOS Terminal.app, tmux
 		// without OSC 52 clipboard passthrough), so only report success when it actually copies.
-		if (this.copySelection) {
-			const ok = await this.copySelection(text);
+		if (this.onCopySelection) {
+			const ok = await this.onCopySelection(text);
 			this.flash(ok ? "Copied!" : "Copy failed");
 			return;
 		}
@@ -1285,7 +1276,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const clearImages =
 				this.imageProtocol === "kitty" && hadUploadedKittyImages
 					? deleteAllKittyPlacements()
-					: this.deleteKittyImages();
+					: this.deleteAltKittyImages();
 			buffer += `${clearImages}\x1b[2J`;
 		} else if (imagesNeedRedraw) {
 			if (this.imageProtocol === "iterm2") buffer += "\x1b[2J";
