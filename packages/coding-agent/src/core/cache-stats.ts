@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "./session-manager.js";
 

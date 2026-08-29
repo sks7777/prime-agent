@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Immutable, credential-blind models.json snapshot. */
 
 import { readFile } from "node:fs/promises";

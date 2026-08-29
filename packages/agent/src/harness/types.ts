@@ -1,4 +1,12 @@
-import type { ImageContent, Model, Models, SimpleStreamOptions, TextContent, Transport } from "@earendil-works/pi-ai";
+import type {
+	ImageContent,
+	Model,
+	Models,
+	SimpleStreamOptions,
+	TextContent,
+	Transport,
+	Usage,
+} from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "typebox";
 import type {
 	AgentEvent,
@@ -376,6 +384,7 @@ export interface CompactionEntry<T = unknown> extends SessionTreeEntryBase {
 	firstKeptEntryId: string;
 	tokensBefore: number;
 	details?: T;
+	usage?: Usage;
 	fromHook?: boolean;
 }
 
@@ -385,6 +394,7 @@ export interface BranchSummaryEntry<T = unknown> extends SessionTreeEntryBase {
 	summary: string;
 	details?: T;
 	fromHook?: boolean;
+	usage?: Usage;
 }
 
 export interface CustomEntry<T = unknown> extends SessionTreeEntryBase {

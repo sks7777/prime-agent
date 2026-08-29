@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
 /** Async credential store overlay for non-persistent runtime API keys. */

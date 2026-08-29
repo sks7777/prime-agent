@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { Usage } from "@earendil-works/pi-ai/compat";
 import type { SessionEntry } from "./session-manager.js";
 

@@ -257,6 +257,8 @@ export interface AssistantMessage {
 export interface ToolResultMessage<TDetails = any> {
 	/** Tool names added by the provider. */
 	addedToolNames?: string[];
+	/** Usage reported by the provider for the tool result. */
+	usage?: Usage;
 	role: "toolResult";
 	toolCallId: string;
 	toolName: string;

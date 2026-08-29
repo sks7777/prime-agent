@@ -1,4 +1,3 @@
-// @ts-nocheck
 const PREFER_STRICT_TOOL_SAMPLING = { type: "json_schema", strict: "prefer" } as const;
 
 export function areExperimentalFeaturesEnabled(): boolean {
