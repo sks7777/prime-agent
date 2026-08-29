@@ -88,3 +88,18 @@ export function resolveReadPath(filePath: string, cwd: string): string {
 
 	return resolved;
 }
+
+// Earendil-compatible async helpers
+
+export async function pathExists(filePath: string): Promise<boolean> {
+	try {
+		accessSync(filePath, constants.F_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function resolveReadPathAsync(filePath: string, cwd: string): Promise<string> {
+	return resolveReadPath(filePath, cwd);
+}

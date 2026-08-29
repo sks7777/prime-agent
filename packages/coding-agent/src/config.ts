@@ -634,3 +634,8 @@ export function getSessionDirEnvOverride(): string | undefined {
 export function getDebugLogPath(): string {
 	return join(getAgentDir(), `${APP_NAME}-debug.log`);
 }
+
+/** Get path to README.md */
+export function getReadmePath(): string {
+	return join(getPackageDir(), "README.md");
+}

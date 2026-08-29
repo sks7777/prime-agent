@@ -1,4 +1,5 @@
 import * as os from "node:os";
+import { resolve as resolvePath } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { getImageDimensions, imageFallback } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
@@ -65,4 +66,27 @@ export type ToolRenderResultLike<TDetails> = {
 
 export function invalidArgText(theme: { fg: (name: any, text: string) => string }): string {
 	return theme.fg("error", "[invalid arg]");
+}
+
+// Earendil-compatible render helpers
+
+export function normalizeDisplayText(text: string): string {
+	return text.replace(/\r/g, "");
+}
+
+export function linkPath(styledText: string, rawPath: string, cwd: string): string {
+	const absolutePath = resolvePath(rawPath, cwd);
+	return `\x1b]8;;file://${absolutePath}\x07${styledText}\x1b]8;;\x07`;
+}
+
+export function renderToolPath(
+	rawPath: string | null,
+	theme: { fg: (name: any, text: string) => string },
+	cwd: string,
+	options?: { emptyFallback?: string },
+): string {
+	if (rawPath === null) return invalidArgText(theme);
+	const value = rawPath || options?.emptyFallback;
+	if (!value) return theme.fg("toolOutput", "...");
+	return linkPath(theme.fg("accent", shortenPath(value)), value, cwd);
 }

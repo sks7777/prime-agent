@@ -273,7 +273,7 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 import type { TSchema } from "typebox";
 
 export interface Tool<TParameters extends TSchema = TSchema> {
-	constrainedSampling?: unknown;
+	constrainedSampling?: false | ConstrainedSamplingConfig;
 	name: string;
 	description: string;
 	parameters: TParameters;
@@ -557,3 +557,13 @@ export type ProviderEnv = Record<string, string | undefined>;
 export type ProviderHeaders = Record<string, string | null>;
 
 export type FetchFunction = typeof globalThis.fetch;
+
+export type ConstrainedSamplingConfig =
+	| {
+			type: "json_schema";
+			strict: "prefer" | "require";
+	  }
+	| {
+			type: "grammar";
+			variants: Record<string, string>;
+	  };
