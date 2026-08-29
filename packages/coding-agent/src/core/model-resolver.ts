@@ -346,9 +346,11 @@ export interface ResolveCliModelResult {
 export function resolveCliModel(options: {
 	cliProvider?: string;
 	cliModel?: string;
-	modelRegistry: ModelRegistry;
+	modelRegistry?: ModelRegistry;
+	modelRuntime?: { getAll(): readonly Model<Api>[] };
 }): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRegistry } = options;
+	const { cliProvider, cliModel } = options;
+	const allModels: Model<Api>[] = [...(options.modelRegistry?.getAll() ?? options.modelRuntime?.getAll() ?? [])];
 
 	if (!cliModel) {
 		return { model: undefined, warning: undefined, error: undefined };
@@ -356,7 +358,7 @@ export function resolveCliModel(options: {
 
 	// Important: use *all* models here, not just models with pre-configured auth.
 	// This allows "--api-key" to be used for first-time setup.
-	const availableModels = modelRegistry.getAll();
+	const availableModels = allModels;
 	if (availableModels.length === 0) {
 		return {
 			model: undefined,

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { SettingsManager } from "./settings-manager.js";
 import { isInstallTelemetryEnabled } from "./telemetry.js";

@@ -795,3 +795,14 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 		await sink.flush();
 	});
 }
+
+export function isInstallTelemetryEnabled(
+	settingsManager: SettingsManager,
+	telemetryEnv: string | undefined = process.env.PI_TELEMETRY,
+): boolean {
+	if (telemetryEnv !== undefined) {
+		const flag = telemetryEnv.toLowerCase();
+		return flag === "1" || flag === "true" || flag === "yes";
+	}
+	return isTelemetryEnabled(settingsManager);
+}

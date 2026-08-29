@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { CredentialStore } from "@earendil-works/pi-ai";
 import { resolveCliModel } from "../core/model-resolver.js";
 import { ModelRuntime } from "../core/model-runtime.js";

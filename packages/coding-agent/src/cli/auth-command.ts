@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AuthResult } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.js";
 import type { Args } from "./args.js";

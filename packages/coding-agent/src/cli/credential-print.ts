@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { Api, CredentialInfo, Model } from "@earendil-works/pi-ai";
 import { resolveCliModel } from "../core/model-resolver.js";
 import type { ModelRuntime } from "../core/model-runtime.js";
@@ -29,24 +28,26 @@ export async function resolveCredentialForPrint(
 	const providers: Array<{ id: string; model?: Model<Api> }> = [];
 	if (cliProvider) {
 		const provider = modelRuntime.getProvider(cliProvider);
-		if (!provider) {
+		const providerId = provider as string;
+		if (!providerId) {
 			throw new AuthCommandError(`Unknown provider "${cliProvider}". Use --list-models to see available providers.`);
 		}
 		if (cliModel) {
-			const resolved = resolveCliModel({ cliProvider: provider.id, cliModel, modelRuntime });
+			const resolved = resolveCliModel({ cliProvider: providerId, cliModel, modelRuntime });
 			if (resolved.error || !resolved.model) {
 				throw new AuthCommandError(resolved.error ?? "Unable to resolve the requested provider/model");
 			}
-			providers.push({ id: provider.id, model: resolved.model });
+			providers.push({ id: providerId, model: resolved.model });
 		} else {
-			providers.push({ id: provider.id });
+			providers.push({ id: providerId });
 		}
 	} else {
 		for (const provider of modelRuntime.getProviders()) {
-			if (!credentialTypes.has(provider.id)) continue;
-			const resolved = resolveCliModel({ cliProvider: provider.id, cliModel: cliModel!, modelRuntime });
+			const providerId = provider as string;
+			if (!credentialTypes.has(providerId)) continue;
+			const resolved = resolveCliModel({ cliProvider: providerId, cliModel: cliModel!, modelRuntime });
 			if (resolved.model && !resolved.error && !resolved.warning?.includes("Using custom model id")) {
-				providers.push({ id: provider.id, model: resolved.model });
+				providers.push({ id: providerId, model: resolved.model });
 			}
 		}
 		if (providers.length === 0) {

@@ -390,6 +390,10 @@ export class ModelRuntime implements Models {
 		return this.models.getProvider(providerId);
 	}
 
+	getAll(): readonly Model<Api>[] {
+		return this.getModels();
+	}
+
 	getModels(providerId?: string): readonly Model<Api>[] {
 		return this.models.getModels(providerId);
 	}

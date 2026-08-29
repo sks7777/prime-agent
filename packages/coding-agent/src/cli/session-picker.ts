@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * TUI session selector for --resume flag
  */
