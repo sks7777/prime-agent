@@ -1440,3 +1440,11 @@ export interface ExtensionError {
 	error: string;
 	stack?: string;
 }
+
+export interface MarkdownTransformContext {
+	messageType: "user" | "assistant" | "assistant-thinking";
+	isStreaming: boolean;
+	availableWidth: number;
+}
+
+export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;

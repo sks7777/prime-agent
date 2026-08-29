@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { type Component, Loader, type TUI } from "@earendil-works/pi-tui";
 import type { WorkingIndicatorOptions } from "../../../core/extensions/index.js";
 import { theme } from "../theme/theme.js";

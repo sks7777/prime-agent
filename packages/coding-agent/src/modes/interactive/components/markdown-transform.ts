@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { MarkdownTransformContext, MarkdownTransformer } from "../../../core/extensions/types.js";
 
 export function createMarkdownTransform(

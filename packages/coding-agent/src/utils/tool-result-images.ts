@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { processImage } from "./image-process.js";
 

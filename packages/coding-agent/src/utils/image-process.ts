@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { convertImageBytesToPng } from "./image-convert.js";
 import { formatDimensionNote, type ImageResizeOptions, resizeImage } from "./image-resize.js";
 
@@ -85,7 +84,10 @@ export async function processImage(
 	}
 
 	if (autoResizeImages) {
-		const resized = await resizeImage(normalized.bytes, normalized.mimeType, options?.resizeOptions);
+		const resized = await resizeImage(
+			{ type: "image", data: Buffer.from(normalized.bytes).toString("base64"), mimeType: normalized.mimeType },
+			options?.resizeOptions,
+		);
 		if (!resized) {
 			return {
 				ok: false,
