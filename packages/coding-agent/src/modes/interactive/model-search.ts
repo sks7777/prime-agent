@@ -1,4 +1,3 @@
-// @ts-nocheck
 export interface ModelSearchItem {
 	id: string;
 	provider: string;
