@@ -8,7 +8,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { VERSION } from "../../config.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
-import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
+import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
 import type {
 	AgentConnection,
@@ -1093,5 +1093,6 @@ export async function runAcpModeWithConnection(
 	// Only the real stdio entrypoint owns the process; a caller-supplied transport
 	// (tests, embedding) must never have its host exited from under it.
 	if (options.stream) return undefined as never;
+	await flushRawStdout();
 	return process.exit(0) as never;
 }
