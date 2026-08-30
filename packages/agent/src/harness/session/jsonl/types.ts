@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { FileSystem } from "../../types.js";
 import type { JsonValue, SessionCreateOptions, SessionMetadata } from "../types.js";
 

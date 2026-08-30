@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { FileError, Result } from "../../types.js";
 import { SessionError } from "../types.js";
 

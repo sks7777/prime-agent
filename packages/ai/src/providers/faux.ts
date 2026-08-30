@@ -383,6 +383,7 @@ async function streamWithDeltas(
 		stream.end(message);
 		return;
 	}
+	if (message.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 	stream.push({ type: "done", reason: message.stopReason, message });
 	stream.end(message);

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { assertJsonSerializable, Session } from "../session.js";
 import { type ForkOptions, SessionError, type SessionRepo } from "../types.js";

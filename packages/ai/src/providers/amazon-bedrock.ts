@@ -259,6 +259,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 			if (output.stopReason === "error" || output.stopReason === "aborted") {
 				throw streamFailureFromStopReason(output.stopReasonRaw, { requestId });
 			}
+			if (output.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();

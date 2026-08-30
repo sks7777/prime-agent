@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AssistantMessage, DeferredHandle, StopReason } from "@earendil-works/pi-ai";
 import { Guard } from "typebox/guard";
 import type { AgentMessage, AgentToolCall, ThinkingLevel } from "../types.js";

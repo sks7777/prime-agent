@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { SessionRepo } from "../types.js";
 
 /** A fresh backend instance owned by one conformance case. */

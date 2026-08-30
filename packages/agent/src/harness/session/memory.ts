@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { Session } from "./session.js";
 import { SessionState } from "./state.js";

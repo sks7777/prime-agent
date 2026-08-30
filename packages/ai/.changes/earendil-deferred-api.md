@@ -1,0 +1,3 @@
+- Added the `./providers/all` subpath export for the builtin provider catalog.
+- Added deferred-response types (`DeferredHandle`, deferred `StopReason`) and `Models.completeSimple` for harness-driven summarization.
+- Re-exported `retryAssistantCall` and `contentText` utilities from the package root.

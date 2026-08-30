@@ -1,4 +1,3 @@
-// @ts-nocheck
 export { createSessionBackendConformance } from "./conformance.js";
 export type {
 	SessionBackendConformanceCase,

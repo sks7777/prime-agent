@@ -155,6 +155,8 @@ export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 export interface SimpleStreamOptions extends StreamOptions {
 	/** Explicit model reasoning selection. Omit to preserve the provider default. */
 	reasoning?: ModelThinkingLevel;
+	/** Ask a capable provider to return a durable handle and continue the request asynchronously. */
+	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
 }
@@ -228,7 +230,21 @@ export interface Usage {
 	};
 }
 
-export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted";
+export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted" | "deferred";
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+export interface DeferredHandle {
+	provider: string;
+	modelId: string;
+	api: string;
+	/** Provider token, such as a response id or batch id plus row id. */
+	id: string;
+	expiresAt?: number;
+	pollAfterMs?: number;
+	/** Provider conversion data required to reconstruct the final assistant message. */
+	data?: JsonValue;
+}
 
 export interface UserMessage {
 	role: "user";
@@ -249,6 +265,7 @@ export interface AssistantMessage {
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
+	deferred?: DeferredHandle;
 	stopReasonRaw?: string; // Provider's raw stop/finish reason when it mapped to "error" (e.g. "refusal", "SAFETY")
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
@@ -304,7 +321,11 @@ export type AssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
-	| { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse" | "pending">; message: AssistantMessage }
+	| {
+			type: "done";
+			reason: Extract<StopReason, "stop" | "length" | "toolUse" | "deferred">;
+			message: AssistantMessage;
+	  }
 	| { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
 
 /**

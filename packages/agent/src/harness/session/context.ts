@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { AgentMessage } from "../../types.js";
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "../messages.js";
 import type { CompactionEntry, CustomEntry, Entry } from "./types.js";

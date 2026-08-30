@@ -719,6 +719,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw streamFailureFromStopReason(output.stopReasonRaw, { requestId });
 			}
+			if (output.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();

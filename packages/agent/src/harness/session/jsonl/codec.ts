@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { err, ok, type Result } from "../../types.js";
 import type { SessionMutation } from "../state.js";
 import type { Entry, LaneRecord } from "../types.js";

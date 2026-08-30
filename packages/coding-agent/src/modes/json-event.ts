@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 

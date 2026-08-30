@@ -278,6 +278,7 @@ export const streamGoogleVertex: StreamFunction<"google-vertex", GoogleVertexOpt
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw streamFailureFromStopReason(output.stopReasonRaw);
 			}
+			if (output.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();

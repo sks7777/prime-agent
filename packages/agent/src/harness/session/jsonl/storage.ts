@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { type SessionMutation, SessionState } from "../state.js";
 import {
 	type BranchBounds,
