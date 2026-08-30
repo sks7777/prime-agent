@@ -116,6 +116,10 @@ function runProcessQuery(command: string, args: string[]): string {
 	return execFileSync(command, args, {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		// Process start times must parse identically in every process lineage:
+		// localized `ps` output (e.g. ru_RU date formats) breaks owner-record
+		// identity comparison and can make live supervisors appear stale.
+		env: { ...process.env, LC_ALL: "C", LANG: "C" },
 	});
 }
 

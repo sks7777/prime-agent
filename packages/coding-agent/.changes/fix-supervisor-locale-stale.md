@@ -1,0 +1,1 @@
+- Fixed daemon supervisor generation checks failing on non-English locales by forcing C locale in process start time queries.
