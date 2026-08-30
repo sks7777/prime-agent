@@ -46,6 +46,8 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 	return {
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+		supportsOpenAIGrammarTools: (model.compat as any)?.supportsOpenAIGrammarTools ?? false,
+		supportsStrictMode: (model.compat as any)?.supportsStrictMode ?? true,
 	};
 }
 
@@ -101,7 +103,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+				maxRetries: options?.maxRetries ?? 0,
 			};
 			const { data: openaiStream, response } = await client.responses.create(params, requestOptions).withResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -120,6 +122,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw streamFailureFromStopReason(output.stopReasonRaw, { requestId });
 			}
+			if (output.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();

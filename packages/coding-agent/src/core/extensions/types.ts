@@ -19,6 +19,7 @@ import type {
 	Api,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	ConstrainedSamplingConfig,
 	Context,
 	ImageContent,
 	Model,
@@ -424,6 +425,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
+	/** Optional provider-side constrained sampling request for this tool. Set false to explicitly disable it, equivalent to leaving it undefined. */
+	constrainedSampling?: false | ConstrainedSamplingConfig;
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
 	/** Replay renderer to use for removed built-ins in saved transcripts. */
@@ -760,6 +763,8 @@ export interface InputEvent {
 	images?: ImageContent[];
 	/** Where the input came from */
 	source: InputSource;
+	/** How the input will be delivered during streaming, or undefined when idle */
+	streamingBehavior?: "steer" | "followUp";
 }
 
 /** Result from input event handler */
@@ -1098,7 +1103,7 @@ export interface ExtensionAPI {
 	/** Get the list of currently active tool names. */
 	getActiveTools(): string[];
 
-	/** Get all configured tools with parameter schema and source metadata. */
+	/** Get all configured tools with parameter schema, prompt guidelines, and source metadata. */
 	getAllTools(): ToolInfo[];
 
 	/** Set the active tools by name. */
@@ -1131,7 +1136,7 @@ export interface ExtensionAPI {
 	 * // Register a new provider with custom models
 	 * pi.registerProvider("my-proxy", {
 	 *   baseUrl: "https://proxy.example.com",
-	 *   apiKey: "PROXY_API_KEY",
+	 *   apiKey: "$PROXY_API_KEY",
 	 *   api: "anthropic-messages",
 	 *   models: [
 	 *     {
@@ -1192,7 +1197,7 @@ export interface ProviderConfig {
 	name?: string;
 	/** Base URL for the API endpoint. Required when defining models. */
 	baseUrl?: string;
-	/** API key or environment variable name. Required when defining models (unless oauth provided). */
+	/** API key literal, env interpolation ($ENV_VAR or ${ENV_VAR}), or leading !command. Required when defining models (unless oauth provided). */
 	apiKey?: string;
 	/** API type. Required at provider or model level when defining models. */
 	api?: Api;
@@ -1289,8 +1294,8 @@ export type GetSessionNameHandler = () => string | undefined;
 
 export type GetActiveToolsHandler = () => string[];
 
-/** Tool info with name, description, parameter schema, and source metadata */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters"> & {
+/** Tool info with name, description, parameter schema, prompt guidelines, and source metadata. */
+export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
 	sourceInfo: SourceInfo;
 };
 
@@ -1435,3 +1440,11 @@ export interface ExtensionError {
 	error: string;
 	stack?: string;
 }
+
+export interface MarkdownTransformContext {
+	messageType: "user" | "assistant" | "assistant-thinking";
+	isStreaming: boolean;
+	availableWidth: number;
+}
+
+export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;

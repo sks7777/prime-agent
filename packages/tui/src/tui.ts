@@ -80,6 +80,8 @@ export interface Component {
 
 export interface TuiStopOptions {
 	preserveAltScreen?: boolean;
+	/** Alias for preserveAltScreen (earendil-compatible name). */
+	preserveScreen?: boolean;
 	flushFullscreen?: boolean;
 }
 
@@ -326,9 +328,9 @@ export class TUI extends Container {
 	private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
-	private fullRedrawCount = 0;
+	protected fullRedrawCount = 0;
 	private preserveViewportOnNextRender = false; // One-shot: repaint visible viewport in place instead of replaying scrollback
-	private stopped = false;
+	protected stopped = false;
 	private fullscreenLeftMouseDragged = false;
 	private fullscreenPressedHyperlink: string | null = null;
 	private overlaySelectionRegions: FrameSelectionRegion[] = [];
@@ -380,6 +382,10 @@ export class TUI extends Container {
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
+	}
+
+	get hasOverlayEntries(): boolean {
+		return this.overlayStack.length > 0;
 	}
 
 	getShowHardwareCursor(): boolean {
@@ -800,7 +806,7 @@ export class TUI extends Container {
 		this.terminal.write(`\x1b]52;c;${base64}\x07`);
 	}
 
-	private updateSelectionAutoScroll(viewport: FullscreenViewport, screenRow: number, screenColumn: number): void {
+	protected updateSelectionAutoScroll(viewport: FullscreenViewport, screenRow: number, screenColumn: number): void {
 		const direction = viewport.selectionAutoScrollDirection(screenRow);
 		this.selectionAutoScrollRow = screenRow;
 		this.selectionAutoScrollColumn = screenColumn;
@@ -1182,7 +1188,7 @@ export class TUI extends Container {
 	}
 
 	/** Composite all overlays into content lines (sorted by focusOrder, higher = on top). */
-	private compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
+	protected compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
 		if (this.overlayStack.length === 0) return lines;
 		const result = [...lines];
 		const overlaySelectionRegions: FrameSelectionRegion[] = [...this.overlaySelectionRegions];
@@ -1342,7 +1348,7 @@ export class TUI extends Container {
 
 	private static readonly SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
 
-	private applyLineResets(lines: string[]): string[] {
+	protected applyLineResets(lines: string[]): string[] {
 		const reset = TUI.SEGMENT_RESET;
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
@@ -1454,7 +1460,7 @@ export class TUI extends Container {
 	 * @param height - Terminal height (visible viewport size)
 	 * @returns Cursor position { row, col } or null if no marker found
 	 */
-	private extractCursorPosition(lines: string[], height: number): { row: number; col: number } | null {
+	protected extractCursorPosition(lines: string[], height: number): { row: number; col: number } | null {
 		// Only scan the bottom `height` lines (visible viewport)
 		const viewportTop = Math.max(0, lines.length - height);
 		for (let row = lines.length - 1; row >= viewportTop; row--) {
@@ -1532,7 +1538,7 @@ export class TUI extends Container {
 		}
 	}
 
-	private doRender(): void {
+	protected doRender(): void {
 		if (this.stopped) return;
 		if (this.fullscreen) {
 			this.preserveViewportOnNextRender = false;

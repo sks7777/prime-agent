@@ -72,10 +72,4 @@ if [[ "$USE_DIST" == "true" ]]; then
   exec node "$BUNDLE" ${ARGS[@]+"${ARGS[@]}"}
 fi
 
-TSX_BIN="$SCRIPT_DIR/node_modules/.bin/tsx"
-if [[ ! -x "$TSX_BIN" ]]; then
-  echo "tsx not found at $TSX_BIN. Run npm install from the repo root first." >&2
-  exit 1
-fi
-
-"$TSX_BIN" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}
+"$SCRIPT_DIR/node_modules/.bin/tsx" --tsconfig "$SCRIPT_DIR/tsconfig.json" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}

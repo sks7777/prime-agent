@@ -93,7 +93,7 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+				maxRetries: options?.maxRetries ?? 0,
 			};
 			const { data: openaiStream, response } = await client.responses.create(params, requestOptions).withResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -109,6 +109,7 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw streamFailureFromStopReason(output.stopReasonRaw, { requestId });
 			}
+			if (output.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();

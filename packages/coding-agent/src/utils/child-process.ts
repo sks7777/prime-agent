@@ -1,4 +1,4 @@
-import { type ChildProcess, execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { basename } from "node:path";
@@ -162,4 +162,12 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			onExit(child.exitCode, child.signalCode);
 		}
 	});
+}
+
+export function spawnProcessSync(
+	command: string,
+	args: string[],
+	options: { encoding: "utf8"; cwd?: string; env?: Record<string, string>; stdio?: unknown },
+): { stdout: string; stderr: string; status: number | null; error?: Error } {
+	return spawnSync(command, args, options as never) as never;
 }

@@ -174,6 +174,13 @@ function getAnthropicCompat(model: Model<"anthropic-messages">): Required<Anthro
 	return {
 		supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+		forceAdaptiveThinking: model.compat?.forceAdaptiveThinking ?? false,
+		allowEmptySignature: model.compat?.allowEmptySignature ?? false,
+		sendSessionAffinityHeaders: model.compat?.sendSessionAffinityHeaders ?? false,
+		supportsCacheControlOnTools: (model.compat as any)?.supportsCacheControlOnTools ?? true,
+		supportsTemperature: (model.compat as any)?.supportsTemperature ?? true,
+		supportsStrictTools: (model.compat as any)?.supportsStrictTools ?? true,
+		supportsToolReferences: (model.compat as any)?.supportsToolReferences ?? false,
 	};
 }
 
@@ -521,7 +528,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+				maxRetries: options?.maxRetries ?? 0,
 			};
 			const response = await client.messages.create({ ...params, stream: true }, requestOptions).asResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -712,6 +719,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw streamFailureFromStopReason(output.stopReasonRaw, { requestId });
 			}
+			if (output.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();

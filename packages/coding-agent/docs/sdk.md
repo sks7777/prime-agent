@@ -1,8 +1,8 @@
-> Prime Agent can help you use the SDK. Ask it to build an integration for your use case.
+> pi can help you use the SDK. Ask it to build an integration for your use case.
 
 # SDK
 
-The SDK provides programmatic access to Prime Agent's capabilities. Use it to embed Prime Agent in other applications, build custom interfaces, or integrate with automated workflows.
+The SDK provides programmatic access to pi's agent capabilities. Use it to embed pi in other applications, build custom interfaces, or integrate with automated workflows.
 
 **Example use cases:**
 - Build a custom UI (web, desktop, mobile)
@@ -54,7 +54,7 @@ The main factory function for a single `AgentSession`.
 `createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
 
 ```typescript
-import { createAgentSession } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 
 // Minimal: defaults with DefaultResourceLoader
 const { session } = await createAgentSession();
@@ -62,7 +62,7 @@ const { session } = await createAgentSession();
 // Custom: override specific options
 const { session } = await createAgentSession({
   model: myModel,
-  tools: ["ipython"],
+  tools: ["read", "bash"],
   sessionManager: SessionManager.inMemory(),
 });
 ```
@@ -316,8 +316,8 @@ session.subscribe((event) => {
       break;
     
     // Session events (queue, compaction, retry)
-    case "session_action_update":
-      console.log(event.actions.steering, event.actions.followUps);
+    case "queue_update":
+      console.log(event.steering, event.followUp);
       break;
     case "compaction_start":
     case "compaction_end":
@@ -338,23 +338,23 @@ const { session } = await createAgentSession({
   cwd: process.cwd(), // default
   
   // Global config directory
-  agentDir: "~/.prime/agent", // default (expands ~)
+  agentDir: "~/.pi/agent", // default (expands ~)
 });
 ```
 
 `cwd` is used by `DefaultResourceLoader` for:
-- Project extensions (`.prime/agent/extensions/`)
+- Project extensions (`.pi/extensions/`)
 - Project skills:
-  - `.prime/agent/skills/`
+  - `.pi/skills/`
   - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
-- Project prompts (`.prime/agent/prompts/`)
+- Project prompts (`.pi/prompts/`)
 - Context files (`AGENTS.md` walking up from cwd)
-- Session storage resolution
+- Session directory naming
 
 `agentDir` is used by `DefaultResourceLoader` for:
 - Global extensions (`extensions/`)
 - Global skills:
-  - `skills/` under `agentDir` (for example `~/.prime/agent/skills/`)
+  - `skills/` under `agentDir` (for example `~/.pi/agent/skills/`)
   - `~/.agents/skills/`
 - Global prompts (`prompts/`)
 - Global context file (`AGENTS.md`)
@@ -387,7 +387,7 @@ const available = await modelRegistry.getAvailable();
 
 const { session } = await createAgentSession({
   model: opus,
-  thinkingLevel: "medium", // off, minimal, low, medium, high, xhigh, max
+  thinkingLevel: "medium", // off, minimal, low, medium, high, xhigh
   
   // Models for cycling (Ctrl+P in interactive mode)
   scopedModels: [
@@ -418,7 +418,7 @@ API key resolution priority (handled by AuthStorage):
 ```typescript
 import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
-// Default: uses ~/.prime/agent/auth.json and ~/.prime/agent/models.json
+// Default: uses ~/.pi/agent/auth.json and ~/.pi/agent/models.json
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 
@@ -466,47 +466,57 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 ### Tools
 
+Specify which built-in tools to enable:
+
+- Built-in tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`
+- Default built-ins: `read`, `bash`, `edit`, `write`
+- `noTools: "all"` disables all tools
+- `noTools: "builtin"` disables default built-ins while keeping extension and custom tools enabled
+- `excludeTools` disables specific built-in, extension, or custom tool names after any `tools` allowlist is applied
+
+The `edit` tool returns `details.diff` for Pi's TUI display and `details.patch` as a standard unified patch for SDK consumers.
+
 ```typescript
-// Use the default built-in tool set: ipython
+import { createAgentSession } from "@earendil-works/pi-coding-agent";
+
+// Read-only mode
 const { session } = await createAgentSession({
-  tools: ["ipython"],
+  tools: ["read", "grep", "find", "ls"],
 });
 
 // Pick specific tools
 const { session } = await createAgentSession({
-  tools: ["ipython"],
+  tools: ["read", "bash", "grep"],
+});
+
+// Disable one tool while keeping the rest available
+const { session } = await createAgentSession({
+  excludeTools: ["ask_question"],
 });
 ```
 
 #### Tools with Custom cwd
 
-**Important:** Use tool factory functions only when registering custom tool definitions yourself. Built-in tool names passed through `tools` resolve against the session `cwd`.
+When you pass a custom `cwd`, `createAgentSession()` builds selected built-in tools for that cwd.
 
 ```typescript
-import {
-  createIpythonToolDefinition,
-  createBashToolDefinition,
-  createEditToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 
 const cwd = "/path/to/project";
 
+// Use default tools for custom cwd
 const { session } = await createAgentSession({
   cwd,
-  customTools: [
-    createIpythonToolDefinition(cwd),
-    createBashToolDefinition(cwd),
-    createEditToolDefinition(cwd),
-  ],
+  sessionManager: SessionManager.inMemory(cwd),
+});
+
+// Or pick specific tools for custom cwd
+const { session } = await createAgentSession({
+  cwd,
+  tools: ["read", "bash", "grep"],
+  sessionManager: SessionManager.inMemory(cwd),
 });
 ```
-
-**When you don't need factories:**
-- If you omit `tools`, Prime Agent automatically creates them with the correct `cwd`
-- If you use `process.cwd()` as your `cwd`, the pre-built instances work fine
-
-**When you must use factories:**
-- When you specify both `cwd` (different from `process.cwd()`) AND `tools`
 
 > See [examples/sdk/05-tools.ts](../examples/sdk/05-tools.ts)
 
@@ -540,11 +550,13 @@ Use `defineTool()` for standalone definitions and arrays like `customTools: [myT
 
 Custom tools passed via `customTools` are combined with extension-registered tools. Extensions loaded by the ResourceLoader can also register tools via `pi.registerTool()`.
 
+If you pass `tools`, include each custom or extension tool name you want enabled, for example `tools: ["read", "bash", "my_tool"]`.
+
 > See [examples/sdk/05-tools.ts](../examples/sdk/05-tools.ts)
 
 ### Extensions
 
-Extensions are loaded by the `ResourceLoader`. `DefaultResourceLoader` discovers extensions from `~/.prime/agent/extensions/`, `.prime/agent/extensions/`, and `settings.json` extension sources.
+Extensions are loaded by the `ResourceLoader`. `DefaultResourceLoader` discovers extensions from `~/.pi/agent/extensions/`, `.pi/extensions/`, and settings.json extension sources.
 
 ```typescript
 import { createAgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
@@ -701,7 +713,7 @@ const { session: opened } = await createAgentSession({
 
 // List sessions
 const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll();
+const allSessions = await SessionManager.listAll(process.cwd());
 
 // Session replacement API for /new, /resume, /fork, /clone, and import flows.
 const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
@@ -743,7 +755,7 @@ const sm = SessionManager.open("/path/to/session.jsonl");
 
 // Session listing
 const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll();
+const allSessions = await SessionManager.listAll(process.cwd());
 
 // Tree traversal
 const entries = sm.getEntries();        // All entries (excludes header)
@@ -802,8 +814,8 @@ const { session } = await createAgentSession({
 **Project-specific settings:**
 
 Settings load from two locations and merge:
-1. Global: `~/.prime/agent/settings.json`
-2. Project: `<cwd>/.prime/agent/settings.json`
+1. Global: `~/.pi/agent/settings.json`
+2. Project: `<cwd>/.pi/settings.json`
 
 Project overrides global. Nested objects merge keys. Setters modify global settings by default.
 
@@ -868,7 +880,7 @@ interface LoadExtensionsResult {
 import { getModel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
- AuthStorage,
+  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   defineTool,
@@ -926,7 +938,7 @@ const { session } = await createAgentSession({
   authStorage,
   modelRegistry,
 
-  tools: ["ipython"],
+  tools: ["read", "bash", "status"],
   customTools: [statusTool],
   resourceLoader: loader,
 
@@ -1063,7 +1075,7 @@ See [RPC documentation](rpc.md) for the JSON protocol.
 For subprocess-based integration without building with the SDK, use the CLI directly:
 
 ```bash
-prime-agent --mode rpc --no-session
+pi --mode rpc --no-session
 ```
 
 See [RPC documentation](rpc.md) for the JSON protocol.
@@ -1105,9 +1117,11 @@ defineTool
 SessionManager
 SettingsManager
 
-// Tool factories (for custom cwd)
-createIpythonTool, createBashTool, createEditTool
-createIpythonToolDefinition, createBashToolDefinition, createEditToolDefinition
+// Tool factories
+createCodingTools
+createReadOnlyTools
+createReadTool, createBashTool, createEditTool, createWriteTool
+createGrepTool, createFindTool, createLsTool
 
 // Types
 type CreateAgentSessionOptions

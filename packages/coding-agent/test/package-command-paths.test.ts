@@ -303,7 +303,7 @@ else {
 		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
+			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.85.0" })),
 		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -331,7 +331,7 @@ else {
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		const baseUrl = "https://downloads.example.test/prime-agent";
-		const tarballPath = "releases/v0.73.0/prime-agent-0.73.0.tgz";
+		const tarballPath = "releases/v0.85.0/prime-agent-0.85.0.tgz";
 		mkdirSync(selfPackageDir, { recursive: true });
 		writeFileSync(
 			fakeNpmPath,
@@ -356,7 +356,7 @@ else {
 		});
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => Response.json({ package: "prime-agent", tarball: tarballPath, version: "0.73.0" })),
+			vi.fn(async () => Response.json({ package: "prime-agent", tarball: tarballPath, version: "0.85.0" })),
 		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -460,7 +460,7 @@ if(args.includes("install")) process.exit(23);
 		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
+			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.85.0" })),
 		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

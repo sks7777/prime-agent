@@ -1,14 +1,32 @@
 export type { Static, TSchema } from "typebox";
 export { Type } from "typebox";
-
+// Re-export uuidv7 for harness session backends
+export { v7 as uuidv7 } from "uuid";
 export * from "./api-registry.js";
+export type {
+	ApiKeyCredential,
+	AuthCheck,
+	AuthContext,
+	AuthInfoLink,
+	AuthOperationOptions,
+	AuthResult,
+	AuthType,
+	Credential,
+	CredentialInfo,
+	CredentialStore,
+	ModelAuth,
+	OAuthCredential,
+	OAuthCredentials,
+} from "./auth/types.js";
 export * from "./env-api-keys.js";
 export * from "./log.js";
 export * from "./models.js";
+export { createModels, type Models } from "./models.js";
 export type { BedrockOptions, BedrockThinkingDisplay } from "./providers/amazon-bedrock.js";
 export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from "./providers/anthropic.js";
 export type { AzureOpenAIResponsesOptions } from "./providers/azure-openai-responses.js";
 export * from "./providers/faux.js";
+export { type FauxProviderHandle, type FauxProviderState, fauxProvider } from "./providers/faux.js";
 export type { GoogleOptions } from "./providers/google.js";
 export type { GoogleThinkingLevel } from "./providers/google-shared.js";
 export type { GoogleVertexOptions } from "./providers/google-vertex.js";
@@ -28,7 +46,6 @@ export * from "./utils/event-stream.js";
 export * from "./utils/json-parse.js";
 export type {
 	OAuthAuthInfo,
-	OAuthCredentials,
 	OAuthLoginCallbacks,
 	OAuthPrompt,
 	OAuthProvider,
@@ -39,6 +56,8 @@ export type {
 	OAuthSelectPrompt,
 } from "./utils/oauth/types.js";
 export * from "./utils/overflow.js";
+export * from "./utils/retry.js";
 export * from "./utils/stream-failure.js";
+export { contentText } from "./utils/text.js";
 export * from "./utils/typebox-helpers.js";
 export * from "./utils/validation.js";

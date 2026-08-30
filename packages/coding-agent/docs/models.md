@@ -315,9 +315,11 @@ Behavior notes:
 
 ## Anthropic Messages Compatibility
 
-For providers or proxies using `api: "anthropic-messages"`, use `compat.supportsEagerToolInputStreaming` to control Anthropic fine-grained tool streaming compatibility.
+For providers or proxies using `api: "anthropic-messages"`, use `compat` to control Anthropic-specific request compatibility.
 
 By default Prime Agent sends per-tool `eager_input_streaming: true`. If a proxy or Anthropic-compatible backend rejects that field, set `supportsEagerToolInputStreaming` to `false`. Prime Agent will omit `tools[].eager_input_streaming` and send the legacy `fine-grained-tool-streaming-2025-05-14` beta header for tool-enabled requests instead.
+
+Some Anthropic models require adaptive thinking (`thinking.type: "adaptive"` plus `output_config.effort`) instead of the legacy budget-based thinking payload. Built-in models set this automatically. For custom providers or aliases that route to those models, set `forceAdaptiveThinking` to `true`.
 
 ```json
 {
@@ -328,7 +330,8 @@ By default Prime Agent sends per-tool `eager_input_streaming: true`. If a proxy 
       "apiKey": "ANTHROPIC_PROXY_KEY",
       "compat": {
         "supportsEagerToolInputStreaming": false,
-        "supportsLongCacheRetention": true
+        "supportsLongCacheRetention": true,
+        "forceAdaptiveThinking": true
       },
       "models": [
         {
@@ -346,6 +349,9 @@ By default Prime Agent sends per-tool `eager_input_streaming: true`. If a proxy 
 |-------|-------------|
 | `supportsEagerToolInputStreaming` | Whether the provider accepts per-tool `eager_input_streaming`. Default: `true`. Set to `false` to omit that field and use the legacy fine-grained tool streaming beta header on tool-enabled requests. |
 | `supportsLongCacheRetention` | Whether the provider accepts Anthropic long cache retention (`cache_control.ttl: "1h"`) when cache retention is `long`. Default: `true`. |
+| `sendSessionAffinityHeaders` | Whether to send `x-session-affinity` from the session id when caching is enabled. Default: auto-detected for known providers. |
+| `supportsCacheControlOnTools` | Whether the provider accepts Anthropic-style `cache_control` markers on tool definitions. Default: `true`. |
+| `forceAdaptiveThinking` | Whether to send adaptive thinking (`thinking.type: "adaptive"` plus `output_config.effort`) for this model. Built-in adaptive models set this automatically. Default: `false`. |
 
 ## OpenAI Compatibility
 
@@ -381,14 +387,14 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `requiresAssistantAfterToolResult` | Insert an assistant message before a user message after tool results |
 | `requiresThinkingAsText` | Convert thinking blocks to plain text |
 | `requiresReasoningContentOnAssistantMessages` | Include empty `reasoning_content` on all replayed assistant messages when reasoning is enabled |
-| `thinkingFormat` | Use `reasoning_effort`, `deepseek`, `zai`, `qwen`, or `qwen-chat-template` thinking parameters |
+| `thinkingFormat` | Use `reasoning_effort`, `openrouter`, `deepseek`, `together`, `zai`, `qwen`, or `qwen-chat-template` thinking parameters |
 | `cacheControlFormat` | Use Anthropic-style `cache_control` markers on the system prompt, last tool definition, and last user/assistant text content. Currently only `anthropic` is supported. |
 | `supportsStrictMode` | Include the `strict` field in tool definitions |
 | `supportsLongCacheRetention` | Whether the provider accepts long cache retention when cache retention is `long`: `prompt_cache_retention: "24h"` for OpenAI prompt caching, or `cache_control.ttl: "1h"` when `cacheControlFormat` is `anthropic`. Default: `true`. |
 | `openRouterRouting` | OpenRouter provider routing preferences. This object is sent as-is in the `provider` field of the [OpenRouter API request](https://openrouter.ai/docs/guides/routing/provider-selection). |
 | `vercelGatewayRouting` | Vercel AI Gateway routing config for provider selection (`only`, `order`) |
 
-`qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking`.
+`openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking`.
 
 `cacheControlFormat: "anthropic"` is for OpenAI-compatible providers that expose Anthropic-style prompt caching through `cache_control` markers on text content and tool definitions.
 

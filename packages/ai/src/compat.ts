@@ -6,3 +6,4 @@
  * behind a `/compat` subpath continue to resolve.
  */
 export { completeSimple, streamSimple } from "./stream.js";
+export type { Usage } from "./types.js";

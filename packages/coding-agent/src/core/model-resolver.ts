@@ -19,7 +19,7 @@ export const PRIME_INFERENCE_DEFAULT_MODEL_ID = "z-ai/glm-5.2";
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
-	anthropic: "claude-opus-4-7",
+	anthropic: "claude-opus-4-8",
 	openai: "gpt-5.4",
 	"azure-openai-responses": "gpt-5.4",
 	"openai-codex": "gpt-5.5",
@@ -41,6 +41,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"moonshotai-cn": "kimi-k2.6",
 	huggingface: "moonshotai/Kimi-K2.6",
 	fireworks: "accounts/fireworks/models/kimi-k2p6",
+	together: "moonshotai/Kimi-K2.6",
 	opencode: "kimi-k2.6",
 	"opencode-go": "kimi-k2.6",
 	"kimi-coding": "kimi-for-coding",
@@ -345,9 +346,11 @@ export interface ResolveCliModelResult {
 export function resolveCliModel(options: {
 	cliProvider?: string;
 	cliModel?: string;
-	modelRegistry: ModelRegistry;
+	modelRegistry?: ModelRegistry;
+	modelRuntime?: { getAll(): readonly Model<Api>[] };
 }): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRegistry } = options;
+	const { cliProvider, cliModel } = options;
+	const allModels: Model<Api>[] = [...(options.modelRegistry?.getAll() ?? options.modelRuntime?.getAll() ?? [])];
 
 	if (!cliModel) {
 		return { model: undefined, warning: undefined, error: undefined };
@@ -355,7 +358,7 @@ export function resolveCliModel(options: {
 
 	// Important: use *all* models here, not just models with pre-configured auth.
 	// This allows "--api-key" to be used for first-time setup.
-	const availableModels = modelRegistry.getAll();
+	const availableModels = allModels;
 	if (availableModels.length === 0) {
 		return {
 			model: undefined,

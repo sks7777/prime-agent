@@ -40,6 +40,7 @@ export type KnownProvider =
 	| "moonshotai-cn"
 	| "huggingface"
 	| "fireworks"
+	| "together"
 	| "opencode"
 	| "opencode-go"
 	| "kimi-coding"
@@ -76,6 +77,9 @@ export interface ProviderResponse {
 }
 
 export interface StreamOptions {
+	samplingParams?: Record<string, unknown>;
+	env?: ProviderEnv;
+	fetch?: typeof globalThis.fetch;
 	temperature?: number;
 	maxTokens?: number;
 	signal?: AbortSignal;
@@ -119,6 +123,12 @@ export interface StreamOptions {
 	 */
 	timeoutMs?: number;
 	/**
+	 * WebSocket connect timeout in milliseconds for providers that support
+	 * WebSocket transports. This covers the connection/open handshake only;
+	 * stream idleness after connection uses timeoutMs.
+	 */
+	websocketConnectTimeoutMs?: number;
+	/**
 	 * Maximum retry attempts for providers/SDKs that support client-side retries.
 	 * For example, OpenAI and Anthropic SDK clients default to 2.
 	 */
@@ -145,6 +155,8 @@ export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 export interface SimpleStreamOptions extends StreamOptions {
 	/** Explicit model reasoning selection. Omit to preserve the provider default. */
 	reasoning?: ModelThinkingLevel;
+	/** Ask a capable provider to return a durable handle and continue the request asynchronously. */
+	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
 }
@@ -202,19 +214,37 @@ export interface ToolCall {
 export interface Usage {
 	input: number;
 	output: number;
+	reasoning?: number;
 	cacheRead: number;
 	cacheWrite: number;
+	cacheWrite1h?: number;
 	totalTokens: number;
 	cost: {
 		input: number;
 		output: number;
+		reasoning?: number;
 		cacheRead: number;
 		cacheWrite: number;
+		cacheWrite1h?: number;
 		total: number;
 	};
 }
 
-export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted" | "deferred";
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+export interface DeferredHandle {
+	provider: string;
+	modelId: string;
+	api: string;
+	/** Provider token, such as a response id or batch id plus row id. */
+	id: string;
+	expiresAt?: number;
+	pollAfterMs?: number;
+	/** Provider conversion data required to reconstruct the final assistant message. */
+	data?: JsonValue;
+}
 
 export interface UserMessage {
 	role: "user";
@@ -223,6 +253,8 @@ export interface UserMessage {
 }
 
 export interface AssistantMessage {
+	/** Provider's raw stop/finish reason. */
+	rawStopReason?: string;
 	role: "assistant";
 	content: (TextContent | ThinkingContent | ToolCall)[];
 	api: Api;
@@ -233,12 +265,17 @@ export interface AssistantMessage {
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
+	deferred?: DeferredHandle;
 	stopReasonRaw?: string; // Provider's raw stop/finish reason when it mapped to "error" (e.g. "refusal", "SAFETY")
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
 export interface ToolResultMessage<TDetails = any> {
+	/** Tool names added by the provider. */
+	addedToolNames?: string[];
+	/** Usage reported by the provider for the tool result. */
+	usage?: Usage;
 	role: "toolResult";
 	toolCallId: string;
 	toolName: string;
@@ -253,6 +290,7 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 import type { TSchema } from "typebox";
 
 export interface Tool<TParameters extends TSchema = TSchema> {
+	constrainedSampling?: false | ConstrainedSamplingConfig;
 	name: string;
 	description: string;
 	parameters: TParameters;
@@ -283,7 +321,11 @@ export type AssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
-	| { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse">; message: AssistantMessage }
+	| {
+			type: "done";
+			reason: Extract<StopReason, "stop" | "length" | "toolUse" | "deferred">;
+			message: AssistantMessage;
+	  }
 	| { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
 
 /**
@@ -310,7 +352,7 @@ export interface OpenAICompletionsCompat {
 	/** Whether all replayed assistant messages must include an empty reasoning_content field when reasoning is enabled. Default: auto-detected from URL. */
 	requiresReasoningContentOnAssistantMessages?: boolean;
 	/** Format for reasoning/thinking parameter. "openai" uses reasoning_effort, "openrouter" uses reasoning: { effort }, "deepseek" uses thinking: { type } plus reasoning_effort, "zai" uses top-level enable_thinking: boolean, "qwen" uses top-level enable_thinking: boolean, and "qwen-chat-template" uses chat_template_kwargs.enable_thinking. Default: "openai". */
-	thinkingFormat?: "openai" | "openrouter" | "deepseek" | "zai" | "qwen" | "qwen-chat-template";
+	thinkingFormat?: "openai" | "openrouter" | "deepseek" | "zai" | "qwen" | "qwen-chat-template" | "together";
 	/** OpenRouter-specific routing preferences. Only used when baseUrl points to OpenRouter. */
 	openRouterRouting?: OpenRouterRouting;
 	/** Vercel AI Gateway routing preferences. Only used when baseUrl points to Vercel AI Gateway. */
@@ -333,6 +375,10 @@ export interface OpenAIResponsesCompat {
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
 	supportsLongCacheRetention?: boolean;
+
+	supportsOpenAIGrammarTools?: boolean;
+
+	supportsStrictMode?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
@@ -347,6 +393,31 @@ export interface AnthropicMessagesCompat {
 	supportsEagerToolInputStreaming?: boolean;
 	/** Whether the provider supports Anthropic long cache retention (`cache_control.ttl: "1h"`). Default: true. */
 	supportsLongCacheRetention?: boolean;
+
+	/**
+	 * Whether to force adaptive thinking (`thinking.type: "adaptive"` plus
+	 * `output_config.effort`) regardless of the model id.
+	 * Default: false.
+	 */
+	forceAdaptiveThinking?: boolean;
+
+	/** Whether to allow empty thinking signatures. Default: false. */
+	allowEmptySignature?: boolean;
+
+	/** Whether to send session-affinity headers. Default: false. */
+	sendSessionAffinityHeaders?: boolean;
+
+	/** Whether the provider supports supportsCacheControlOnTools. Default: false. */
+	supportsCacheControlOnTools?: boolean;
+
+	/** Whether the provider supports supportsTemperature. Default: false. */
+	supportsTemperature?: boolean;
+
+	/** Whether the provider supports supportsStrictTools. Default: false. */
+	supportsStrictTools?: boolean;
+
+	/** Whether the provider supports supportsToolReferences. Default: false. */
+	supportsToolReferences?: boolean;
 }
 
 /**
@@ -452,21 +523,68 @@ export interface Model<TApi extends Api> {
 	input: ("text" | "image")[];
 	cost: {
 		input: number; // $/million tokens
-		output: number; // $/million tokens
+		output: number;
+		reasoning?: number; // $/million tokens
 		cacheRead: number; // $/million tokens
-		cacheWrite: number; // $/million tokens
+		cacheWrite: number;
+		cacheWrite1h?: number; // $/million tokens
 	};
 	contextWindow: number;
 	maxTokens: number;
 	/** Flagship model surfaced above non-featured models of the same provider in pickers. */
 	featured?: boolean;
+
+	/**
+	 * Whether to force adaptive thinking (`thinking.type: "adaptive"` plus
+	 * `output_config.effort`) regardless of the model id. Built-in models that
+	 * require adaptive thinking set this in generated metadata. Custom
+	 * Anthropic-compatible providers can set this to `true` for any model whose
+	 * upstream requires the adaptive format. Set to `false` to
+	 * opt out on overridden built-in models.
+	 * Default: false.
+	 */
+	forceAdaptiveThinking?: boolean;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat
 		: TApi extends "openai-responses"
 			? OpenAIResponsesCompat
-			: TApi extends "anthropic-messages"
-				? AnthropicMessagesCompat
-				: never;
+			: TApi extends "azure-openai-responses"
+				? OpenAIResponsesCompat
+				: TApi extends "anthropic-messages"
+					? AnthropicMessagesCompat
+					: TApi extends "bedrock-converse-stream"
+						? OpenAICompletionsCompat
+						: TApi extends "google-generative-ai"
+							? OpenAICompletionsCompat
+							: TApi extends "google-vertex"
+								? OpenAICompletionsCompat
+								: TApi extends "mistral-conversations"
+									? OpenAICompletionsCompat
+									: TApi extends "openai-codex-responses"
+										? OpenAIResponsesCompat
+										: TApi extends "cloudflare"
+											? OpenAICompletionsCompat
+											: TApi extends "openrouter-images"
+												? OpenAICompletionsCompat
+												: Record<string, unknown>;
 }
+
+export type ProviderStreams = Record<string, unknown>;
+
+export type ProviderEnv = Record<string, string | undefined>;
+
+export type ProviderHeaders = Record<string, string | null>;
+
+export type FetchFunction = typeof globalThis.fetch;
+
+export type ConstrainedSamplingConfig =
+	| {
+			type: "json_schema";
+			strict: "prefer" | "require";
+	  }
+	| {
+			type: "grammar";
+			variants: Record<string, string>;
+	  };

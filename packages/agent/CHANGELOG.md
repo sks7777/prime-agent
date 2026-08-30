@@ -1,118 +1,49 @@
 # Changelog
 
-## [0.8.0] - 2026-08-21
+## [0.77.0] - 2026-05-28
 
-- Added `AgentContinueError` with stable codes (`busy`, `nothing-to-continue`) for `Agent.continue()` precondition failures, so callers classify without matching message text.
+### Breaking Changes
 
-## [0.7.4] - 2026-08-19
-
-## [0.7.3] - 2026-08-17
-
-- Changed explicit `off` reasoning selections to reach providers instead of being omitted, preserving provider-specific disable behavior.
-
-## [0.7.2] - 2026-08-11
-
-## [0.7.1] - 2026-08-07
-
-## [0.7.0] - 2026-08-05
-
-## [0.6.1] - 2026-08-05
-
-## [0.6.0] - 2026-08-04
-
-## [0.5.1] - 2026-08-04
-
-## [0.5.0] - 2026-08-03
-
-## [0.4.0] - 2026-08-01
+- Renamed agent harness `model_select` and `thinking_level_select` events to `model_update` and `thinking_level_update`.
 
 ### Added
 
-- Added the synchronous `shouldStopBeforeTurn` agent-loop hook, allowing hosts to end after a completed turn without starting another provider call.
+- Added agent harness tool registry APIs, `tools_update` events, branch-scoped active-tool persistence, and duplicate tool validation.
 
-## [0.3.3] - 2026-07-23
+## [0.76.0] - 2026-05-27
 
-- Fixed recovery event listener failures replacing the original agent lifecycle failure.
+### Fixed
 
-## [0.3.2] - 2026-07-20
+- Fixed context token estimates to count user image attachments consistently with tool result images ([#4983](https://github.com/earendil-works/pi/issues/4983)).
 
-## [0.3.1] - 2026-07-15
+## [0.75.5] - 2026-05-23
 
-- Added provider service-tier propagation to agent requests.
+## [0.75.4] - 2026-05-20
 
-## [0.3.0] - 2026-07-13
+### Changed
 
-## [0.2.9] - 2026-07-13
+- Changed source syntax to avoid TypeScript constructs that require JavaScript emit, keeping the package compatible with Node.js strip-only TypeScript checks.
+- Removed the package-level development watch script now that the root TypeScript check validates strip-only-compatible sources.
 
-- Changed steering and follow-up queues to preserve grouped messages as an atomic batch.
+### Fixed
 
-## [0.2.8] - 2026-07-09
+- Fixed tool-call preflight to stop preparing sibling tool calls after the run is aborted ([#4276](https://github.com/earendil-works/pi/issues/4276)).
+- Fixed tail truncation for oversized single-line output that ends with a trailing newline ([#4715](https://github.com/earendil-works/pi/issues/4715)).
+- Fixed Windows Node execution environment command spawns to hide helper console windows from background processes ([#4699](https://github.com/earendil-works/pi/issues/4699)).
 
-- Fixed abort settling for provider streams and tool executions that ignore cancellation ([ENG-4490](https://linear.app/primeintellect/issue/ENG-4490)).
+## [0.75.3] - 2026-05-18
 
-## [0.2.7] - 2026-07-08
+## [0.75.2] - 2026-05-18
 
-- Fixed run-lifecycle failures carrying no diagnostics, so hosts can distinguish local failures from provider failures.
+## [0.75.1] - 2026-05-18
 
-## [0.2.6] - 2026-07-06
+## [0.75.0] - 2026-05-17
 
-## [0.2.5] - 2026-07-06
+### Breaking Changes
 
-## [0.2.4] - 2026-07-01
+- Raised the minimum supported Node.js version to 22.19.0.
 
-## [0.2.3] - 2026-06-30
-
-## [0.2.2] - 2026-06-25
-
-## [0.2.1] - 2026-06-23
-
-## [0.2.0] - 2026-06-23
-
-### Added
-
-- Added `max` to the `ThinkingLevel` union so callers can request the top adaptive-thinking effort on supported Claude models.
-
-## [0.1.9] - 2026-06-22
-
-## [0.1.8] - 2026-06-21
-
-## [0.1.7] - 2026-06-18
-
-## [0.1.6] - 2026-06-17
-
-## [0.1.5] - 2026-06-16
-
-## [0.1.4] - 2026-06-15
-
-## [0.1.3] - 2026-06-12
-
-## [0.1.2] - 2026-06-12
-
-## [0.1.1] - 2026-06-11
-
-## [0.1.0] - 2026-06-11
-
-## [0.0.10] - 2026-06-08
-
-## [0.0.9] - 2026-06-04
-
-## [0.0.8] - 2026-06-04
-
-## [0.0.7] - 2026-06-01
-
-## [0.0.6] - 2026-05-27
-
-## [0.0.5] - 2026-05-26
-
-## [0.0.4] - 2026-05-21
-
-## [0.0.2] - 2026-05-20
-
-### Added
-
-- Added a continuation-message hook for host-owned policies that should keep the agent loop running after explicit follow-ups are drained.
-
-## [0.0.1] - 2026-05-18
+## [0.74.1] - 2026-05-16
 
 ## [0.74.0] - 2026-05-07
 

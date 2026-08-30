@@ -156,7 +156,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+				maxRetries: options?.maxRetries ?? 0,
 			};
 			const { data: openaiStream, response } = await client.chat.completions
 				.create(params, requestOptions)
@@ -398,6 +398,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			if (output.stopReason === "error") {
 				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
+			if (output.stopReason === "pending") throw new Error("Stream completed with pending stop reason");
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();

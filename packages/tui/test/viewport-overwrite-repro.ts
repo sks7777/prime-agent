@@ -74,7 +74,9 @@ main().catch((error) => {
 	try {
 		const ui = new TUI(new ProcessTerminal());
 		ui.stop();
-	} catch {}
+	} catch {
+		/* ignored */
+	}
 	process.stderr.write(`${String(error)}\n`);
 	process.exitCode = 1;
 });

@@ -1,48 +1,51 @@
 # Quickstart
 
-This page gets you from install to a useful first Prime Agent session.
+This page gets you from install to a useful first pi session.
 
 ## Install
 
-Install the latest stable release on Linux or macOS:
+Pi is distributed as an npm package:
 
 ```bash
-curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 ```
 
-To try the latest beta built from `main`:
+`--ignore-scripts` disables dependency lifecycle scripts during install. Pi does not require install scripts for normal npm installs.
+
+### Uninstall
+
+Use the package manager that installed pi. The curl installer uses npm globally, so curl and npm installs are removed with npm:
 
 ```bash
-curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh -s -- beta
+# curl installer or npm install -g
+npm uninstall -g @earendil-works/pi-coding-agent
+
+# pnpm
+pnpm remove -g @earendil-works/pi-coding-agent
+
+# Yarn
+yarn global remove @earendil-works/pi-coding-agent
+
+# Bun
+bun uninstall -g @earendil-works/pi-coding-agent
 ```
 
-Both commands fetch versioned Prime Agent release artifacts and install the `prime-agent` command. The inherited npm workspace identifiers in the source tree are not the public install path.
+Uninstalling pi leaves settings, credentials, sessions, and installed pi packages in `~/.pi/agent/`.
 
-Then start Prime Agent in the project directory you want it to work on:
+Then start pi in the project directory you want it to work on:
 
 ```bash
 cd /path/to/project
-prime-agent
+pi
 ```
-
-To run a source checkout instead, use Node.js 22.8.0 or newer:
-
-```bash
-git clone https://github.com/PrimeIntellect-ai/prime-agent
-cd prime-agent
-npm ci
-./prime-agent.sh
-```
-
-The source runner preserves the directory from which it is invoked, so you can also call `/path/to/prime-agent/prime-agent.sh` from another project.
 
 ## Authenticate
 
-Prime Agent can use subscription providers through `/login`, or API-key providers through environment variables or its auth file.
+Pi can use subscription providers through `/login`, or API-key providers through environment variables or the auth file.
 
-### Option 1: Subscription Login
+### Option 1: subscription login
 
-Start Prime Agent and run:
+Start pi and run:
 
 ```text
 /login
@@ -50,46 +53,39 @@ Start Prime Agent and run:
 
 Then select a provider. Built-in subscription logins include Claude Pro/Max, ChatGPT Plus/Pro (Codex), and GitHub Copilot.
 
-### Option 2: API Key
+### Option 2: API key
 
-Set an API key before launching Prime Agent:
+Set an API key before launching pi:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-prime-agent
+pi
 ```
 
-You can also run `/login` and select an API-key provider to store the key in `~/.prime/agent/auth.json`.
+You can also run `/login` and select an API-key provider to store the key in `~/.pi/agent/auth.json`.
 
 See [Providers](providers.md) for all supported providers, environment variables, and cloud-provider setup.
 
-## First Session
+## First session
 
-Once Prime Agent starts, type a request and press Enter:
+Once pi starts, type a request and press Enter:
 
 ```text
 Summarize this repository and tell me how to run its checks.
 ```
 
-Prime Agent gives the model one built-in tool, `ipython`. The long-lived kernel is a control environment for reading and editing files, running project commands, inspecting data, retaining Python state, and invoking installed skills. The kernel runtime is bootstrapped automatically on first use; set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
+By default, pi gives the model four tools:
 
-Prime Agent runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
+- `read` - read files
+- `write` - create or overwrite files
+- `edit` - patch files
+- `bash` - run shell commands
 
-## Recursive Subagents
+Additional built-in read-only tools (`grep`, `find`, `ls`) are available through tool options. Pi runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
 
-Recursive subagents are a built-in Prime Agent capability. The model spawns independent work from IPython with `await rlm("subtask")`; each call returns at admission with a child handle and never returns the answer. Children send requested results as explicit `agent_message` replies to the parent or write them to files. Child agents use the same TypeScript agent runtime, providers, tools, skills, and session machinery as the parent.
+## Give pi project instructions
 
-You can prompt the model to use that capability directly:
-
-```text
-Review authentication and test coverage as independent subtasks. Run them in parallel, then synthesize the findings.
-```
-
-See [RLM Runtime Architecture](rlm-runtime.md) for the API and execution model.
-
-## Give Prime Agent Project Instructions
-
-Prime Agent loads context files at startup. Add an `AGENTS.md` file to tell it how to work in a project:
+Pi loads context files at startup. Add an `AGENTS.md` file to tell it how to work in a project:
 
 ```markdown
 # Project Instructions
@@ -99,27 +95,27 @@ Prime Agent loads context files at startup. Add an `AGENTS.md` file to tell it h
 - Keep responses concise.
 ```
 
-Prime Agent loads:
+Pi loads:
 
-- `~/.prime/agent/AGENTS.md` for global instructions
+- `~/.pi/agent/AGENTS.md` for global instructions
 - `AGENTS.md` or `CLAUDE.md` from parent directories and the current directory
 
-Restart Prime Agent, or run `/reload`, after changing context files.
+Restart pi, or run `/reload`, after changing context files.
 
-## Common Things to Try
+## Common things to try
 
-### Reference Files
+### Reference files
 
 Type `@` in the editor to fuzzy-search files, or pass files on the command line:
 
 ```bash
-prime-agent @README.md "Summarize this"
-prime-agent @src/app.ts @src/app.test.ts "Review these together"
+pi @README.md "Summarize this"
+pi @src/app.ts @src/app.test.ts "Review these together"
 ```
 
 Images can be pasted with Ctrl+V (Alt+V on Windows) or dragged into supported terminals.
 
-### Run Shell Commands
+### Run shell commands
 
 In interactive mode:
 
@@ -127,41 +123,43 @@ In interactive mode:
 !npm run lint
 ```
 
-The command output is sent to the model. Use `!!command` to run a command without adding its output to model context. During agent work, the model normally runs project commands from the IPython control environment with a `%%bash` cell.
+The command output is sent to the model. Use `!!command` to run a command without adding its output to the model context.
 
-### Switch Models
+### Switch models
 
-Use `/model` or Ctrl+L to choose a model. Use `/effort` to set the reasoning level. Use Ctrl+P / Shift+Ctrl+P to cycle through scoped models.
+Use `/model` or Ctrl+L to choose a model. Use Shift+Tab to cycle thinking level. Use Ctrl+P / Shift+Ctrl+P to cycle through scoped models.
 
-### Continue Later
+### Continue later
 
-Sessions are saved automatically under `~/.prime/agent/sessions/`:
+Sessions are saved automatically:
 
 ```bash
-prime-agent -c                  # Continue the most recent session
-prime-agent -r [path|id]        # Browse sessions or open a specific session
+pi -c                  # Continue most recent session
+pi -r                  # Browse previous sessions
+pi --name "my task"    # Set session display name at startup
+pi --session <path|id> # Open a specific session
 ```
 
-Inside Prime Agent, use `/resume`, `/new`, `/tree`, `/fork`, and `/clone` to manage sessions. Persistent sessions run in worker processes, so closing the TUI detaches from the agent rather than necessarily stopping it. Use `prime-agent agents` to inspect or reattach to active work.
+Inside pi, use `/resume`, `/new`, `/tree`, `/fork`, and `/clone` to manage sessions.
 
-### Non-Interactive Mode
+### Non-interactive mode
 
 For one-shot prompts:
 
 ```bash
-prime-agent -p "Summarize this codebase"
-cat README.md | prime-agent -p "Summarize this text"
-prime-agent -p @screenshot.png "What's in this image?"
+pi -p "Summarize this codebase"
+cat README.md | pi -p "Summarize this text"
+pi -p @screenshot.png "What's in this image?"
 ```
 
 Use `--mode json` for JSON event output or `--mode rpc` for process integration.
 
-## Next Steps
+## Next steps
 
-- [Using Prime Agent](usage.md) - interactive mode, slash commands, sessions, context files, and CLI reference.
+- [Using Pi](usage.md) - interactive mode, slash commands, sessions, context files, and CLI reference.
 - [Providers](providers.md) - authentication and model setup.
 - [Settings](settings.md) - global and project configuration.
 - [Keybindings](keybindings.md) - shortcuts and customization.
-- [Prime Agent Packages](packages.md) - install shared extensions, skills, prompts, and themes.
+- [Pi Packages](packages.md) - install shared extensions, skills, prompts, and themes.
 
 Platform notes: [Windows](windows.md), [Termux](termux.md), [tmux](tmux.md), [Terminal setup](terminal-setup.md), [Shell aliases](shell-aliases.md).

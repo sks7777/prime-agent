@@ -1,0 +1,1 @@
+- Fixed RPC and ACP modes losing trailing output events at process shutdown by flushing the raw stdout queue before exit.

@@ -1,0 +1,2 @@
+- Unified the session subsystem with the upstream v0.84.2 harness, including the JSONL storage, memory backend, and session context APIs.
+- Added deferred-response support surfaces to the agent harness (deferred handles, deferred stop reason, and resume helpers).

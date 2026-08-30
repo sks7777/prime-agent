@@ -39,3 +39,23 @@ export async function convertToPng(
 		return null;
 	}
 }
+
+export async function convertImageBytesToPng(bytes: Uint8Array, mimeType?: string): Promise<Uint8Array | null> {
+	try {
+		const detected =
+			mimeType ??
+			(bytes[0] === 0x89 && bytes[1] === 0x50
+				? "image/png"
+				: bytes[0] === 0xff && bytes[1] === 0xd8
+					? "image/jpeg"
+					: bytes[8] === 0x57 && bytes[9] === 0x45
+						? "image/webp"
+						: "image/png");
+		const base64 = Buffer.from(bytes).toString("base64");
+		const converted = await convertToPng(base64, detected);
+		if (!converted) return null;
+		return new Uint8Array(Buffer.from(converted.data, "base64"));
+	} catch {
+		return null;
+	}
+}

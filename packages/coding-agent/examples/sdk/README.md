@@ -1,10 +1,6 @@
 # SDK Examples
 
-Programmatic usage of the Prime Agent SDK via `createAgentSession()` and `createAgentSessionRuntime()`.
-
-The published TypeScript packages still use inherited `@earendil-works/pi-*`
-identifiers. Those identifiers are API names, not a dependency on the upstream
-Pi monorepo.
+Programmatic usage of pi-coding-agent via `createAgentSession()` and `createAgentSessionRuntime()`.
 
 The runtime example shows how to build a recreate function that closes over process-global fixed inputs and recreates cwd-bound services and sessions as the active session cwd changes.
 
@@ -16,7 +12,7 @@ The runtime example shows how to build a recreate function that closes over proc
 | `02-custom-model.ts` | Select model and thinking level |
 | `03-custom-prompt.ts` | Replace or modify system prompt |
 | `04-skills.ts` | Discover, filter, or replace skills |
-| `05-tools.ts` | Built-in tools, custom tools |
+| `05-tools.ts` | Built-in tool allowlists |
 | `06-extensions.ts` | Logging, blocking, result modification |
 | `07-context-files.ts` | AGENTS.md context files |
 | `08-slash-commands.ts` | File-based slash commands |
@@ -64,8 +60,8 @@ const loader = new DefaultResourceLoader({
 await loader.reload();
 const { session } = await createAgentSession({ resourceLoader: loader, authStorage, modelRegistry });
 
-// Tool selection
-const { session } = await createAgentSession({ tools: ["ipython"], authStorage, modelRegistry });
+// Read-only
+const { session } = await createAgentSession({ tools: ["read", "grep", "find", "ls"], authStorage, modelRegistry });
 
 // In-memory
 const { session } = await createAgentSession({
@@ -93,8 +89,8 @@ const { session } = await createAgentSession({
   authStorage: customAuth,
   modelRegistry: customRegistry,
   resourceLoader,
-  tools: ["ipython"],
-  customTools: [{ tool: myTool }],
+  tools: ["read", "bash", "my_tool"],
+  customTools: [myTool],
   sessionManager: SessionManager.inMemory(),
   settingsManager: SettingsManager.inMemory(),
 });
@@ -115,10 +111,10 @@ await session.prompt("Hello");
 | `authStorage` | `AuthStorage.create()` | Credential storage |
 | `modelRegistry` | `ModelRegistry.create(authStorage)` | Model registry |
 | `cwd` | `process.cwd()` | Working directory |
-| `agentDir` | `~/.prime/agent` | Config directory |
+| `agentDir` | `~/.pi/agent` | Config directory |
 | `model` | From settings/first available | Model to use |
 | `thinkingLevel` | From settings/"off" | off, low, medium, high |
-| `tools` | `["ipython"]` | Built-in tools |
+| `tools` | `["read", "bash", "edit", "write"]` built-ins | Allowlist tool names across built-in, extension, and custom tools |
 | `customTools` | `[]` | Additional tool definitions |
 | `resourceLoader` | DefaultResourceLoader | Resource loader for extensions, skills, prompts, themes |
 | `sessionManager` | `SessionManager.create(cwd)` | Persistence |

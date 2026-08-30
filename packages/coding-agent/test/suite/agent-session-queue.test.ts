@@ -3587,4 +3587,27 @@ describe("AgentSession scheduler scenarios", () => {
 			}
 		}
 	});
+
+	it("delivers follow-ups queued during agent_end", async () => {
+		let sent = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi: ExtensionAPI) => {
+					pi.on("agent_end", async () => {
+						if (sent) return;
+						sent = true;
+						pi.sendUserMessage("conflict report", { deliverAs: "followUp" });
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("reply"), fauxAssistantMessage("follow-up reply")]);
+
+		await harness.session.prompt("hello");
+		await harness.session.agent.waitForIdle();
+
+		expect(getUserTexts(harness)).toEqual(["hello", "conflict report"]);
+	});
 });

@@ -123,6 +123,7 @@ export interface ModelChangeEntry extends SessionEntryBase {
 
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
+	usage?: Usage;
 	summary: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
@@ -133,6 +134,7 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 
 export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
 	type: "branch_summary";
+	usage?: Usage;
 	fromId: string;
 	summary: string;
 	details?: T;

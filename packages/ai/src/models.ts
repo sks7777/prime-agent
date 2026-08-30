@@ -1,5 +1,15 @@
 import { MODELS } from "./models.generated.js";
-import type { Api, KnownProvider, Model, ModelThinkingLevel, Usage } from "./types.js";
+import { completeSimple } from "./stream.js";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	KnownProvider,
+	Model,
+	ModelThinkingLevel,
+	SimpleStreamOptions,
+	Usage,
+} from "./types.js";
 
 const modelRegistry: Map<string, Map<string, Model<Api>>> = new Map();
 
@@ -102,4 +112,32 @@ export function modelsAreEqual<TApi extends Api>(
 ): boolean {
 	if (!a || !b) return false;
 	return a.id === b.id && a.provider === b.provider;
+}
+
+// Lightweight mutable model store for testing (fauxProvider adapter)
+export interface Models {
+	getProviders(): readonly { id: string; name?: string }[];
+	getModels(provider?: string): readonly Model<Api>[];
+	getModel(provider: string, id: string): Model<Api> | undefined;
+	addProvider(provider: { id: string; name?: string }): void;
+	addModel(model: Model<Api>): void;
+	completeSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage>;
+}
+
+export function createModels(): Models {
+	const providers: { id: string; name?: string }[] = [];
+	const models: Model<Api>[] = [];
+
+	return {
+		getProviders: () => providers,
+		getModels: (provider?: string) => (provider ? models.filter((m) => m.provider === provider) : models),
+		getModel: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
+		addProvider: (p) => {
+			if (!providers.find((x) => x.id === p.id)) providers.push(p);
+		},
+		addModel: (m) => {
+			if (!models.find((x) => x.provider === m.provider && x.id === m.id)) models.push(m);
+		},
+		completeSimple: (model, context, options) => completeSimple(model, context, options),
+	};
 }

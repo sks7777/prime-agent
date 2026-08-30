@@ -142,6 +142,12 @@ export {
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.js";
 export { convertToLlm } from "./core/messages.js";
 export { ModelRegistry } from "./core/model-registry.js";
+export {
+	createModelRuntimeAdapter,
+	type ModelRuntimeAdapter,
+	type ModelsRefreshResult,
+	type ProviderAuthResult,
+} from "./core/model-runtime-adapter.js";
 export type {
 	PackageManager,
 	PathMetadata,
@@ -399,6 +405,7 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.js";
+export type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./modes/rpc/rpc-types.js";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";

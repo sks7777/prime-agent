@@ -49,10 +49,12 @@ prime-agent
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
+| Ant Ling | `ANT_LING_API_KEY` | `ant-ling` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |
 | Prime Inference | `PRIME_API_KEY` | `prime-inference` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
+| NVIDIA NIM | `NVIDIA_API_KEY` | `nvidia` |
 | Google Gemini | `GEMINI_API_KEY` | `google` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | Groq | `GROQ_API_KEY` | `groq` |
@@ -63,10 +65,12 @@ prime-agent
 | OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
 | Vercel AI Gateway | `AI_GATEWAY_API_KEY` | `vercel-ai-gateway` |
 | ZAI | `ZAI_API_KEY` | `zai` |
+| ZAI Coding Plan (China) | `ZAI_CODING_CN_API_KEY` | `zai-coding-cn` |
 | OpenCode Zen | `OPENCODE_API_KEY` | `opencode` |
 | OpenCode Go | `OPENCODE_API_KEY` | `opencode-go` |
 | Hugging Face | `HF_TOKEN` | `huggingface` |
 | Fireworks | `FIREWORKS_API_KEY` | `fireworks` |
+| Together AI | `TOGETHER_API_KEY` | `together` |
 | Kimi For Coding | `KIMI_API_KEY` | `kimi-coding` |
 | MiniMax | `MINIMAX_API_KEY` | `minimax` |
 | MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
@@ -84,12 +88,15 @@ Store credentials in `~/.prime/agent/auth.json`:
 ```json
 {
   "anthropic": { "type": "api_key", "key": "sk-ant-..." },
+  "ant-ling": { "type": "api_key", "key": "..." },
   "openai": { "type": "api_key", "key": "sk-..." },
   "prime-inference": { "type": "api_key", "key": "..." },
   "deepseek": { "type": "api_key", "key": "sk-..." },
+  "nvidia": { "type": "api_key", "key": "nvapi-..." },
   "google": { "type": "api_key", "key": "..." },
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
+  "together": { "type": "api_key", "key": "..." },
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
@@ -101,23 +108,31 @@ The file is created with `0600` permissions (user read/write only). Auth file cr
 
 ### Key Resolution
 
-The `key` field supports three formats:
+The `key` field supports command execution, environment interpolation, and literals:
 
-- **Shell command:** `"!command"` executes and uses stdout (cached for process lifetime)
+- **Shell command:** `"!command"` at the start executes the whole value as a command and uses stdout (cached for process lifetime)
   ```json
   { "type": "api_key", "key": "!security find-generic-password -ws 'anthropic'" }
   { "type": "api_key", "key": "!op read 'op://vault/item/credential'" }
   ```
-- **Environment variable:** Uses the value of the named variable
+- **Environment interpolation:** `"$ENV_VAR"` or `"${ENV_VAR}"` uses the value of the named variable. Interpolation works inside larger literals.
   ```json
-  { "type": "api_key", "key": "MY_ANTHROPIC_KEY" }
+  { "type": "api_key", "key": "$MY_ANTHROPIC_KEY" }
+  { "type": "api_key", "key": "${KEY_PREFIX}_${KEY_SUFFIX}" }
+  ```
+  `$FOO_BAR` is the variable `FOO_BAR`; use `${FOO}_BAR` when `BAR` is literal text. Missing environment variables make the value unresolved.
+- **Escapes:** `"$$"` emits a literal `"$"`; `"$!"` emits a literal `"!"` without triggering command execution.
+  ```json
+  { "type": "api_key", "key": "$$literal-dollar-prefix" }
+  { "type": "api_key", "key": "$!literal-bang-prefix" }
   ```
 - **Literal value:** Used directly
   ```json
   { "type": "api_key", "key": "sk-ant-..." }
+  { "type": "api_key", "key": "public" }
   ```
 
-OAuth credentials are also stored here after `/login` and managed automatically.
+Legacy uppercase env-var-like values such as `MY_API_KEY` are migrated to `$MY_API_KEY` on startup. OAuth credentials are also stored here after `/login` and managed automatically.
 
 ### Prime Inference
 
