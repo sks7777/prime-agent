@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Component } from "@earendil-works/pi-tui";
 import type {
 	ExtensionCommandContextActions,
 	ExtensionUIContext,
@@ -6,6 +7,7 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.js";
+import { KeybindingsManager } from "../../core/keybindings.js";
 import type { SubagentRuntimeHost } from "../../core/rlm-runtime.js";
 import { createAgentConnectionState } from "../agent-connection/snapshot.js";
 import type { AgentConnectionState } from "../agent-connection/types.js";
@@ -16,7 +18,34 @@ import {
 	type DaemonExtensionUIResponse,
 	type DaemonOutbound,
 	isDaemonDialogExtensionUiRequest,
+	isDaemonKeyUiResponse,
 } from "./daemon-protocol.js";
+
+/** Fallbacks used until the first client key event reports a terminal width. */
+const DEFAULT_CUSTOM_WIDGET_WIDTH = 120;
+const DEFAULT_CUSTOM_WIDGET_HEIGHT = 40;
+
+/** Plausible terminal column upper bound; clients report real terminal sizes. */
+const MAX_CUSTOM_WIDGET_WIDTH = 1000;
+
+function isSaneWidgetWidth(width: number | undefined): width is number {
+	return width !== undefined && Number.isInteger(width) && width > 0 && width <= MAX_CUSTOM_WIDGET_WIDTH;
+}
+
+function agentDirFor(state: ActiveSessionState): string {
+	return state.runtime.services.agentDir;
+}
+
+const keybindingsBySession = new WeakMap<ActiveSessionState, KeybindingsManager>();
+
+function keybindingsFor(state: ActiveSessionState): KeybindingsManager {
+	let keybindings = keybindingsBySession.get(state);
+	if (!keybindings) {
+		keybindings = KeybindingsManager.create(agentDirFor(state));
+		keybindingsBySession.set(state, keybindings);
+	}
+	return keybindings;
+}
 
 export interface ActiveSessionBindingCallbacks {
 	broadcast: (state: ActiveSessionState, message: DaemonOutbound) => void;
@@ -233,80 +262,94 @@ function createExtensionUIContext(
 				method: "custom",
 				payload: { overlay: options?.overlay ?? false, widgetKey },
 			});
-			let component: any;
+			let component: Component & { dispose?(): void; handleInput?(data: string): void };
 			let closed = false;
-			const currentWidth = 120;
+			let currentWidth = DEFAULT_CUSTOM_WIDGET_WIDTH;
 
-			// Proxy TUI: requestRender → re-render component → send via setWidget
-			const proxyTui = {
-				height: 40,
-				requestRender: () => {
+			// Coalesce renders across one microtask: components that call
+			// tui.requestRender() inside handleInput would otherwise double-render
+			// (once from requestRender, once from the key handler below), and the
+			// real TUI coalesces requestRender the same way.
+			let renderScheduled = false;
+			const renderWidget = () => {
+				if (closed || renderScheduled) return;
+				renderScheduled = true;
+				queueMicrotask(() => {
+					renderScheduled = false;
 					if (closed) return;
 					try {
-						const lines = component?.render?.(currentWidth) ?? [];
+						const lines = component?.render(currentWidth) ?? [];
 						if (Array.isArray(lines) && lines.length > 0) {
-							emitUiRequest("setWidget", { widgetKey, widgetLines: lines, widgetPlacement: "aboveEditor" });
+							emitUiRequest("setWidget", {
+								widgetKey,
+								widgetLines: lines,
+								widgetPlacement: "aboveEditor",
+							});
 						}
 					} catch {
-						/* render error */
+						// Extension UI component may throw on render
 					}
-				},
+				});
+			};
+
+			// Proxy TUI: requestRender → re-render component → send via setWidget.
+			// The client reports its terminal width with every forwarded key event.
+			const proxyTui = {
+				height: DEFAULT_CUSTOM_WIDGET_HEIGHT,
+				requestRender: renderWidget,
 				setFocus: () => {},
 			};
 
-			// Proxy keybindings: match against raw key data
-			const proxyKeybindings = {
-				matches: (data: string, binding: string) => {
-					const defaults: Record<string, string> = {
-						"tui.select.up": "\x1b[A",
-						"tui.select.down": "\x1b[B",
-						"tui.select.confirm": "\r",
-						"tui.select.cancel": "\x1b",
-						"tui.input.tab": "\t",
-						"tui.input.escape": "\x1b",
-						"tui.input.enter": "\r",
-						"app.clear": "\x03",
-					};
-					return defaults[binding] !== undefined && data === defaults[binding];
-				},
-			};
+			const keybindings = keybindingsFor(state);
 
 			return new Promise<T>((resolveCustom) => {
 				const finish = (result: T) => {
 					if (closed) return;
 					closed = true;
+					try {
+						component?.dispose?.();
+					} catch {
+						// Extension UI component may throw on dispose
+					}
 					emitUiRequest("setWidget", { widgetKey, widgetLines: undefined });
 					state.extensionUiRequests.delete(requestId);
 					resolveCustom(result);
 				};
 
-				// Store handler for key events from client
+				// Store handler for key events from client. { key } responses keep the
+				// pending request alive (daemon-mode handleCommand resolves without
+				// deleting); only terminal responses (value/cancelled/confirmed)
+				// resolve custom().
 				state.extensionUiRequests.set(requestId, {
-					resolve: (response: any) => {
-						if ("key" in response) {
-							// Forward key event to component
+					resolve: (response) => {
+						if (isDaemonKeyUiResponse(response)) {
+							if (isSaneWidgetWidth(response.width)) {
+								currentWidth = response.width;
+							}
 							if (!closed && component?.handleInput) {
 								try {
 									component.handleInput(response.key);
+									renderWidget();
 								} catch {
 									// Extension UI component may throw on unexpected key input
 								}
 							}
-						} else if ("cancelled" in response) {
-							finish(undefined as T);
 						} else if ("value" in response) {
 							finish(response.value as T);
+						} else {
+							// cancelled, confirmed, or any unexpected shape: settle
+							// as cancelled so the widget always clears.
+							finish(undefined as T);
 						}
 					},
 				});
 
 				// Create the component by calling the factory
-				Promise.resolve(factory(proxyTui, theme, proxyKeybindings, finish))
-					.then((c: any) => {
+				Promise.resolve(factory(proxyTui, theme, keybindings, finish))
+					.then((c) => {
 						if (closed) return;
 						component = c;
-						// Initial render
-						proxyTui.requestRender();
+						renderWidget();
 					})
 					.catch(() => {
 						/* factory error */ finish(undefined as T);

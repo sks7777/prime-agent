@@ -5310,7 +5310,10 @@ export class AgentDaemon {
 				if (!pending) {
 					throw new Error(`Unknown extension UI request: ${command.requestId}`);
 				}
-				state.extensionUiRequests.delete(command.requestId);
+				// Pending-request deletion is owned by the binding resolvers
+				// (dialogRequest cleanup and custom() finish), which handle
+				// non-terminal { key } responses for custom widgets by keeping
+				// the request registered; resolving is always safe to do here.
 				pending.resolve(command.response);
 				return success(command.id, "extension_ui_response");
 			}

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
+import type { Component } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import {
@@ -253,5 +254,102 @@ describe("daemon extension binding", () => {
 			"user:daemon replacement message",
 			"assistant:replacement reply",
 		]);
+	});
+
+	it("keeps a custom() request alive across multiple forwarded key events", async () => {
+		const keys: string[] = [];
+		let resolveCustom!: (value: string | undefined) => void;
+		const customDone = new Promise<string | undefined>((resolve) => {
+			resolveCustom = resolve;
+		});
+
+		const runtime = await createRuntimeForTest(
+			(pi) => {
+				pi.registerCommand("daemon-custom", {
+					description: "daemon custom",
+					handler: async (_args, ctx) => {
+						const result = await ctx.ui.custom<string>((tui, _theme, _keybindings, done) => {
+							void tui;
+							const component: Component & { handleInput?(data: string): void } = {
+								render: (width: number) => [`custom widget width=${width}`],
+								invalidate: () => {},
+								handleInput: (data: string) => {
+									keys.push(data);
+									if (keys.length >= 3) done("done-after-3-keys");
+								},
+							};
+							return component;
+						});
+						resolveCustom(result);
+					},
+				});
+			},
+			["custom reply"],
+		);
+
+		const outbound: DaemonOutbound[] = [];
+		const state: ActiveSessionState = {
+			activeSessionId: "active-custom",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-custom",
+			lastEventSequence: 0,
+		};
+		// A client with extension UI support must be attached for custom() to proceed.
+		state.clients.add({
+			id: "client-custom",
+			socket: null as unknown as import("node:net").Socket,
+			attachedActiveSessionIds: new Set(["active-custom"]),
+			detachInput: () => {},
+			supportsExtensionUi: true,
+			capabilities: new Set(),
+		});
+		await bindActiveSessionState(state, {
+			broadcast: (_state, message) => {
+				outbound.push(message);
+			},
+			shutdown: () => {},
+		});
+
+		// The command handler awaits custom(), which resolves only after done()
+		// fires on the third forwarded key — so the prompt must not be awaited.
+		const promptDone = runtime.session.prompt("/daemon-custom");
+		let customRequestId: string | undefined;
+		for (let i = 0; i < 100 && !customRequestId; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			customRequestId = state.extensionUiRequests.keys().next().value;
+		}
+		expect(customRequestId).toBeDefined();
+		const requestId = customRequestId!;
+
+		const setWidgetMessages = () =>
+			outbound.filter(
+				(message): message is Extract<DaemonOutbound, { type: "extension_ui_request" }> =>
+					message.type === "extension_ui_request" && message.method === "setWidget",
+			);
+
+		// The client forwards three key events with a reported width; the third
+		// makes the component call done(), which resolves custom().
+		for (const key of ["\x1b[A", "\x1b[B", "\r"]) {
+			const pending = state.extensionUiRequests.get(requestId);
+			expect(pending).toBeDefined();
+			pending!.resolve({ key, width: 90 });
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(keys).toEqual(["\x1b[A", "\x1b[B", "\r"]);
+
+		// The widget re-rendered at the client-reported width, not the fallback 120.
+		const rendered = setWidgetMessages().flatMap((message) => message.payload.widgetLines);
+		expect(rendered).toContain("custom widget width=90");
+
+		// The request stays registered until the component calls done().
+		expect(state.extensionUiRequests.has(requestId)).toBe(false);
+		const finished = await customDone;
+		expect(finished).toBe("done-after-3-keys");
+		await promptDone;
+		// Closing clears the widget.
+		expect(setWidgetMessages().some((message) => message.payload.widgetLines === undefined)).toBe(true);
 	});
 });

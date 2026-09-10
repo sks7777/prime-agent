@@ -1,0 +1,1 @@
+- Changed `toolDiffAddedBg`, `toolDiffRemovedBg`, `toolDiffText`, and `toolPanelBg` to optional theme colors with defaults, so upstream pi themes (e.g. awesome-pi-themes) load without missing-color errors.

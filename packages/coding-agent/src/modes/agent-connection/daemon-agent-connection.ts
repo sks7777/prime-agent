@@ -587,6 +587,10 @@ export class DaemonAgentConnection implements AgentConnection {
 		return this.client.supportsServerCapability("acp_mcp_servers");
 	}
 
+	supportsExtensionUiKeyEvents(): boolean {
+		return this.client.supportsServerCapability("extension_ui_key_events");
+	}
+
 	async replaceAcpMcpServers(servers: readonly AcpMcpServerConfig[], ownerId: string): Promise<void> {
 		if (!this.supportsAcpMcpServers()) {
 			throw new DaemonCapabilityUnavailableError("replace_acp_mcp_servers", "acp_mcp_servers");

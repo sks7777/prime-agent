@@ -1099,6 +1099,8 @@ export class InteractiveMode {
 
 	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
+	/** Input-listener cleanup per live custom widget, keyed by `custom:<requestId>`. */
+	private customWidgetCleanups = new Map<string, () => void>();
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
 
@@ -3633,6 +3635,9 @@ export class InteractiveMode {
 		}
 		this.ui.hideOverlay();
 		this.clearExtensionTerminalInputListeners();
+		for (const cleanup of this.customWidgetCleanups.values()) {
+			cleanup();
+		}
 		this.setExtensionFooter(undefined);
 		this.setExtensionHeader(undefined);
 		this.clearExtensionWidgets();
@@ -5371,19 +5376,27 @@ export class InteractiveMode {
 			case "custom": {
 				const customId = request.id;
 				const widgetKey = `custom:${customId}`;
-				(this as any)._customCleanup = (this as any)._customCleanup || new Map();
 
-				// Capture keys and forward to daemon
+				// Capture keys and forward to daemon, along with the terminal width
+				// so the daemon renders the component at the real size. Old daemons
+				// consume the pending request on the first key response (breaking
+				// multi-key widgets), so cancel unsupported widgets immediately
+				// instead of leaving a dead widget on screen.
+				if (this.agentConnection.supportsExtensionUiKeyEvents?.() !== true) {
+					void this.agentConnection.respondToExtensionUiRequest(customId, { cancelled: true }).catch(() => {});
+					return undefined;
+				}
 				const keyUnsubscribe = this.ui.addInputListener((data: string): { consume?: boolean } | undefined => {
-					if (!(this as any)._customCleanup.has(widgetKey)) return undefined;
-					void this.agentConnection.respondToExtensionUiRequest(customId, { key: data } as any).catch(() => {});
+					if (!this.customWidgetCleanups.has(widgetKey)) return undefined;
+					const width = this.ui.terminal.columns;
+					void this.agentConnection.respondToExtensionUiRequest(customId, { key: data, width }).catch(() => {});
 					return { consume: true };
 				});
 
 				// Store cleanup - called when setWidget receives undefined for this widgetKey
-				(this as any)._customCleanup.set(widgetKey, () => {
+				this.customWidgetCleanups.set(widgetKey, () => {
 					keyUnsubscribe();
-					(this as any)._customCleanup.delete(widgetKey);
+					this.customWidgetCleanups.delete(widgetKey);
 				});
 
 				// Return undefined = no response sent to daemon.
@@ -5397,8 +5410,8 @@ export class InteractiveMode {
 					const widgetLines = getPayloadStringArray(payload, "widgetLines");
 					const placement = getPayloadWidgetPlacement(payload, "widgetPlacement");
 					// If this is a custom widget being cleared, run cleanup
-					if (widgetLines === undefined && (this as any)._customCleanup?.has(key)) {
-						(this as any)._customCleanup.get(key)?.();
+					if (widgetLines === undefined && this.customWidgetCleanups.has(key)) {
+						this.customWidgetCleanups.get(key)?.();
 					}
 					this.setExtensionWidget(key, widgetLines, placement ? { placement } : undefined);
 				}

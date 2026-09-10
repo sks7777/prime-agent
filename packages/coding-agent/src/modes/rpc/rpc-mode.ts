@@ -156,7 +156,8 @@ async function runRpcModeWithConnectionInternal(
 				method === "setStatus" ||
 				method === "setWidget" ||
 				method === "setTitle" ||
-				method === "set_editor_text"
+				method === "set_editor_text" ||
+				method === "bell"
 			) {
 				if (isDialogMethod(method)) {
 					pendingConnectionUiRequests.add(event.request.id);

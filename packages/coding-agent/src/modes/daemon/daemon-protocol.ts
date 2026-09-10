@@ -25,6 +25,7 @@ import type { DeleteSessionFileResult } from "../../core/session-file-actions.js
 import type { SessionUsageSummary } from "../../core/usage.js";
 import type {
 	AgentConnectionAgentStatus,
+	AgentConnectionExtensionUiKeyResponse,
 	AgentConnectionHeartbeat,
 	AgentConnectionQueueMode,
 	AgentConnectionResourceSnapshot,
@@ -73,8 +74,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 25 adds capability-gated direct worker peer transport discovery.
 // Revision 26 publishes own-session usage totals on session summary and saved-session rows.
 // Revision 27 adds structured session_recovering failure info for known-but-unaddressable sessions.
-export const DAEMON_SCHEMA_REVISION = 27;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-27-962b8b4c5e35";
+// Revision 28 adds the non-terminal { key, width } extension_ui_response variant for custom widgets.
+export const DAEMON_SCHEMA_REVISION = 28;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-28-962b8b4c5e35";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -121,6 +123,10 @@ export type DaemonServerCapability =
 	| "session_input_pause"
 	| "owned_prompt_cancellation"
 	| "acp_mcp_servers"
+	// The daemon keeps custom-widget extension_ui_request pending entries
+	// registered across non-terminal { key, width } responses. Clients must
+	// check before forwarding key events.
+	| "extension_ui_key_events"
 	| "direct_peer_transport";
 
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
@@ -166,6 +172,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"rlm_quiescence_barrier",
 	"session_input_pause",
 	"acp_mcp_servers",
+	"extension_ui_key_events",
 ];
 
 /** Single-use short-lived credential for one direct TUI connection to one worker process incarnation. */
@@ -1037,7 +1044,20 @@ export type DaemonExtensionUIResponse =
 	| { value: string }
 	| { confirmed: boolean }
 	| { cancelled: true }
-	| { key: string };
+	| DaemonKeyUiResponse;
+
+/**
+ * Key event forwarded from a client for an in-flight `custom` extension UI
+ * request. Non-terminal: the pending request stays registered so the next key
+ * press resolves against it too; only { value } / { confirmed } / { cancelled }
+ * finish the request. Shared shape with the client wire types: clients send it
+ * only after the daemon advertises `extension_ui_key_events`.
+ */
+export type DaemonKeyUiResponse = AgentConnectionExtensionUiKeyResponse;
+
+export function isDaemonKeyUiResponse(response: DaemonExtensionUIResponse): response is DaemonKeyUiResponse {
+	return "key" in response;
+}
 
 export function isDaemonDialogExtensionUiRequest(method: string): boolean {
 	return (

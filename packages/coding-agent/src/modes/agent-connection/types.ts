@@ -533,7 +533,24 @@ export interface AgentConnectionHeartbeat {
 	firstMessage?: string;
 }
 
-export type AgentConnectionExtensionUiResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
+/**
+ * Key event forwarded from a client for an in-flight `custom` extension UI
+ * request. Non-terminal: the pending request stays registered so the next key
+ * press resolves against it too; only { value } / { confirmed } / { cancelled }
+ * finish the request. `width` is the client terminal's column count, used to
+ * render the proxied component at the real size. Clients must only send this
+ * when the daemon advertised the `extension_ui_key_events` capability.
+ */
+export interface AgentConnectionExtensionUiKeyResponse {
+	key: string;
+	width?: number;
+}
+
+export type AgentConnectionExtensionUiResponse =
+	| { value: string }
+	| { confirmed: boolean }
+	| { cancelled: true }
+	| AgentConnectionExtensionUiKeyResponse;
 
 export interface AgentConnectionExtensionUiRequest {
 	id: string;
@@ -697,6 +714,8 @@ export interface AgentConnection {
 	respondToExtensionUiRequest(requestId: string, response: AgentConnectionExtensionUiResponse): Promise<void>;
 	subscribeAgentRoster?(listener: () => void): Promise<{ summaries(): SessionSummary[]; dispose(): Promise<void> }>;
 	supportsAcpMcpServers?(): boolean;
+	/** Whether the daemon keeps custom-widget extension UI requests alive across forwarded key events. */
+	supportsExtensionUiKeyEvents?(): boolean;
 	replaceAcpMcpServers?(servers: readonly AcpMcpServerConfig[], ownerId: string): Promise<void>;
 	releaseAcpMcpServers?(ownerId: string, serverNames: readonly string[]): Promise<void>;
 

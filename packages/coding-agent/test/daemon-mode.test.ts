@@ -68,8 +68,10 @@ import {
 	DAEMON_SCHEMA_REVISION,
 	type DaemonAttachResult,
 	type DaemonCommand,
+	type DaemonExtensionUIResponse,
 	type DaemonOutbound,
 	failure,
+	isDaemonKeyUiResponse,
 } from "../src/modes/daemon/daemon-protocol.js";
 import { activeActivityForSession, type SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DAEMON_WORKER_SUPERVISOR_SOCKET_ENV } from "../src/modes/daemon/daemon-worker-protocol.js";
@@ -477,6 +479,73 @@ describe("daemon mode helpers", () => {
 
 		expect(state.extensionUiRequests.size).toBe(0);
 		expect(resolve).toHaveBeenCalledWith({ cancelled: true });
+	});
+
+	it("resolves every extension_ui_response and leaves deletion to binding resolvers", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-custom-key.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonOutbound | undefined>;
+		};
+		const resolve = vi.fn((response: DaemonExtensionUIResponse) => {
+			// Mimic the binding resolver contract: terminal responses delete the
+			// pending request; key events keep it registered.
+			if (!isDaemonKeyUiResponse(response)) {
+				state.extensionUiRequests.delete("custom-1");
+			}
+		});
+		const state = {
+			...makeState("active"),
+			extensionUiRequests: new Map([["custom-1", { resolve }]]),
+		};
+		internals.sessions.set(state.activeSessionId, state);
+		const client = makeClient("client", state.activeSessionId, true);
+
+		// Key events resolve without consuming the pending request.
+		await internals.handleCommand(client, {
+			id: "key-1",
+			type: "extension_ui_response",
+			activeSessionId: state.activeSessionId,
+			requestId: "custom-1",
+			response: { key: "\x1b[A", width: 90 },
+		});
+		expect(state.extensionUiRequests.has("custom-1")).toBe(true);
+		expect(resolve).toHaveBeenCalledWith({ key: "\x1b[A", width: 90 });
+
+		await internals.handleCommand(client, {
+			id: "key-2",
+			type: "extension_ui_response",
+			activeSessionId: state.activeSessionId,
+			requestId: "custom-1",
+			response: { key: "\r" },
+		});
+		expect(state.extensionUiRequests.has("custom-1")).toBe(true);
+		expect(resolve).toHaveBeenCalledTimes(2);
+
+		// A terminal response lets the binding resolver delete the request.
+		await internals.handleCommand(client, {
+			id: "value-1",
+			type: "extension_ui_response",
+			activeSessionId: state.activeSessionId,
+			requestId: "custom-1",
+			response: { cancelled: true },
+		});
+		expect(state.extensionUiRequests.has("custom-1")).toBe(false);
+		expect(resolve).toHaveBeenLastCalledWith({ cancelled: true });
+
+		// Responses for removed requests fail instead of dangling.
+		await expect(
+			internals.handleCommand(client, {
+				id: "value-2",
+				type: "extension_ui_response",
+				activeSessionId: state.activeSessionId,
+				requestId: "custom-1",
+				response: { cancelled: true },
+			}),
+		).rejects.toThrow("Unknown extension UI request");
 	});
 
 	it("acknowledges agent messages after target prompt preflight succeeds", async () => {

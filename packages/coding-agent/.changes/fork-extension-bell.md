@@ -1,0 +1,1 @@
+- Added `ctx.ui.bell()` for extensions to play the terminal bell; daemon and RPC mode forward it to attached clients.
