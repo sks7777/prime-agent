@@ -185,11 +185,15 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 	return { dir: tmpDir, filePath };
 }
 
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
+export function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
+		// In dev mode (tsx) the entrypoint is TypeScript: forward execArgv so the
+		// spawned node process loads the tsx loader and can run the .ts entry.
+		const isTypeScriptEntry = /\.(ts|mts|cts|tsx)$/.test(currentScript);
+		const execArgs = isTypeScriptEntry ? process.execArgv : [];
+		return { command: process.execPath, args: [...execArgs, currentScript, ...args] };
 	}
 
 	const execName = path.basename(process.execPath).toLowerCase();

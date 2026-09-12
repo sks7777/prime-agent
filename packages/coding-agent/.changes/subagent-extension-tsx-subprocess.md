@@ -1,0 +1,1 @@
+- Fixed the subagent example extension spawning broken subprocesses in dev mode by forwarding tsx execArgv to the spawned node process.
