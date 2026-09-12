@@ -1,0 +1,1 @@
+- Fixed the plan-mode example to preserve active custom tools, skip the action prompt when no plan is found, and queue refinement/execution follow-ups from `agent_end` (upstream #5940).
