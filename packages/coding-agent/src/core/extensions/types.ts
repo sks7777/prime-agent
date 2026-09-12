@@ -301,6 +301,12 @@ export interface ExtensionContext {
 	signal: AbortSignal | undefined;
 	/** Abort the current agent operation */
 	abort(): void;
+	/**
+	 * Whether the current project directory is trusted for settings loading.
+	 * Always true: prime-agent has no project trust concept. Provided for
+	 * upstream pi extension compatibility.
+	 */
+	isProjectTrusted(): boolean;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */

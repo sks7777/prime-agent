@@ -1,0 +1,1 @@
+- Changed the pi-ai compat entry point to re-export the full root API so extensions using upstream pi-ai compat imports resolve at runtime.

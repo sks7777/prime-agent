@@ -3161,6 +3161,7 @@ export class InteractiveMode {
 			isIdle: () => !this.isAgentStreaming(),
 			signal: localSessionHost.getAbortSignal(),
 			abort: () => this.agentConnection.abort(),
+			isProjectTrusted: () => true,
 			hasPendingMessages: () => this.getQueuedActionCount() > 0,
 			shutdown: () => {
 				this.shutdownRequested = true;

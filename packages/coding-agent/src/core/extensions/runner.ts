@@ -616,6 +616,12 @@ export class ExtensionRunner {
 				runner.assertActive();
 				runner.abortFn();
 			},
+			isProjectTrusted: () => {
+				runner.assertActive();
+				// prime-agent has no project trust concept; upstream pi
+				// extensions use this to gate project settings reads.
+				return true;
+			},
 			hasPendingMessages: () => {
 				runner.assertActive();
 				return runner.hasPendingMessagesFn();

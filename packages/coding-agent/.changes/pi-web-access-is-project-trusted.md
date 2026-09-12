@@ -1,0 +1,1 @@
+- Added ctx.isProjectTrusted() to the extension context for upstream pi extension compatibility, and exported PI_CODING_AGENT_DIR from the launcher so pi extensions use the prime-agent config directory.

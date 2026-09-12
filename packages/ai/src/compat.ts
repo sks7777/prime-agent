@@ -1,8 +1,7 @@
 /**
  * Compatibility entry point for extensions that import `@earendil-works/pi-ai/compat`.
  *
- * Re-exports `streamSimple` and `completeSimple` from the root entry so
- * extensions written against pi-ai versions that moved these functions
- * behind a `/compat` subpath continue to resolve.
+ * Re-exports the full root entry (stream/complete, api registry, types) so
+ * extensions written against upstream pi-ai's compat subpath keep resolving.
  */
-export { completeSimple, streamSimple } from "./stream.js";
+export * from "./index.js";

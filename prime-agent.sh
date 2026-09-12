@@ -6,6 +6,9 @@ export PRIME_AGENT_LAUNCHER_PATH="$SCRIPT_DIR/prime-agent.sh"
 if BUILD_ID="$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null)"; then
   export PRIME_AGENT_BUILD_ID="$BUILD_ID"
 fi
+# pi-ecosystem extensions (e.g. pi-web-access) read PI_CODING_AGENT_DIR for
+# their config dir; point them at the prime-agent config directory.
+export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.prime/agent}"
 
 # Check for --no-env / --dist flags
 NO_ENV=false
