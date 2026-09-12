@@ -1,0 +1,1 @@
+- Added `registerEntryRenderer` to the extension API so pi extensions written against upstream pi >= 0.80.4 (e.g. @tintinweb/pi-subagents) register custom session-entry renderers at load time instead of failing with `pi.registerEntryRenderer is not a function`.

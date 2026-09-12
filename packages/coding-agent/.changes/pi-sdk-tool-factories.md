@@ -1,0 +1,1 @@
+- Added `createCodingTools` and `createReadOnlyTools` SDK tool factories returning the fork's coding tool set, so pi extensions written against upstream pi >= 0.84 (e.g. @tintinweb/pi-subagents) resolve these exports at load time.

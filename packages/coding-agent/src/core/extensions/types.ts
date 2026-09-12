@@ -53,6 +53,7 @@ import type { HarnessState, RefinementProposal, RefinementResult } from "../refi
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
+	CustomEntry,
 	ReadonlySessionManager,
 	SessionEntry,
 	SessionManager,
@@ -980,6 +981,16 @@ export type MessageRenderer<T = unknown> = (
 	options: MessageRenderOptions,
 	theme: Theme,
 ) => Component | undefined;
+
+export interface EntryRenderOptions {
+	expanded: boolean;
+}
+
+export type EntryRenderer<T = unknown> = (
+	entry: CustomEntry<T>,
+	options: EntryRenderOptions,
+	theme: Theme,
+) => Component | undefined;
 export interface RegisteredCommand {
 	name: string;
 	sourceInfo: SourceInfo;
@@ -1072,6 +1083,8 @@ export interface ExtensionAPI {
 	getFlag(name: string): boolean | string | undefined;
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
+	/** Register a custom renderer for CustomEntry session entries. Custom entries do not participate in LLM context. */
+	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
 	/** Send a custom message to the session. */
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
@@ -1423,6 +1436,7 @@ export interface Extension {
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
+	entryRenderers?: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;

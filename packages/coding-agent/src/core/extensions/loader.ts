@@ -15,6 +15,7 @@ import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
 import { createSyntheticSourceInfo } from "../source-info.js";
 import type {
+	EntryRenderer,
 	Extension,
 	ExtensionAPI,
 	ExtensionFactory,
@@ -236,6 +237,11 @@ function createExtensionAPI(
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
+		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
+			runtime.assertActive();
+			extension.entryRenderers?.set(customType, renderer as EntryRenderer);
+		},
+
 		getFlag(name: string): boolean | string | undefined {
 			runtime.assertActive();
 			if (!extension.flags.has(name)) return undefined;
@@ -377,6 +383,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		handlers: new Map(),
 		tools: new Map(),
 		messageRenderers: new Map(),
+		entryRenderers: new Map(),
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),

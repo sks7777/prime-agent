@@ -1,0 +1,1 @@
+- Added `stripTerminalSequences` text utility (removes ANSI, OSC, and APC control sequences while preserving visible text) for compatibility with pi extensions expecting the upstream pi-tui export surface.
