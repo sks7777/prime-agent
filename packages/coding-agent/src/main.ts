@@ -1603,8 +1603,10 @@ export async function main(args: string[], options?: MainOptions) {
 		});
 
 		await preloadCodeHighlighter();
+		time("daemonAttachAndHighlighter");
 		printTimings();
 		const interactiveResult = await interactiveMode.run();
+		time("interactiveMode.run");
 		if (parsed.noSession) {
 			return;
 		}

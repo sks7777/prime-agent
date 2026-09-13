@@ -1,5 +1,5 @@
 import { enableCompileCache } from "node:module";
-import { maybeStartDaemonEarly } from "./cli/daemon-launch.js";
+import { maybePrewarmWorkerForArgs, maybeStartDaemonEarly } from "./cli/daemon-launch.js";
 import {
 	closeOwnedSessionWorkerOwnerWatch,
 	installOwnedSessionWorkerOwnerWatch,
@@ -27,6 +27,9 @@ export async function runCli(): Promise<void> {
 		if (!isOwnedSessionWorkerProcess()) {
 			// Boot a cold daemon concurrently with this process's heavy imports.
 			maybeStartDaemonEarly(process.argv.slice(2));
+			// Pre-boot an idle worker for a plain fresh interactive launch while
+			// this process is still importing its own module graph.
+			maybePrewarmWorkerForArgs(process.argv.slice(2));
 		}
 		const [{ EnvHttpProxyAgent, setGlobalDispatcher }, { main }] = await Promise.all([
 			import("undici"),

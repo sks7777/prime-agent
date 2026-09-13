@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } f
 import { createServer, type Server, type Socket } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { getLogger } from "@earendil-works/pi-ai";
 import { createCliSubprocessEnv, createCliSubprocessLaunchSpec } from "../../cli/subprocess-launch.js";
 import {
@@ -193,6 +194,23 @@ const SUPERVISOR_SERVER_CAPABILITIES: readonly DaemonServerCapability[] = [
 	"direct_peer_transport",
 ];
 const PEER_TRANSPORT_GRANT_TTL_MS = 10_000;
+/**
+ * Opt-in: spawn session workers from the esbuild CLI bundle instead of this
+ * process's tsx/src entrypoint. The bundle boots in a fraction of the dev-mode
+ * tsx cost; the built code is the same commit as src. Falls back silently when
+ * the bundle file is absent.
+ */
+function workerBundleLaunchSpec(args: string[]): { command: string; args: string[] } | undefined {
+	const enabled = process.env.PRIME_AGENT_WORKER_FROM_BUNDLE;
+	if (enabled !== "1" && enabled?.toLowerCase() !== "true") {
+		return undefined;
+	}
+	const bundlePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../dist/bundle/cli.js");
+	if (!existsSync(bundlePath)) {
+		return undefined;
+	}
+	return { command: process.execPath, args: [bundlePath, ...args] };
+}
 const WORKER_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const INPUT_PAUSE_CLEANUP_TIMEOUT_MS = 5_000;
 const UPDATE_RESTART_MUTATION_DRAIN_TIMEOUT_MS = 80_000;
@@ -234,6 +252,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"roster_unsubscribe",
 	"list_saved_sessions",
 	"create",
+	"prewarm",
 	"attach",
 	"reattach",
 	"detach",
@@ -333,6 +352,34 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"restart",
 	"shutdown",
 ]);
+
+/** One idle pre-booted worker holding a draft root session for an anticipated fresh create. */
+interface PrewarmPoolEntry {
+	key: string;
+	worker?: ResidentWorker;
+	/** Resolves when the pooled worker finished booting and created its draft root. */
+	ready: Promise<ResidentWorker>;
+	expiryTimer: ReturnType<typeof setTimeout>;
+	/** The full create command used to boot the pooled draft (config comparison at consume time). */
+	createCommand: DaemonCreateCommand;
+}
+
+/**
+ * How long an unconsumed pooled worker stays alive before it is stopped (its
+ * empty draft is deleted). Long enough to bridge typical relaunch gaps; the
+ * daemon-wide idle eviction sweep still reaps workers idle for 90 minutes.
+ */
+const PREWARM_POOL_EXPIRY_MS = 600_000;
+
+export function prewarmPoolKey(options: { cwd: string | undefined; launchEnv?: Record<string, string> }): string {
+	// Client env is session identity, adopted when the create consumes the pooled
+	// root; only the launch environment selects the worker, so the key ignores it.
+	const launchEnvDigest = createHash("sha256")
+		.update(JSON.stringify(options.launchEnv ?? {}))
+		.digest("hex")
+		.slice(0, 16);
+	return `${options.cwd ?? "-"}|${launchEnvDigest}`;
+}
 
 interface ResidentWorker {
 	descriptor: DaemonWorkerDescriptor;
@@ -727,6 +774,7 @@ export class DaemonSupervisor {
 	private readonly streamReconstructor = new CompactAssistantStreamReconstructor();
 	private readonly compactCatchupInProgress = new Set<string>();
 	private readonly pendingSessionNames = new Set<string>();
+	private readonly prewarmPool = new Map<string, PrewarmPoolEntry>();
 	private readonly catalog: DaemonCatalogClient;
 	private readonly settingsManager: SettingsManager;
 	private rosterStore?: AgentRoster;
@@ -1972,7 +2020,25 @@ export class DaemonSupervisor {
 			}
 			case "list_saved_sessions":
 				return this.handleSavedSessionList(client, command);
+			case "prewarm": {
+				this.handlePrewarmCommand(command);
+				return success(command.id, command.type, { pooled: true });
+			}
 			case "create": {
+				if (command.sessionPath === undefined && !command.continueRecent && !command.noSession) {
+					// A fresh resident create may adopt a prewarmed draft root. The
+					// pooled worker already booted and created the draft, so this
+					// resolves in milliseconds instead of a cold worker spawn.
+					try {
+						const pooled = await this.tryConsumePrewarmPool(command);
+						if (pooled) {
+							return success(command.id, "create", this.publicSummary(pooled.worker, pooled.summary));
+						}
+					} catch (error) {
+						// A pooled worker failure never blocks the normal create path.
+						this.log(`Prewarm pool consume failed, falling back to cold create: ${String(error)}`);
+					}
+				}
 				const worker = await this.createOrReuseWorker(this.protocolClientId(client), command);
 				const requestedSummary = command.sessionPath
 					? this.findSummaryInWorker(worker, command.sessionPath)
@@ -2836,6 +2902,141 @@ export class DaemonSupervisor {
 		return success(command.id, "list_saved_sessions", { sessions: sessions.map(serializeSavedSessionInfo) });
 	}
 
+	/**
+	 * Pre-boot an idle worker holding a fresh draft root session for the next
+	 * fresh resident create with the same cwd/env. Fire-and-forget: the pooled
+	 * worker is stopped (and its empty draft deleted) if no create consumes it.
+	 */
+	private handlePrewarmCommand(command: Extract<DaemonCommand, { type: "prewarm" }>): void {
+		if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
+		const cwd = command.config?.cwd ? resolve(command.config.cwd) : undefined;
+		const key = prewarmPoolKey({ cwd, launchEnv: command.launchEnv });
+		if (this.prewarmPool.has(key)) return;
+		const config = mergeAgentSessionRuntimeConfig(this.defaultSessionConfig, {
+			...command.config,
+			cwd,
+		});
+		const createCommand: DaemonCreateCommand = {
+			type: "create",
+			config,
+			env: command.env,
+			launchEnv: command.launchEnv,
+			lifecycle: "resident",
+		};
+		const opening = this.launchWorker(createCommand, undefined, undefined).catch((error) => {
+			this.log(`Prewarm worker launch failed for ${key}: ${String(error)}`);
+			this.removePrewarmPoolEntry(key);
+			throw error;
+		});
+		opening.catch(() => {});
+		const entry: PrewarmPoolEntry = {
+			key,
+			ready: opening,
+			createCommand,
+			expiryTimer: setTimeout(() => {
+				const pooled = this.prewarmPool.get(key);
+				if (!pooled) return;
+				this.log(`Prewarm pool entry ${key} expired unconsumed; stopping pooled worker`);
+				this.removePrewarmPoolEntry(key);
+				void opening
+					.then((worker) => this.stopWorker(worker, true))
+					.catch((error) => this.log(`Prewarm pool expiry stop failed: ${String(error)}`));
+			}, PREWARM_POOL_EXPIRY_MS),
+		};
+		entry.expiryTimer.unref();
+		this.prewarmPool.set(key, entry);
+		opening.then(
+			(worker) => {
+				if (this.prewarmPool.get(key) === entry) {
+					entry.worker = worker;
+				}
+			},
+			() => {},
+		);
+		this.log(`Prewarm pool registered ${key}`);
+	}
+
+	private removePrewarmPoolEntry(key: string): void {
+		const entry = this.prewarmPool.get(key);
+		if (!entry) return;
+		clearTimeout(entry.expiryTimer);
+		this.prewarmPool.delete(key);
+	}
+
+	/**
+	 * Consume a pooled worker for a fresh resident create. Returns the worker and
+	 * forwards the create to its draft root so client env and an optional name are
+	 * adopted; the create response mirrors the normal create path.
+	 */
+	private async tryConsumePrewarmPool(
+		command: DaemonCreateCommand,
+	): Promise<{ worker: ResidentWorker; summary: SessionSummary } | undefined> {
+		if (command.sessionPath || command.continueRecent || command.noSession || command.name) {
+			return undefined;
+		}
+		if (command.lifecycle === "client_owned") {
+			return undefined;
+		}
+		const cwd = command.config?.cwd ? resolve(command.config?.cwd) : undefined;
+		const key = prewarmPoolKey({ cwd, launchEnv: command.launchEnv });
+		const entry = this.prewarmPool.get(key);
+		if (!entry) {
+			return undefined;
+		}
+		const worker = await entry.ready;
+		if (this.prewarmPool.get(key) !== entry) {
+			return undefined;
+		}
+		// The pooled root was created with the pooled entry's config; refuse
+		// consumption when this create customizes config keys the pooled draft
+		// cannot honor (the existing-session path never re-applies them).
+		const pooledConfig: Record<string, unknown> = (entry.createCommand.config ?? {}) as Record<string, unknown>;
+		for (const [configKey, configValue] of Object.entries(command.config ?? {})) {
+			if (configKey === "cwd" || configKey === "agentDir") continue;
+			if (configValue === undefined) continue;
+			const pooledValue = pooledConfig[configKey];
+			if (pooledValue !== undefined && JSON.stringify(pooledValue) === JSON.stringify(configValue)) {
+				continue;
+			}
+			if (pooledValue === undefined && configValue === undefined) continue;
+			// A config customization the pooled draft does not carry: fall back to a cold create.
+			this.log(`Prewarm pool skipped for ${key}: create config key ${configKey} differs from pooled draft`);
+			this.removePrewarmPoolEntry(key);
+			return undefined;
+		}
+		const rootSessionFile = worker.descriptor.sessionFile;
+		if (!rootSessionFile) {
+			this.removePrewarmPoolEntry(key);
+			return undefined;
+		}
+		this.removePrewarmPoolEntry(key);
+		// Keep the pool warm for the next launch in this cwd/env: register a
+		// replacement spare now (bounded to one per key, TTL-evicted if unused).
+		if (!this.shuttingDown && this.updateRestartPhase === undefined) {
+			this.log(`Prewarm pool sticky spare requested for ${cwd}`);
+			this.handlePrewarmCommand({
+				type: "prewarm",
+				config: { cwd, executionMode: "interactive", serializedRefine: false },
+				env: undefined,
+				launchEnv: command.launchEnv,
+			});
+		}
+		const response = await this.forwardToWorker(worker, {
+			...command,
+			sessionPath: rootSessionFile,
+		});
+		if (!response.success) {
+			throw deserializeDaemonError(response);
+		}
+		if (!isSessionSummary(response.data)) {
+			throw new Error("Pooled session worker returned an invalid create response");
+		}
+		this.writeRosterEntry(workerRosterEntryFromSummary(response.data), worker);
+		await this.refreshWorkerSummaries(worker, true).catch(() => undefined);
+		this.log(`Prewarm pool consumed ${key} by fresh create`);
+		return { worker, summary: response.data };
+	}
+
 	private async createOrReuseWorker(clientId: string, command: DaemonCreateCommand): Promise<ResidentWorker> {
 		let createCommand = command;
 		if (command.name !== undefined) {
@@ -3108,7 +3309,9 @@ export class DaemonSupervisor {
 			existing?.descriptor.recoveryJournalPath ?? join(this.descriptorDir, `${workerId}.recovery.jsonl`);
 		const orphanProcessJournalPath =
 			existing?.descriptor.orphanProcessJournalPath ?? join(this.descriptorDir, `${workerId}.orphans.jsonl`);
-		const launch = createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]);
+		const launch =
+			workerBundleLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]) ??
+			createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]);
 		const workerEnvironment = createCliSubprocessEnv({
 			...process.env,
 			...launchEnv,
@@ -6350,8 +6553,39 @@ export class DaemonSupervisor {
 		try {
 			await this.stopWorkerUntracked(worker, removeDescriptor, force, archiveSession, recoveryCleanup, directChild);
 		} finally {
+			for (const [key, entry] of [...this.prewarmPool]) {
+				if (entry.worker === worker) this.removePrewarmPoolEntry(key);
+			}
+			this.maybeSpawnStickySpare(worker);
 			releaseStopOwnership();
 		}
+	}
+
+	/**
+	 * Keep one idle pooled worker for the most recently used cwd: when a worker
+	 * stops and no pooled spare exists for its cwd/env, register a fresh prewarm
+	 * so the next launch in that project adopts a warm worker instead of a cold
+	 * boot. Skipped during shutdown and for client-owned workers.
+	 */
+	private maybeSpawnStickySpare(worker: ResidentWorker): void {
+		if (this.shuttingDown || this.updateRestartPhase !== undefined) {
+			return;
+		}
+		if (worker.descriptor.ownerClientId !== undefined) {
+			return;
+		}
+		const rootSummary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
+		const cwd = rootSummary?.cwd ? resolve(rootSummary.cwd) : undefined;
+		if (!cwd) {
+			return;
+		}
+		this.log(`Prewarm pool sticky spare requested for ${cwd}`);
+		this.handlePrewarmCommand({
+			type: "prewarm",
+			config: { cwd, executionMode: "interactive", serializedRefine: false },
+			env: undefined,
+			launchEnv: worker.launchEnv,
+		});
 	}
 
 	private async stopWorkerUntracked(
@@ -6831,6 +7065,9 @@ export class DaemonSupervisor {
 		this.clearIdleEvictionTimer();
 		this.clearScheduledWakeTimer();
 		this.clearRosterWatchdogTimer();
+		for (const key of [...this.prewarmPool.keys()]) {
+			this.removePrewarmPoolEntry(key);
+		}
 		await this.idleEvictionSweep?.catch(() => undefined);
 		for (const cleanup of this.signalCleanupHandlers.splice(0)) {
 			await this.runCleanupStep("signal handler", cleanup);

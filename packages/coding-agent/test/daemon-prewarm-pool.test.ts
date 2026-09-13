@@ -1,0 +1,215 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { success } from "../src/modes/daemon/daemon-protocol.js";
+import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
+import { DaemonSupervisor, prewarmPoolKey } from "../src/modes/daemon/daemon-supervisor.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+interface PoolInternals {
+	// deno-lint-ignore no-explicit-any
+	prewarmPool: Map<string, any>;
+	handleCommand(client: object, command: object): Promise<unknown>;
+	tryConsumePrewarmPool(command: object): Promise<{ worker: unknown; summary: SessionSummary } | undefined>;
+	handlePrewarmCommand(command: object): void;
+	removePrewarmPoolEntry(key: string): void;
+	launchWorker: ReturnType<typeof vi.fn>;
+	forwardToWorker: ReturnType<typeof vi.fn>;
+	writeRosterEntry: ReturnType<typeof vi.fn>;
+	refreshWorkerSummaries: ReturnType<typeof vi.fn>;
+	createOrReuseWorker: ReturnType<typeof vi.fn>;
+	publicSummary(worker: object, summary: SessionSummary): SessionSummary;
+	log: ReturnType<typeof vi.fn>;
+	defaultSessionConfig: { agentDir?: string; cwd?: string };
+	descriptorDir: string;
+}
+
+function makeSupervisor(): PoolInternals {
+	const directory = mkdtempSync(join(tmpdir(), "prime-prewarm-pool-"));
+	tempDirs.push(directory);
+	mkdirSync(join(directory, "workers"), { recursive: true });
+	writeFileSync(join(directory, "settings.json"), JSON.stringify({}));
+	const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+		defaultSessionConfig: { agentDir: directory, cwd: directory },
+		descriptorDir: join(directory, "workers"),
+	}) as unknown as PoolInternals;
+	supervisor.log = vi.fn();
+	return supervisor;
+}
+
+function makeWorkerFixture(id: string, sessionFile: string) {
+	return {
+		descriptor: {
+			workerId: id,
+			lifecycle: "ready" as const,
+			rootActiveSessionId: `${id}-root`,
+			sessionFile,
+			pid: 1,
+			createCommand: { type: "create" as const },
+		},
+		summaries: new Map(),
+		intentionalStop: false,
+	};
+}
+
+function makeSummary(id: string): SessionSummary {
+	return {
+		id,
+		activeSessionId: id,
+		sessionId: `${id}-session`,
+		lifecycle: "live",
+		activity: "idle",
+		isSessionActive: false,
+		lastActivityAt: new Date().toISOString(),
+		cwd: "/tmp/project",
+		isStreaming: false,
+		isCompacting: false,
+		attachedClients: 0,
+		messageCount: 0,
+		sessionActions: { queuedCount: 0, steering: [], followUps: [] },
+	};
+}
+
+describe("worker prewarm pool", () => {
+	it("keys pool entries by cwd and launch env identity, ignoring client env", () => {
+		const base = { cwd: "/tmp/project", launchEnv: { A: "1" } };
+		expect(prewarmPoolKey(base)).toBe(prewarmPoolKey({ ...base }));
+		expect(prewarmPoolKey(base)).not.toBe(prewarmPoolKey({ ...base, cwd: "/other" }));
+		expect(prewarmPoolKey(base)).not.toBe(prewarmPoolKey({ ...base, launchEnv: { A: "2" } }));
+	});
+
+	it("does not consume pooled workers for non-fresh creates", async () => {
+		const supervisor = makeSupervisor();
+		const entry = {
+			key: prewarmPoolKey({ cwd: "/tmp/project" }),
+			ready: Promise.resolve(makeWorkerFixture("w1", "/tmp/sessions/s1.jsonl")),
+			expiryTimer: setTimeout(() => {}, 1_000),
+		};
+		supervisor.prewarmPool.set(entry.key, {
+			...entry,
+			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
+		});
+		for (const command of [
+			{ type: "create", sessionPath: "/tmp/sessions/s1.jsonl" },
+			{ type: "create", continueRecent: true },
+			{ type: "create", noSession: true },
+			{ type: "create", name: "named" },
+			{ type: "create", lifecycle: "client_owned" },
+		]) {
+			expect(
+				await supervisor.tryConsumePrewarmPool({
+					...command,
+					config: { cwd: "/tmp/project" },
+				}),
+			).toBeUndefined();
+		}
+		expect(supervisor.prewarmPool.size).toBe(1);
+		clearTimeout(entry.expiryTimer);
+	});
+
+	it("consumes a pooled worker for a fresh create and forwards to the draft root", async () => {
+		const supervisor = makeSupervisor();
+		const summary = makeSummary("s1");
+		const worker = makeWorkerFixture("w1", "/tmp/sessions/s1.jsonl");
+		const key = prewarmPoolKey({ cwd: "/tmp/project" });
+		supervisor.prewarmPool.set(key, {
+			key,
+			ready: Promise.resolve(worker),
+			expiryTimer: setTimeout(() => {}, 1_000),
+			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
+		});
+		supervisor.forwardToWorker = vi.fn(async () => success(undefined, "create", summary));
+		supervisor.writeRosterEntry = vi.fn();
+		supervisor.refreshWorkerSummaries = vi.fn(async () => undefined);
+
+		const consumed = await supervisor.tryConsumePrewarmPool({
+			type: "create",
+			config: { cwd: "/tmp/project" },
+		});
+		expect(consumed?.summary).toBe(summary);
+		expect(consumed?.worker).toBe(worker);
+		expect(supervisor.forwardToWorker).toHaveBeenCalledWith(worker, {
+			type: "create",
+			config: { cwd: "/tmp/project" },
+			sessionPath: "/tmp/sessions/s1.jsonl",
+		});
+		expect(supervisor.prewarmPool.size).toBe(0);
+	});
+
+	it("falls back to a cold create when the pooled worker has no draft session file", async () => {
+		const supervisor = makeSupervisor();
+		const key = prewarmPoolKey({ cwd: "/tmp/project" });
+		supervisor.prewarmPool.set(key, {
+			key,
+			ready: Promise.resolve(makeWorkerFixture("w1", "")),
+			expiryTimer: setTimeout(() => {}, 1_000),
+			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
+		});
+		const consumed = await supervisor.tryConsumePrewarmPool({
+			type: "create",
+			config: { cwd: "/tmp/project" },
+		});
+		expect(consumed).toBeUndefined();
+		expect(supervisor.prewarmPool.size).toBe(0);
+	});
+
+	it("refuses consumption when the create customizes config the pooled draft lacks", async () => {
+		const supervisor = makeSupervisor();
+		const worker = makeWorkerFixture("w1", "/tmp/sessions/s1.jsonl");
+		const key = prewarmPoolKey({ cwd: "/tmp/project" });
+		supervisor.prewarmPool.set(key, {
+			key,
+			ready: Promise.resolve(worker),
+			expiryTimer: setTimeout(() => {}, 1_000),
+			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
+		});
+		supervisor.forwardToWorker = vi.fn();
+
+		const consumed = await supervisor.tryConsumePrewarmPool({
+			type: "create",
+			config: { cwd: "/tmp/project", provider: "custom-provider" },
+		});
+		expect(consumed).toBeUndefined();
+		expect(supervisor.forwardToWorker).not.toHaveBeenCalled();
+		expect(supervisor.prewarmPool.size).toBe(0);
+	});
+	it("adopts a pooled worker in the create command path", async () => {
+		const supervisor = makeSupervisor();
+		const summary = makeSummary("s1");
+		const worker = makeWorkerFixture("w1", "/tmp/sessions/s1.jsonl");
+		const key = prewarmPoolKey({ cwd: "/tmp/project" });
+		const expiryTimer = setTimeout(() => {}, 1_000);
+		supervisor.prewarmPool.set(key, {
+			key,
+			ready: Promise.resolve(worker),
+			expiryTimer,
+			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
+		});
+		supervisor.forwardToWorker = vi.fn(async () => success(undefined, "create", summary));
+		supervisor.writeRosterEntry = vi.fn();
+		supervisor.refreshWorkerSummaries = vi.fn(async () => undefined);
+		supervisor.publicSummary = vi.fn((_worker: object, passed: SessionSummary) => passed);
+		supervisor.createOrReuseWorker = vi.fn(async () => {
+			throw new Error("cold create path must not run when a pooled worker is adopted");
+		});
+
+		const client = { id: "client-1" };
+		const response = (await supervisor.handleCommand(client, {
+			id: "cmd-1",
+			type: "create",
+			config: { cwd: "/tmp/project" },
+			env: undefined,
+			launchEnv: {},
+		})) as { success: boolean; data: SessionSummary };
+		expect(response.success).toBe(true);
+		expect(response.data.activeSessionId).toBe("s1");
+		expect(supervisor.createOrReuseWorker).not.toHaveBeenCalled();
+		expect(supervisor.prewarmPool.size).toBe(0);
+	});
+});

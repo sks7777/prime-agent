@@ -11,7 +11,12 @@ import { appendRotatingLog, expandTildePath, getClientErrorLogPath, getDaemonLog
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../core/orphan-process-journal.js";
 import { getProcessStartId, SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
 import { DaemonClient, type DaemonHello } from "../modes/daemon/daemon-client.js";
-import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../modes/daemon/daemon-protocol.js";
+import {
+	collectDaemonClientEnv,
+	collectDaemonLaunchEnv,
+	DAEMON_PROTOCOL_VERSION,
+	DAEMON_SCHEMA_ID,
+} from "../modes/daemon/daemon-protocol.js";
 import { getDaemonRuntimeIdentity } from "../modes/daemon/daemon-runtime-identity.js";
 import { isSessionSummaryBusy, type SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath, normalizeSocketPath } from "../modes/daemon/daemon-socket.js";
@@ -604,4 +609,68 @@ export function maybeStartDaemonEarly(args: readonly string[]): void {
 		return;
 	}
 	void ensureInteractiveDaemonRunning(normalizeSocketPath(rawSocketPath, spawnCwd), spawnCwd);
+}
+
+/**
+ * Whether this argv looks like a plain fresh interactive launch: no flags and no
+ * positional command. Conservative on purpose: the prewarmed draft uses default
+ * session config, so any flag that changes session semantics or config must skip.
+ */
+export function shouldPrewarmWorkerForArgs(args: readonly string[]): boolean {
+	// Plain fresh interactive launch only: no flags except the plumbing-only
+	// --daemon-socket, and no positional command. Any flag that changes session
+	// semantics or config must skip (the pooled draft uses default config).
+	if (args.length === 0) {
+		return true;
+	}
+	if (args.length === 2 && args[0] === "--daemon-socket" && typeof args[1] === "string") {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Ask the daemon to pre-boot an idle worker holding a fresh draft session for
+ * this cwd. Best-effort: capability-gated, fire-and-forget, never blocks the
+ * CLI. Runs before the heavy main module graph loads so the worker is booting
+ * while the client boots.
+ */
+export function maybePrewarmWorkerForArgs(args: readonly string[]): void {
+	if (!shouldPrewarmWorkerForArgs(args)) {
+		return;
+	}
+	const socketIndex = args.indexOf("--daemon-socket");
+	const socketPath = normalizeSocketPath(
+		socketIndex !== -1 && args[socketIndex + 1] ? (args[socketIndex + 1] as string) : defaultDaemonSocketPath(),
+	);
+	void (async () => {
+		try {
+			await ensureInteractiveDaemonRunning(socketPath);
+			const client = new DaemonClient(socketPath);
+			try {
+				await client.connect();
+				await client.waitForHello();
+				if (!client.supportsServerCapability("worker_prewarm_pool")) {
+					return;
+				}
+				await client.request({
+					type: "prewarm",
+					// Mirror the config a plain interactive launch will send in its
+					// create: the pool consume compares configs key-by-key and only a
+					// matching draft can be adopted.
+					config: {
+						cwd: process.cwd(),
+						executionMode: "interactive",
+						serializedRefine: false,
+					},
+					env: collectDaemonClientEnv(),
+					launchEnv: collectDaemonLaunchEnv(),
+				});
+			} finally {
+				client.close();
+			}
+		} catch {
+			// The normal create path spawns a worker either way.
+		}
+	})();
 }

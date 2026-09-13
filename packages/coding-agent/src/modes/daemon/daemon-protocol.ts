@@ -75,8 +75,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 26 publishes own-session usage totals on session summary and saved-session rows.
 // Revision 27 adds structured session_recovering failure info for known-but-unaddressable sessions.
 // Revision 28 adds the non-terminal { key, width } extension_ui_response variant for custom widgets.
-export const DAEMON_SCHEMA_REVISION = 28;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-28-962b8b4c5e35";
+// Revision 29 adds the capability-gated prewarm command for the idle worker pool.
+export const DAEMON_SCHEMA_REVISION = 29;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-29-92fb120ad009";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -127,7 +128,10 @@ export type DaemonServerCapability =
 	// registered across non-terminal { key, width } responses. Clients must
 	// check before forwarding key events.
 	| "extension_ui_key_events"
-	| "direct_peer_transport";
+	| "direct_peer_transport"
+	// The daemon pre-boots an idle session worker for an anticipated fresh
+	// resident create. Clients must check before sending the prewarm command.
+	| "worker_prewarm_pool";
 
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
@@ -173,6 +177,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"session_input_pause",
 	"acp_mcp_servers",
 	"extension_ui_key_events",
+	"worker_prewarm_pool",
 ];
 
 /** Single-use short-lived credential for one direct TUI connection to one worker process incarnation. */
@@ -419,6 +424,15 @@ export type DaemonCommand =
 			config?: AgentSessionRuntimeConfig;
 			runtimeMetadata?: AgentSessionRuntimeMetadata;
 			lifecycle?: DaemonSessionLifecycle;
+	  } & DaemonClientEnv &
+			DaemonLaunchEnv)
+	// Capability-gated hint that a fresh resident create for this cwd/env is
+	// imminent. The daemon pre-boots an idle worker holding a draft root
+	// session; the following create adopts it instead of spawning cold.
+	| ({
+			id?: string;
+			type: "prewarm";
+			config?: AgentSessionRuntimeConfig;
 	  } & DaemonClientEnv &
 			DaemonLaunchEnv)
 	// Attach env is adopt-if-absent only: it fills identity for env-less
@@ -750,6 +764,11 @@ const DIRECT_PEER_TRANSPORT_COMMAND = {
 	minSchemaRevision: 25,
 	capability: "direct_peer_transport",
 } as const;
+const WORKER_PREWARM_POOL_COMMAND = {
+	minProtocol: 7,
+	minSchemaRevision: 29,
+	capability: "worker_prewarm_pool",
+} as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
 	ack_result: LEGACY_DAEMON_COMMAND,
@@ -758,6 +777,7 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	list_agent_peers: AGENT_PEER_LIST_COMMAND,
 	get_direct_worker_transport: DIRECT_PEER_TRANSPORT_COMMAND,
 	create: LEGACY_DAEMON_COMMAND,
+	prewarm: WORKER_PREWARM_POOL_COMMAND,
 	attach: LEGACY_DAEMON_COMMAND,
 	reattach: LEGACY_DAEMON_COMMAND,
 	detach: LEGACY_DAEMON_COMMAND,
@@ -876,6 +896,7 @@ export const DAEMON_COMMAND_PLANE = {
 	list_agent_peers: "control",
 	get_direct_worker_transport: "control",
 	create: "control",
+	prewarm: "control",
 	attach: "session",
 	reattach: "control",
 	detach: "session",

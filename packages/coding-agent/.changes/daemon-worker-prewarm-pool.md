@@ -1,0 +1,2 @@
+- Added the capability-gated `prewarm` daemon command and a prewarm worker pool: plain interactive launches pre-boot an idle worker holding a draft session, and the following create adopts it instead of spawning cold; a sticky spare is registered after each consumption so repeat launches in the same directory start in ~2-3s.
+- Raised the daemon schema revision to 29 with the `worker_prewarm_pool` server capability and compat metadata.
