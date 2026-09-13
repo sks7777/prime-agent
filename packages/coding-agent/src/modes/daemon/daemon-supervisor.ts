@@ -195,14 +195,15 @@ const SUPERVISOR_SERVER_CAPABILITIES: readonly DaemonServerCapability[] = [
 ];
 const PEER_TRANSPORT_GRANT_TTL_MS = 10_000;
 /**
- * Opt-in: spawn session workers from the esbuild CLI bundle instead of this
- * process's tsx/src entrypoint. The bundle boots in a fraction of the dev-mode
- * tsx cost; the built code is the same commit as src. Falls back silently when
- * the bundle file is absent.
+ * Spawn session workers from the esbuild CLI bundle instead of this process's
+ * tsx/src entrypoint. The bundle boots in a fraction of the dev-mode tsx cost
+ * (0.5s vs 2.5s); the built code is the same commit as src. Falls back
+ * silently to the tsx entrypoint when the bundle file is absent, or when
+ * PRIME_AGENT_WORKER_FROM_BUNDLE=0 disables it.
  */
 function workerBundleLaunchSpec(args: string[]): { command: string; args: string[] } | undefined {
-	const enabled = process.env.PRIME_AGENT_WORKER_FROM_BUNDLE;
-	if (enabled !== "1" && enabled?.toLowerCase() !== "true") {
+	const override = process.env.PRIME_AGENT_WORKER_FROM_BUNDLE;
+	if (override !== undefined && override !== "1" && override?.toLowerCase() !== "true") {
 		return undefined;
 	}
 	const bundlePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../dist/bundle/cli.js");

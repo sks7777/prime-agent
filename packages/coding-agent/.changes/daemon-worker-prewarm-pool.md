@@ -1,3 +1,4 @@
 - Added the capability-gated `prewarm` daemon command and a prewarm worker pool: plain interactive launches pre-boot an idle worker holding a draft session, and the following create adopts it instead of spawning cold; a sticky spare is registered after each consumption so repeat launches in the same directory start in ~2-3s.
+- Changed daemon session workers to spawn from the esbuild CLI bundle by default (0.5s boot vs 2.5s under tsx); set `PRIME_AGENT_WORKER_FROM_BUNDLE=0` to fall back to the tsx entrypoint.
 - Changed the pool key to hash the semantic subset of the launch environment (credentials, PATH, proxy, provider settings), so launches from a different terminal or tmux pane reuse the same warm spare instead of falling back to a cold start.
 - Raised the daemon schema revision to 29 with the `worker_prewarm_pool` server capability and compat metadata.
