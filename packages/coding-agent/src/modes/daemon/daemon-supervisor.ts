@@ -371,11 +371,79 @@ interface PrewarmPoolEntry {
  */
 const PREWARM_POOL_EXPIRY_MS = 600_000;
 
+/**
+ * Launch-env vars that can change worker/session behavior. The pool key hashes
+ * only these so per-pane shell noise (TMUX, ITERM_SESSION_ID, SHLVL,
+ * COLORFGBG, ...) from a different terminal still resolves to the same warm
+ * spare; the consuming create adopts the full client env as session identity.
+ */
+const PREWARM_LAUNCH_ENV_EXACT = new Set([
+	"PATH",
+	"HOME",
+	"TZ",
+	"LANG",
+	"LC_ALL",
+	"EDITOR",
+	"VISUAL",
+	"NODE_OPTIONS",
+	"NODE_ENV",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+	"XDG_DATA_HOME",
+	"XDG_CONFIG_HOME",
+	"SSH_AUTH_SOCK",
+	"DO_NOT_TRACK",
+	"ANTHROPIC_OAUTH_TOKEN",
+	"GH_TOKEN",
+	"GITHUB_TOKEN",
+	"COPILOT_GITHUB_TOKEN",
+	"HF_TOKEN",
+	"PRIME_API_KEY",
+	"PRIME_TEAM_ID",
+	"GOOGLE_APPLICATION_CREDENTIALS",
+	// Per-pane identifiers extensions read (mirrors DAEMON_CLIENT_ENV_KEYS).
+	"HERDR_ENV",
+	"HERDR_PANE_ID",
+	"HERDR_SOCKET_PATH",
+	"HERDR_TAB_ID",
+	"HERDR_WORKSPACE_ID",
+]);
+const PREWARM_LAUNCH_ENV_PREFIXES = ["PI_", "PRIME_", "RLM_", "AWS_", "AZURE_", "GOOGLE_", "GCLOUD_"] as const;
+
+function isPrewarmSemanticEnvKey(key: string): boolean {
+	// RLM_DEPTH is per-process nesting state, deleted at worker spawn — never semantic.
+	if (key === "RLM_DEPTH") return false;
+	if (PREWARM_LAUNCH_ENV_EXACT.has(key)) return true;
+	if (key.endsWith("_API_KEY") || key.endsWith("_OAUTH_TOKEN")) return true;
+	return PREWARM_LAUNCH_ENV_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/**
+ * Semantic subset of the launch env, keys sorted so the digest is stable
+ * across shells (process.env iteration order is insertion-dependent).
+ */
+export function prewarmSemanticLaunchEnv(launchEnv?: Record<string, string>): Record<string, string> {
+	const subset: Record<string, string> = {};
+	if (!launchEnv) return subset;
+	for (const key of Object.keys(launchEnv).sort()) {
+		const value = launchEnv[key];
+		if (value !== undefined && isPrewarmSemanticEnvKey(key)) {
+			subset[key] = value;
+		}
+	}
+	return subset;
+}
+
 export function prewarmPoolKey(options: { cwd: string | undefined; launchEnv?: Record<string, string> }): string {
 	// Client env is session identity, adopted when the create consumes the pooled
-	// root; only the launch environment selects the worker, so the key ignores it.
+	// root; only the launch environment selects the worker, and only its
+	// semantic subset — per-pane shell noise must not fragment the pool.
 	const launchEnvDigest = createHash("sha256")
-		.update(JSON.stringify(options.launchEnv ?? {}))
+		.update(JSON.stringify(prewarmSemanticLaunchEnv(options.launchEnv)))
 		.digest("hex")
 		.slice(0, 16);
 	return `${options.cwd ?? "-"}|${launchEnvDigest}`;

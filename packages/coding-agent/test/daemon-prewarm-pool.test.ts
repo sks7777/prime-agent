@@ -77,11 +77,36 @@ function makeSummary(id: string): SessionSummary {
 }
 
 describe("worker prewarm pool", () => {
-	it("keys pool entries by cwd and launch env identity, ignoring client env", () => {
-		const base = { cwd: "/tmp/project", launchEnv: { A: "1" } };
+	it("keys pool entries by cwd and semantic launch env, ignoring per-pane shell noise", () => {
+		const base = { cwd: "/tmp/project", launchEnv: { PATH: "/usr/bin", PRIME_API_KEY: "k1" } };
 		expect(prewarmPoolKey(base)).toBe(prewarmPoolKey({ ...base }));
 		expect(prewarmPoolKey(base)).not.toBe(prewarmPoolKey({ ...base, cwd: "/other" }));
-		expect(prewarmPoolKey(base)).not.toBe(prewarmPoolKey({ ...base, launchEnv: { A: "2" } }));
+		expect(prewarmPoolKey(base)).not.toBe(
+			prewarmPoolKey({ ...base, launchEnv: { PATH: "/usr/bin", PRIME_API_KEY: "k2" } }),
+		);
+		// Shell/tmux per-pane noise must not fragment the pool.
+		const noisyA = {
+			...base,
+			launchEnv: { ...base.launchEnv, TMUX: "/tmp/tmux-1/default,1,0", SHLVL: "2", ITERM_SESSION_ID: "w0t0p0:a" },
+		};
+		const noisyB = {
+			...base,
+			launchEnv: {
+				...base.launchEnv,
+				TMUX: "/tmp/tmux-1/default,1,95",
+				SHLVL: "3",
+				ITERM_SESSION_ID: "w0t1p7:b",
+				COLORFGBG: "0;15",
+			},
+		};
+		expect(prewarmPoolKey(noisyA)).toBe(prewarmPoolKey(noisyB));
+		// Key digest is stable across insertion order of the same env.
+		const reordered = { cwd: base.cwd, launchEnv: { PRIME_API_KEY: "k1", PATH: "/usr/bin" } };
+		expect(prewarmPoolKey(base)).toBe(prewarmPoolKey(reordered));
+		// Semantic env changes still fork the key.
+		expect(prewarmPoolKey(base)).not.toBe(
+			prewarmPoolKey({ ...base, launchEnv: { PATH: "/different", PRIME_API_KEY: "k1" } }),
+		);
 	});
 
 	it("does not consume pooled workers for non-fresh creates", async () => {
