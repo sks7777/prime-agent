@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Component } from "@earendil-works/pi-tui";
+import { type Component, isKeyRelease } from "@earendil-works/pi-tui";
 import type {
 	ExtensionCommandContextActions,
 	ExtensionUIContext,
@@ -21,9 +21,14 @@ import {
 	isDaemonKeyUiResponse,
 } from "./daemon-protocol.js";
 
-/** Fallbacks used until the first client key event reports a terminal width. */
+/**
+ * Fallbacks used until the first client key event reports a terminal width.
+ * Height matches InteractiveMode.MAX_WIDGET_LINES — the client caps custom
+ * widget display at that many lines, so components must window themselves
+ * to the same budget or their lower rows render invisibly off the cap.
+ */
 const DEFAULT_CUSTOM_WIDGET_WIDTH = 120;
-const DEFAULT_CUSTOM_WIDGET_HEIGHT = 40;
+const DEFAULT_CUSTOM_WIDGET_HEIGHT = 10;
 
 /** Plausible terminal column upper bound; clients report real terminal sizes. */
 const MAX_CUSTOM_WIDGET_WIDTH = 1000;
@@ -296,6 +301,12 @@ function createExtensionUIContext(
 			// The client reports its terminal width with every forwarded key event.
 			const proxyTui = {
 				height: DEFAULT_CUSTOM_WIDGET_HEIGHT,
+				// Headless components (pi-tui Editor, extension widgets) read
+				// terminal.rows/columns off the TUI object; expose the widget-sized
+				// viewport so they do not crash on an undefined terminal.
+				get terminal() {
+					return { columns: currentWidth, rows: DEFAULT_CUSTOM_WIDGET_HEIGHT };
+				},
 				requestRender: renderWidget,
 				setFocus: () => {},
 			};
@@ -327,6 +338,13 @@ function createExtensionUIContext(
 								currentWidth = response.width;
 							}
 							if (!closed && component?.handleInput) {
+								// Kitty-protocol terminals (xterm.js/VS Code, kitty) report key
+								// release as a separate event; the real TUI drops those unless the
+								// component opts in via wantsKeyRelease. Apply the same filter here,
+								// or every keypress dispatches twice in those terminals.
+								if (isKeyRelease(response.key) && !component.wantsKeyRelease) {
+									return;
+								}
 								try {
 									component.handleInput(response.key);
 									renderWidget();

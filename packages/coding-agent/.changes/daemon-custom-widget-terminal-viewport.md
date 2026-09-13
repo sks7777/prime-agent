@@ -1,0 +1,3 @@
+- Fixed daemon-mode `custom()` extension widgets (e.g. `ask_user_question`) rendering blank: the proxy TUI now exposes a terminal viewport so components reading `terminal.rows`/`columns` no longer throw on first render.
+- Fixed arrow-key and tab navigation in daemon-mode custom widgets moving two steps per keypress in kitty-protocol terminals (VS Code, kitty): key-release events are now filtered like the real TUI does.
+- Fixed custom widgets being cut off past the 10-line display cap: the proxy TUI height now matches the client widget budget, so components window themselves instead of rendering invisible rows.
