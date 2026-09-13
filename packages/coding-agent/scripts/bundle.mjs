@@ -11,7 +11,7 @@
  * compiled Bun binary), keyed off the __PI_BUNDLED__ define below, so extension
  * imports of pi packages share the bundle's module instances.
  */
-import { chmodSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,4 +49,9 @@ await build({
 });
 
 chmodSync(join(outdir, "cli.js"), 0o755);
+const packageJson = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+writeFileSync(
+	join(outdir, "build.json"),
+	`${JSON.stringify({ buildId, version: packageJson.version })}\n`,
+);
 console.log("bundled dist/cli.js -> dist/bundle/");

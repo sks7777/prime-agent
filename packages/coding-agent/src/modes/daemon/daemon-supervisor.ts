@@ -195,22 +195,73 @@ const SUPERVISOR_SERVER_CAPABILITIES: readonly DaemonServerCapability[] = [
 ];
 const PEER_TRANSPORT_GRANT_TTL_MS = 10_000;
 /**
- * Spawn session workers from the esbuild CLI bundle instead of this process's
- * tsx/src entrypoint. The bundle boots in a fraction of the dev-mode tsx cost
- * (0.5s vs 2.5s); the built code is the same commit as src. Falls back
- * silently to the tsx entrypoint when the bundle file is absent, or when
- * PRIME_AGENT_WORKER_FROM_BUNDLE=0 disables it.
+ * Bundle freshness marker written by scripts/bundle.mjs next to the bundle.
+ * A bundle whose build identity does not match the running supervisor is
+ * stale: workers spawned from it would run older protocol/behavior than the
+ * supervisor's src, silently. The spec falls back to the supervisor's own
+ * entrypoint when the marker disagrees or is missing.
  */
+function resolveBundleDir(): string | undefined {
+	// Walk up from this file (src/modes/daemon/..., dist/modes/daemon/..., or a
+	// dist/bundle/chunk-*.js) to the nearest package root, then anchor the
+	// bundle path on it — a fixed "../.." chain cannot fit all three layouts.
+	let directory = dirname(fileURLToPath(import.meta.url));
+	for (let depth = 0; depth < 8; depth++) {
+		try {
+			const pkg = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as { name?: string };
+			if (pkg.name === "@earendil-works/pi-coding-agent") {
+				return join(directory, "dist", "bundle");
+			}
+		} catch {
+			// Not a package root; keep walking up.
+		}
+		const parent = dirname(directory);
+		if (parent === directory) return undefined;
+		directory = parent;
+	}
+	return undefined;
+}
+
+let cachedBundleDir: string | undefined;
+let cachedBundleBuildId: string | undefined;
+
 function workerBundleLaunchSpec(args: string[]): { command: string; args: string[] } | undefined {
 	const override = process.env.PRIME_AGENT_WORKER_FROM_BUNDLE;
 	if (override !== undefined && override !== "1" && override?.toLowerCase() !== "true") {
 		return undefined;
 	}
-	const bundlePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../dist/bundle/cli.js");
+	if (cachedBundleDir === undefined) {
+		cachedBundleDir = resolveBundleDir();
+	}
+	const bundleDir = cachedBundleDir;
+	if (!bundleDir) return undefined;
+	const bundlePath = join(bundleDir, "cli.js");
 	if (!existsSync(bundlePath)) {
 		return undefined;
 	}
-	return { command: process.execPath, args: [bundlePath, ...args] };
+	// Freshness gate: scripts/bundle.mjs records { buildId, version }. When the
+	// running supervisor carries a build id (PRIME_AGENT_BUILD_ID from the
+	// launcher) or a package version the bundle does not match, the bundle is
+	// stale relative to this process — fall back to the supervisor's own
+	// entrypoint instead of running old worker code.
+	try {
+		const marker = JSON.parse(readFileSync(join(bundleDir, "build.json"), "utf8")) as {
+			buildId?: string;
+			version?: string;
+		};
+		const expectedBuildId = process.env.PRIME_AGENT_BUILD_ID;
+		if (expectedBuildId && marker.buildId !== expectedBuildId) {
+			return undefined;
+		}
+		if (!expectedBuildId && marker.version && marker.version !== VERSION) {
+			return undefined;
+		}
+		cachedBundleBuildId = marker.buildId;
+		return { command: process.execPath, args: [bundlePath, ...args] };
+	} catch {
+		// Missing/unreadable marker: bundle freshness is unknown — don't use it.
+		return undefined;
+	}
 }
 const WORKER_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const INPUT_PAUSE_CLEANUP_TIMEOUT_MS = 5_000;
@@ -373,66 +424,83 @@ interface PrewarmPoolEntry {
 const PREWARM_POOL_EXPIRY_MS = 600_000;
 
 /**
- * Launch-env vars that can change worker/session behavior. The pool key hashes
- * only these so per-pane shell noise (TMUX, ITERM_SESSION_ID, SHLVL,
- * COLORFGBG, ...) from a different terminal still resolves to the same warm
- * spare; the consuming create adopts the full client env as session identity.
+ * Launch-env vars the pool key IGNORES: per-pane shell/terminal/IDE state that
+ * differs between panes of the same user's workflow and never selects worker
+ * behavior. Everything else — credentials, proxies, provider routing,
+ * extension-specific vars — stays in the digest, so two launches sharing the
+ * key also share the effective spawn environment (the worker's process.env is
+ * built from the pooled launchEnv and is never rebound at consume).
  */
-const PREWARM_LAUNCH_ENV_EXACT = new Set([
-	"PATH",
-	"HOME",
-	"TZ",
-	"LANG",
-	"LC_ALL",
-	"EDITOR",
-	"VISUAL",
-	"NODE_OPTIONS",
-	"NODE_ENV",
-	"HTTP_PROXY",
-	"HTTPS_PROXY",
-	"NO_PROXY",
-	"http_proxy",
-	"https_proxy",
-	"no_proxy",
-	"XDG_DATA_HOME",
-	"XDG_CONFIG_HOME",
-	"SSH_AUTH_SOCK",
-	"DO_NOT_TRACK",
-	"ANTHROPIC_OAUTH_TOKEN",
-	"GH_TOKEN",
-	"GITHUB_TOKEN",
-	"COPILOT_GITHUB_TOKEN",
-	"HF_TOKEN",
-	"PRIME_API_KEY",
-	"PRIME_TEAM_ID",
-	"GOOGLE_APPLICATION_CREDENTIALS",
-	// Per-pane identifiers extensions read (mirrors DAEMON_CLIENT_ENV_KEYS).
-	"HERDR_ENV",
-	"HERDR_PANE_ID",
-	"HERDR_SOCKET_PATH",
-	"HERDR_TAB_ID",
-	"HERDR_WORKSPACE_ID",
+const PREWARM_LAUNCH_ENV_NOISE_EXACT = new Set([
+	// Terminal multiplexer / emulator per-pane identity.
+	"TMUX",
+	"TMUX_PANE",
+	"TMUX_TMPDIR",
+	"TERM_SESSION_ID",
+	"TERM_PROGRAM",
+	"TERM_PROGRAM_VERSION",
+	"ITERM_PROFILE",
+	"COLORFGBG",
+	"COLORTERM",
+	// Shell bookkeeping.
+	"SHLVL",
+	"OLDPWD",
+	"PWD",
+	"_",
+	"SHELL",
+	"FPATH",
+	"HISTFILE",
+	"HISTSIZE",
+	"ZDOTDIR",
+	"USER_ZDOTDIR",
+	"USER",
+	"LOGNAME",
+	"TMPDIR",
+	// macOS launchd / framework noise.
+	"COMMAND_MODE",
+	"MallocNanoZone",
+	"OSLogRateLimit",
+	"XPC_FLAGS",
+	"XPC_SERVICE_NAME",
+	"SECURITYSESSIONID",
+	"Apple_PubSub_Socket_Render",
+	"__CFBundleIdentifier",
+	"__CF_USER_TEXT_ENCODING",
+	// IDE/debugger session plumbing.
+	"GIT_ASKPASS",
+	// Interactive REPL helpers.
+	"PYTHONSTARTUP",
+	"PYTHON_BASIC_REPL",
 ]);
-const PREWARM_LAUNCH_ENV_PREFIXES = ["PI_", "PRIME_", "RLM_", "AWS_", "AZURE_", "GOOGLE_", "GCLOUD_"] as const;
+const PREWARM_LAUNCH_ENV_NOISE_PREFIXES = [
+	"ITERM_",
+	"VSCODE_",
+	"HOMEBREW_",
+	"PYDEVD_",
+	"COPILOT_DEBUG_",
+	"XDG_SESSION_",
+] as const;
 
-function isPrewarmSemanticEnvKey(key: string): boolean {
-	// RLM_DEPTH is per-process nesting state, deleted at worker spawn — never semantic.
+function isPrewarmNoiseEnvKey(key: string): boolean {
+	// RLM_DEPTH is per-process nesting state, deleted at worker spawn — never identity.
 	if (key === "RLM_DEPTH") return false;
-	if (PREWARM_LAUNCH_ENV_EXACT.has(key)) return true;
-	if (key.endsWith("_API_KEY") || key.endsWith("_OAUTH_TOKEN")) return true;
-	return PREWARM_LAUNCH_ENV_PREFIXES.some((prefix) => key.startsWith(prefix));
+	if (PREWARM_LAUNCH_ENV_NOISE_EXACT.has(key)) return true;
+	return PREWARM_LAUNCH_ENV_NOISE_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
 /**
- * Semantic subset of the launch env, keys sorted so the digest is stable
- * across shells (process.env iteration order is insertion-dependent).
+ * The launch env with per-pane shell noise stripped, keys sorted so the digest
+ * is stable across shells (process.env iteration order is insertion-dependent).
+ * Deliberately a denylist: a consumer env that differs from the pooled one in
+ * any non-noise var must fork the pool key, because the consumed worker keeps
+ * the pooled spawn env in its process.env.
  */
-export function prewarmSemanticLaunchEnv(launchEnv?: Record<string, string>): Record<string, string> {
+export function prewarmPoolKeyEnv(launchEnv?: Record<string, string>): Record<string, string> {
 	const subset: Record<string, string> = {};
 	if (!launchEnv) return subset;
 	for (const key of Object.keys(launchEnv).sort()) {
 		const value = launchEnv[key];
-		if (value !== undefined && isPrewarmSemanticEnvKey(key)) {
+		if (value !== undefined && !isPrewarmNoiseEnvKey(key)) {
 			subset[key] = value;
 		}
 	}
@@ -440,11 +508,11 @@ export function prewarmSemanticLaunchEnv(launchEnv?: Record<string, string>): Re
 }
 
 export function prewarmPoolKey(options: { cwd: string | undefined; launchEnv?: Record<string, string> }): string {
-	// Client env is session identity, adopted when the create consumes the pooled
-	// root; only the launch environment selects the worker, and only its
-	// semantic subset — per-pane shell noise must not fragment the pool.
+	// Client env is session identity beyond this digest: the consuming create
+	// adopts it (allowlisted keys) at consume. The digest only filters per-pane
+	// shell noise so panes of the same setup share a warm spare.
 	const launchEnvDigest = createHash("sha256")
-		.update(JSON.stringify(prewarmSemanticLaunchEnv(options.launchEnv)))
+		.update(JSON.stringify(prewarmPoolKeyEnv(options.launchEnv)))
 		.digest("hex")
 		.slice(0, 16);
 	return `${options.cwd ?? "-"}|${launchEnvDigest}`;
@@ -466,6 +534,10 @@ interface ResidentWorker {
 	intentionalStop: boolean;
 	stopRevision: number;
 	launchEnv?: Record<string, string>;
+	/** The launchEnv this worker was spawned with; retained after launchWorker clears launchEnv, so sticky spares can key on it. */
+	spawnLaunchEnv?: Record<string, string>;
+	/** Spawned as a pooled prewarm spare; never seeded a new spare from its own stop (the expiry/consume path owns replacement). */
+	pooledSpare?: boolean;
 	transientCreateCommand?: DaemonCreateCommand;
 	stopFinalization?: Promise<void>;
 	ownerCleanupTimer?: ReturnType<typeof setTimeout>;
@@ -2988,7 +3060,10 @@ export class DaemonSupervisor {
 		const createCommand: DaemonCreateCommand = {
 			type: "create",
 			config,
-			env: command.env,
+			// Deliberately env-less: the draft must not bind the prewarmer's
+			// client env (adopt-if-absent) — the real consumer adopts its own
+			// HERDR_* identity when it adopts the draft root.
+			env: undefined,
 			launchEnv: command.launchEnv,
 			lifecycle: "resident",
 		};
@@ -3016,6 +3091,7 @@ export class DaemonSupervisor {
 		this.prewarmPool.set(key, entry);
 		opening.then(
 			(worker) => {
+				worker.pooledSpare = true;
 				if (this.prewarmPool.get(key) === entry) {
 					entry.worker = worker;
 				}
@@ -3058,7 +3134,9 @@ export class DaemonSupervisor {
 		}
 		// The pooled root was created with the pooled entry's config; refuse
 		// consumption when this create customizes config keys the pooled draft
-		// cannot honor (the existing-session path never re-applies them).
+		// cannot honor (the existing-session path never re-applies them). The
+		// entry stays in the pool: a later matching create can still adopt it,
+		// and the TTL expiry reaps it if none does.
 		const pooledConfig: Record<string, unknown> = (entry.createCommand.config ?? {}) as Record<string, unknown>;
 		for (const [configKey, configValue] of Object.entries(command.config ?? {})) {
 			if (configKey === "cwd" || configKey === "agentDir") continue;
@@ -3067,15 +3145,18 @@ export class DaemonSupervisor {
 			if (pooledValue !== undefined && JSON.stringify(pooledValue) === JSON.stringify(configValue)) {
 				continue;
 			}
-			if (pooledValue === undefined && configValue === undefined) continue;
 			// A config customization the pooled draft does not carry: fall back to a cold create.
 			this.log(`Prewarm pool skipped for ${key}: create config key ${configKey} differs from pooled draft`);
-			this.removePrewarmPoolEntry(key);
 			return undefined;
 		}
 		const rootSessionFile = worker.descriptor.sessionFile;
 		if (!rootSessionFile) {
+			// The draft is permanently unusable: drop the entry and stop the worker
+			// so it does not linger untracked by the pool TTL.
 			this.removePrewarmPoolEntry(key);
+			void entry.ready
+				.then((pooled) => this.stopWorker(pooled, true))
+				.catch((error) => this.log(`Prewarm pool cleanup stop failed for ${key}: ${String(error)}`));
 			return undefined;
 		}
 		this.removePrewarmPoolEntry(key);
@@ -3090,6 +3171,9 @@ export class DaemonSupervisor {
 				launchEnv: command.launchEnv,
 			});
 		}
+		// The pooled worker now carries a real session: it stops being a spare,
+		// so its eventual stop can seed a sticky spare again (registered below).
+		worker.pooledSpare = false;
 		const response = await this.forwardToWorker(worker, {
 			...command,
 			sessionPath: rootSessionFile,
@@ -3378,9 +3462,11 @@ export class DaemonSupervisor {
 			existing?.descriptor.recoveryJournalPath ?? join(this.descriptorDir, `${workerId}.recovery.jsonl`);
 		const orphanProcessJournalPath =
 			existing?.descriptor.orphanProcessJournalPath ?? join(this.descriptorDir, `${workerId}.orphans.jsonl`);
-		const launch =
-			workerBundleLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]) ??
-			createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]);
+		const bundleLaunch = workerBundleLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]);
+		const launch = bundleLaunch ?? createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]);
+		if (bundleLaunch) {
+			this.log(`Session worker spawned from CLI bundle ${cachedBundleBuildId ?? "(unversioned)"}`);
+		}
 		const workerEnvironment = createCliSubprocessEnv({
 			...process.env,
 			...launchEnv,
@@ -3484,6 +3570,7 @@ export class DaemonSupervisor {
 			await this.assertRecoveryAllowed();
 			worker.descriptor = descriptor;
 			worker.launchEnv = launchEnv;
+			worker.spawnLaunchEnv = launchEnv;
 			worker.transientCreateCommand = descriptor.ownerClientId ? createCommand : undefined;
 			descriptorAssigned = true;
 			this.persistWorker(worker);
@@ -6643,6 +6730,12 @@ export class DaemonSupervisor {
 		if (worker.descriptor.ownerClientId !== undefined) {
 			return;
 		}
+		// A pooled spare's own stop (expiry, replacement) must not seed another
+		// spare: consume and expiry paths register the replacement explicitly,
+		// and letting expiry re-register itself would loop forever.
+		if (worker.pooledSpare) {
+			return;
+		}
 		const rootSummary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 		const cwd = rootSummary?.cwd ? resolve(rootSummary.cwd) : undefined;
 		if (!cwd) {
@@ -6653,7 +6746,7 @@ export class DaemonSupervisor {
 			type: "prewarm",
 			config: { cwd, executionMode: "interactive", serializedRefine: false },
 			env: undefined,
-			launchEnv: worker.launchEnv,
+			launchEnv: worker.spawnLaunchEnv ?? worker.launchEnv,
 		});
 	}
 

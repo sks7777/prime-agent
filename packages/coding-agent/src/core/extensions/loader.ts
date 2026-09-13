@@ -346,15 +346,19 @@ const isBundledCli = typeof __PI_BUNDLED__ !== "undefined" && __PI_BUNDLED__ ===
  * A shared jiti instance for one loadExtensions() pass.
  *
  * Re-evaluating every extension's full dependency graph per file (the old
- * moduleCache: false + one jiti per extension) cost 8-11s of pure CPU with a
- * typical pi-package install. Sharing one instance per pass makes the expensive
- * shared graph (pi packages, common libs) evaluate once per pass. Freshness is
- * preserved because each pass creates a new instance: files are re-read from
- * disk, and the transform fs-cache is keyed by content hash, so edited
- * extensions still pick up changes on /reload.
+ * one-jiti-per-extension behavior) cost 8-11s of pure CPU with a typical
+ * pi-package install. Sharing one instance per pass makes the expensive shared
+ * graph (pi packages, common libs) evaluate once per pass; the per-instance
+ * parent cache still shares module objects between sibling extensions within
+ * the pass.
+ *
+ * moduleCache must stay false: with jiti's native-require cache integration on
+ * (the default), a fresh per-pass instance still serves stale module objects
+ * for files an extension imports, because that cache is process-global across
+ * jiti instances — /reload would not pick up edits to imported dependency
+ * files until the process restarts.
  */
 type JitiInstance = import("jiti/static").Jiti;
-let sharedPassJiti: JitiInstance | undefined;
 
 async function createPassJiti(): Promise<JitiInstance> {
 	// jiti and the bundled virtual modules are loaded lazily so that importing
@@ -363,6 +367,7 @@ async function createPassJiti(): Promise<JitiInstance> {
 	// bundles them into the compiled binary.
 	const { createJiti } = await import("jiti/static");
 	return createJiti(import.meta.url, {
+		moduleCache: false,
 		// In the Bun binary and the esbuild CLI bundle: serve pi packages from
 		// virtualModules so extensions share the bundle's module instances
 		// (file-path aliases would load a second, divergent copy of each package).
@@ -374,13 +379,10 @@ async function createPassJiti(): Promise<JitiInstance> {
 	});
 }
 
-async function loadExtensionModule(extensionPath: string) {
-	// Reuse the shared per-pass instance so sibling extensions share module
-	// instances (and their evaluation cost) within the pass.
-	if (!sharedPassJiti) {
-		sharedPassJiti = await createPassJiti();
-	}
-	const module = await sharedPassJiti.import(extensionPath, { default: true });
+async function loadExtensionModule(extensionPath: string, passJiti: JitiInstance) {
+	// One jiti instance per loadExtensions() pass: sibling extensions share
+	// module instances (and their evaluation cost) within the pass.
+	const module = await passJiti.import(extensionPath, { default: true });
 	const factory = module as ExtensionFactory;
 	return typeof factory !== "function" ? undefined : factory;
 }
@@ -414,11 +416,12 @@ async function loadExtension(
 	cwd: string,
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
+	passJiti: JitiInstance,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 
 	try {
-		const factory = await loadExtensionModule(resolvedPath);
+		const factory = await loadExtensionModule(resolvedPath, passJiti);
 		if (!factory) {
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
@@ -458,11 +461,13 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const runtime = createExtensionRuntime();
-	// Fresh module graph for this pass; released when the pass completes.
-	sharedPassJiti = undefined;
+	// Fresh module graph scoped to this invocation: concurrent passes (several
+	// sessions loading in one daemon worker) get independent jiti instances and
+	// cannot interleave on shared state.
+	const passJiti = await createPassJiti();
 
 	for (const extPath of paths) {
-		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
+		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime, passJiti);
 
 		if (error) {
 			errors.push({ path: extPath, error });
@@ -474,7 +479,6 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 		}
 	}
 
-	sharedPassJiti = undefined;
 	return {
 		extensions,
 		errors,

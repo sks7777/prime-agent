@@ -21,6 +21,7 @@ interface PoolInternals {
 	removePrewarmPoolEntry(key: string): void;
 	launchWorker: ReturnType<typeof vi.fn>;
 	forwardToWorker: ReturnType<typeof vi.fn>;
+	stopWorker: ReturnType<typeof vi.fn>;
 	writeRosterEntry: ReturnType<typeof vi.fn>;
 	refreshWorkerSummaries: ReturnType<typeof vi.fn>;
 	createOrReuseWorker: ReturnType<typeof vi.fn>;
@@ -77,7 +78,7 @@ function makeSummary(id: string): SessionSummary {
 }
 
 describe("worker prewarm pool", () => {
-	it("keys pool entries by cwd and semantic launch env, ignoring per-pane shell noise", () => {
+	it("keys pool entries by cwd and the full launch env minus per-pane shell noise", () => {
 		const base = { cwd: "/tmp/project", launchEnv: { PATH: "/usr/bin", PRIME_API_KEY: "k1" } };
 		expect(prewarmPoolKey(base)).toBe(prewarmPoolKey({ ...base }));
 		expect(prewarmPoolKey(base)).not.toBe(prewarmPoolKey({ ...base, cwd: "/other" }));
@@ -103,9 +104,14 @@ describe("worker prewarm pool", () => {
 		// Key digest is stable across insertion order of the same env.
 		const reordered = { cwd: base.cwd, launchEnv: { PRIME_API_KEY: "k1", PATH: "/usr/bin" } };
 		expect(prewarmPoolKey(base)).toBe(prewarmPoolKey(reordered));
-		// Semantic env changes still fork the key.
+		// Non-noise env differences fork the key: worker process.env comes from
+		// the pooled spawn env and is never rebound at consume, so any var the
+		// worker reads must participate in the key (e.g. provider routing).
 		expect(prewarmPoolKey(base)).not.toBe(
 			prewarmPoolKey({ ...base, launchEnv: { PATH: "/different", PRIME_API_KEY: "k1" } }),
+		);
+		expect(prewarmPoolKey(base)).not.toBe(
+			prewarmPoolKey({ ...base, launchEnv: { PATH: "/usr/bin", PRIME_API_KEY: "k1", CLOUDFLARE_ACCOUNT_ID: "42" } }),
 		);
 	});
 
@@ -167,24 +173,27 @@ describe("worker prewarm pool", () => {
 		expect(supervisor.prewarmPool.size).toBe(0);
 	});
 
-	it("falls back to a cold create when the pooled worker has no draft session file", async () => {
+	it("stops the pooled worker and drops the entry when the draft has no session file", async () => {
 		const supervisor = makeSupervisor();
 		const key = prewarmPoolKey({ cwd: "/tmp/project" });
+		const brokenWorker = makeWorkerFixture("w1", "");
 		supervisor.prewarmPool.set(key, {
 			key,
-			ready: Promise.resolve(makeWorkerFixture("w1", "")),
+			ready: Promise.resolve(brokenWorker),
 			expiryTimer: setTimeout(() => {}, 1_000),
 			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
 		});
+		supervisor.stopWorker = vi.fn(async () => undefined);
 		const consumed = await supervisor.tryConsumePrewarmPool({
 			type: "create",
 			config: { cwd: "/tmp/project" },
 		});
 		expect(consumed).toBeUndefined();
 		expect(supervisor.prewarmPool.size).toBe(0);
+		expect(supervisor.stopWorker).toHaveBeenCalledWith(brokenWorker, true);
 	});
 
-	it("refuses consumption when the create customizes config the pooled draft lacks", async () => {
+	it("refuses a config-mismatched create but keeps the entry for a later matching create", async () => {
 		const supervisor = makeSupervisor();
 		const worker = makeWorkerFixture("w1", "/tmp/sessions/s1.jsonl");
 		const key = prewarmPoolKey({ cwd: "/tmp/project" });
@@ -195,6 +204,7 @@ describe("worker prewarm pool", () => {
 			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
 		});
 		supervisor.forwardToWorker = vi.fn();
+		supervisor.stopWorker = vi.fn(async () => undefined);
 
 		const consumed = await supervisor.tryConsumePrewarmPool({
 			type: "create",
@@ -202,7 +212,9 @@ describe("worker prewarm pool", () => {
 		});
 		expect(consumed).toBeUndefined();
 		expect(supervisor.forwardToWorker).not.toHaveBeenCalled();
-		expect(supervisor.prewarmPool.size).toBe(0);
+		expect(supervisor.stopWorker).not.toHaveBeenCalled();
+		// The pooled worker is not orphaned: the entry stays (TTL still applies).
+		expect(supervisor.prewarmPool.size).toBe(1);
 	});
 	it("adopts a pooled worker in the create command path", async () => {
 		const supervisor = makeSupervisor();
