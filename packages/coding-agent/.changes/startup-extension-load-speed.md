@@ -1,0 +1,2 @@
+- Reduced new-session startup time by sharing one jiti instance across extension loads per pass and resolving pi package aliases to built dist entries instead of missing src paths.
+- Overlapped daemon session creation with client-side service preparation, and skipped redundant client-side file-extension loading in daemon interactive mode (extensions execute in the session worker).

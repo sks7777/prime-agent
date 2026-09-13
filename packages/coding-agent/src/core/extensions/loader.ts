@@ -39,7 +39,6 @@ function getAliases(): Record<string, string> {
 	if (_aliases) return _aliases;
 
 	const __dirname = path.dirname(fileURLToPath(import.meta.url));
-	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
 	const typeboxEntry = require.resolve("typebox");
 	const typeboxCompileEntry = require.resolve("typebox/compile");
@@ -54,7 +53,7 @@ function getAliases(): Record<string, string> {
 		return fileURLToPath(import.meta.resolve(specifier));
 	};
 
-	const piCodingAgentEntry = packageIndex;
+	const piCodingAgentEntry = resolveWorkspaceOrImport("coding-agent/dist/index.js", "@earendil-works/pi-coding-agent");
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
 	const piAiEntry = resolveWorkspaceOrImport("ai/dist/index.js", "@earendil-works/pi-ai");
@@ -64,7 +63,7 @@ function getAliases(): Record<string, string> {
 		"ai/dist/bedrock-provider.js",
 		"@earendil-works/pi-ai/bedrock-provider",
 	);
-	const piAiCompatEntry = resolveWorkspaceOrImport("ai/src/compat.ts", "@earendil-works/pi-ai/compat");
+	const piAiCompatEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai/compat");
 
 	_aliases = {
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
@@ -343,14 +342,27 @@ function createExtensionAPI(
 declare const __PI_BUNDLED__: boolean | undefined;
 const isBundledCli = typeof __PI_BUNDLED__ !== "undefined" && __PI_BUNDLED__ === true;
 
-async function loadExtensionModule(extensionPath: string) {
+/**
+ * A shared jiti instance for one loadExtensions() pass.
+ *
+ * Re-evaluating every extension's full dependency graph per file (the old
+ * moduleCache: false + one jiti per extension) cost 8-11s of pure CPU with a
+ * typical pi-package install. Sharing one instance per pass makes the expensive
+ * shared graph (pi packages, common libs) evaluate once per pass. Freshness is
+ * preserved because each pass creates a new instance: files are re-read from
+ * disk, and the transform fs-cache is keyed by content hash, so edited
+ * extensions still pick up changes on /reload.
+ */
+type JitiInstance = import("jiti/static").Jiti;
+let sharedPassJiti: JitiInstance | undefined;
+
+async function createPassJiti(): Promise<JitiInstance> {
 	// jiti and the bundled virtual modules are loaded lazily so that importing
 	// the loader (which nearly every startup path does transitively) doesn't pay
 	// for the full package graph; both specifiers are literals, so Bun still
 	// bundles them into the compiled binary.
 	const { createJiti } = await import("jiti/static");
-	const jiti = createJiti(import.meta.url, {
-		moduleCache: false,
+	return createJiti(import.meta.url, {
 		// In the Bun binary and the esbuild CLI bundle: serve pi packages from
 		// virtualModules so extensions share the bundle's module instances
 		// (file-path aliases would load a second, divergent copy of each package).
@@ -360,8 +372,15 @@ async function loadExtensionModule(extensionPath: string) {
 			? { virtualModules: (await import("./bundled-modules.js")).VIRTUAL_MODULES, tryNative: false }
 			: { alias: getAliases() }),
 	});
+}
 
-	const module = await jiti.import(extensionPath, { default: true });
+async function loadExtensionModule(extensionPath: string) {
+	// Reuse the shared per-pass instance so sibling extensions share module
+	// instances (and their evaluation cost) within the pass.
+	if (!sharedPassJiti) {
+		sharedPassJiti = await createPassJiti();
+	}
+	const module = await sharedPassJiti.import(extensionPath, { default: true });
 	const factory = module as ExtensionFactory;
 	return typeof factory !== "function" ? undefined : factory;
 }
@@ -439,6 +458,8 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const runtime = createExtensionRuntime();
+	// Fresh module graph for this pass; released when the pass completes.
+	sharedPassJiti = undefined;
 
 	for (const extPath of paths) {
 		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
@@ -453,6 +474,7 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 		}
 	}
 
+	sharedPassJiti = undefined;
 	return {
 		extensions,
 		errors,

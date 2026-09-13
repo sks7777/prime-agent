@@ -1058,10 +1058,11 @@ async function createDaemonClientConnection(options: {
 	clientOwned?: boolean;
 	noSession?: boolean;
 	supportsExtensionUi?: boolean;
+	connectTimeoutMs?: number;
 }): Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> {
 	// Caller must have awaited ensureInteractiveDaemonRunning for this socket.
 	const client = new DaemonClient(options.socketPath);
-	await client.connect();
+	await client.connect(options.connectTimeoutMs);
 
 	try {
 		const attach = async (summary: SessionSummary) => {
@@ -1401,8 +1402,44 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 	if (useDaemonInteractive) {
+		// Overlap the daemon session create (worker boot + worker-side service
+		// loading) with the client-side service preparation below. The create
+		// request only depends on the CLI config and session selection, not on
+		// the client services. Skip the early kickoff when the agents view will
+		// own startup (resume/continue/fork/explicit request); onboarding may
+		// still redirect there, in which case the draft session is discarded.
+		const canOverlapDaemonCreate = !explicitAgentsView && !parsed.resume && !parsed.continue && !parsed.fork;
+		let daemonCreatePromise: Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> | undefined;
+		if (canOverlapDaemonCreate) {
+			daemonReady = (await awaitDaemonReady(daemonReady)).ready;
+			daemonCreatePromise = createDaemonClientConnection({
+				socketPath: daemonSocketPath,
+				config: defaultSessionConfig,
+				activeSessionId: activeDaemonSessionSummary
+					? getDaemonSummaryActiveSessionId(activeDaemonSessionSummary)
+					: undefined,
+				sessionPath: getInteractiveDaemonSessionPath(parsed, sessionManager),
+				clientOwned: parsed.noSession,
+				noSession: parsed.noSession,
+				supportsExtensionUi: true,
+				// The connect races client-side service preparation, which can
+				// hold the event loop in bursts; don't let the safety timeout
+				// fire while the daemon is healthy but momentarily unanswered.
+				connectTimeoutMs: 30_000,
+			});
+			// Avoid an unhandled rejection if startup exits before the await site.
+			daemonCreatePromise.catch(() => {});
+		}
+		// File-based extensions execute in the session worker; the client only
+		// needs skills/prompts/themes for UI. Skipping the client-side
+		// extension load removes the dominant startup cost (~2.5s of jiti
+		// evaluation) from the perceived time-to-prompt.
+		const clientPrepConfig: AgentSessionRuntimeConfig = {
+			...defaultSessionConfig,
+			noExtensions: true,
+		};
 		const prepared = await prepareRuntimeServices({
-			config: defaultSessionConfig,
+			config: clientPrepConfig,
 			cwd: sessionManager.getCwd(),
 			agentDir,
 			sessionManager,
@@ -1514,17 +1551,20 @@ export async function main(args: string[], options?: MainOptions) {
 		let connection: DaemonAgentConnection;
 		let summary: SessionSummary;
 		try {
-			({ connection, summary } = await createDaemonClientConnection({
-				socketPath: daemonSocketPath,
-				config: defaultSessionConfig,
-				activeSessionId: activeDaemonSessionSummary
-					? getDaemonSummaryActiveSessionId(activeDaemonSessionSummary)
-					: undefined,
-				sessionPath: getInteractiveDaemonSessionPath(parsed, sessionManager),
-				clientOwned: parsed.noSession,
-				noSession: parsed.noSession,
-				supportsExtensionUi: true,
-			}));
+			// Reuse the connection kicked off before client service prep; the
+			// fallback covers the agents-view/first-run paths that skipped it.
+			({ connection, summary } = await (daemonCreatePromise ??
+				createDaemonClientConnection({
+					socketPath: daemonSocketPath,
+					config: defaultSessionConfig,
+					activeSessionId: activeDaemonSessionSummary
+						? getDaemonSummaryActiveSessionId(activeDaemonSessionSummary)
+						: undefined,
+					sessionPath: getInteractiveDaemonSessionPath(parsed, sessionManager),
+					clientOwned: parsed.noSession,
+					noSession: parsed.noSession,
+					supportsExtensionUi: true,
+				})));
 		} catch (error) {
 			if (error instanceof DaemonSessionCreateError) {
 				console.error(chalk.red(`Error: ${error.message}`));
