@@ -7,9 +7,18 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { appendRotatingLog, expandTildePath, getClientErrorLogPath, getDaemonLogPath, VERSION } from "../config.js";
+import {
+	appendRotatingLog,
+	expandTildePath,
+	getAgentDir,
+	getClientErrorLogPath,
+	getDaemonLogPath,
+	VERSION,
+} from "../config.js";
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../core/orphan-process-journal.js";
 import { getProcessStartId, SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
+import { SettingsManager } from "../core/settings-manager.js";
+import { isTelemetryEnabled } from "../core/telemetry.js";
 import { DaemonClient, type DaemonHello } from "../modes/daemon/daemon-client.js";
 import {
 	collectDaemonClientEnv,
@@ -618,12 +627,20 @@ export function maybeStartDaemonEarly(args: readonly string[]): void {
  */
 export function shouldPrewarmWorkerForArgs(args: readonly string[]): boolean {
 	// Plain fresh interactive launch only: no flags except the plumbing-only
-	// --daemon-socket, and no positional command. Any flag that changes session
-	// semantics or config must skip (the pooled draft uses default config).
+	// --daemon-socket and runtime-only --offline (it does not touch session
+	// config; its env mutations are mirrored by applyOfflineLaunchEnvMutations),
+	// and no positional command. Any other flag that changes session semantics
+	// or config must skip (the pooled draft uses default config).
 	if (args.length === 0) {
 		return true;
 	}
+	if (args.length === 1 && args[0] === "--offline") {
+		return true;
+	}
 	if (args.length === 2 && args[0] === "--daemon-socket" && typeof args[1] === "string") {
+		return true;
+	}
+	if (args.length === 3 && args[0] === "--daemon-socket" && typeof args[1] === "string" && args[2] === "--offline") {
 		return true;
 	}
 	return false;
@@ -635,10 +652,38 @@ export function shouldPrewarmWorkerForArgs(args: readonly string[]): boolean {
  * CLI. Runs before the heavy main module graph loads so the worker is booting
  * while the client boots.
  */
+function isTruthyEnvFlag(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+/**
+ * Mirror main()'s startup telemetry decision (same env checks + settings) so
+ * the prewarm config carries the same telemetryDisabled the create will send.
+ */
+function cliTelemetryDisabled(): boolean {
+	return !isTelemetryEnabled(SettingsManager.create(process.cwd(), getAgentDir()));
+}
+
+/**
+ * Env mutations main() applies to its own process before building the create
+ * command's launchEnv. The prewarm must mirror them: the pool key hashes the
+ * launch env, and a prewarm whose env diverges from the later create's env
+ * would register a spare the create can never consume.
+ */
+function applyOfflineLaunchEnvMutations(args: readonly string[]): void {
+	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
+	if (offlineMode) {
+		process.env.PI_OFFLINE = "1";
+		process.env.PI_SKIP_VERSION_CHECK = "1";
+	}
+}
+
 export function maybePrewarmWorkerForArgs(args: readonly string[]): void {
 	if (!shouldPrewarmWorkerForArgs(args)) {
 		return;
 	}
+	applyOfflineLaunchEnvMutations(args);
 	const socketIndex = args.indexOf("--daemon-socket");
 	const socketPath = normalizeSocketPath(
 		socketIndex !== -1 && args[socketIndex + 1] ? (args[socketIndex + 1] as string) : defaultDaemonSocketPath(),
@@ -662,6 +707,11 @@ export function maybePrewarmWorkerForArgs(args: readonly string[]): void {
 						cwd: process.cwd(),
 						executionMode: "interactive",
 						serializedRefine: false,
+						// Mirror main()'s per-launch telemetry decision; the pool
+						// consume rejects a create whose config diverges from the
+						// pooled draft, and PI_OFFLINE/DO_NOT_TRACK make main()
+						// send telemetryDisabled: true.
+						...(cliTelemetryDisabled() ? { telemetryDisabled: true as const } : {}),
 					},
 					env: collectDaemonClientEnv(),
 					launchEnv: collectDaemonLaunchEnv(),

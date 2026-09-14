@@ -5,3 +5,4 @@
 - Fixed sticky spare registration to key on the worker's original launch environment and to never respawn spares from their own expiry, preventing a self-sustaining worker spawn/stop loop.
 - Changed the pool key to exclude per-pane shell noise while including every other launch-env variable, and made the pooled draft start env-less so the consuming session adopts its own per-pane client identity.
 - Added a bundle freshness gate: session workers spawn from the CLI bundle only when its recorded build matches the running daemon, falling back to the tsx entrypoint otherwise.
+- Fixed prewarm launches to mirror `--offline` (its env mutations and telemetry-disabled config) so offline launches adopt the same warm spare instead of always missing the pool.
