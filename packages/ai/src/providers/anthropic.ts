@@ -837,7 +837,7 @@ export const streamSimpleAnthropic: StreamFunction<"anthropic-messages", SimpleS
 	}
 
 	const adjusted = adjustMaxTokensForThinking(
-		base.maxTokens || 0,
+		base.maxTokens,
 		model.maxTokens,
 		options.reasoning,
 		options.thinkingBudgets,

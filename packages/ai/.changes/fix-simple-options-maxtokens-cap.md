@@ -1,0 +1,1 @@
+- Changed default `maxTokens` to honor the model's configured output cap instead of silently clamping it to 32,000; thinking-budget math now treats an absent caller cap as the model cap.

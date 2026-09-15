@@ -330,7 +330,7 @@ export const streamSimpleBedrock: StreamFunction<"bedrock-converse-stream", Simp
 		}
 
 		const adjusted = adjustMaxTokensForThinking(
-			base.maxTokens || 0,
+			base.maxTokens,
 			model.maxTokens,
 			options.reasoning,
 			options.thinkingBudgets,
