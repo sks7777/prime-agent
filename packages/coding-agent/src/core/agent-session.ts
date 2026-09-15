@@ -243,6 +243,7 @@ import {
 	findRlmModelMatches,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
+	normalizeRequestedRlmSubagentTemperature,
 	normalizeRequestedRlmSubagentThinkingLevel,
 	type RlmCreateSessionResult,
 	type RlmDeleteSubagentResult,
@@ -9830,6 +9831,7 @@ export class AgentSession {
 		sessionDir: string;
 		model: Model<any>;
 		thinkingLevel?: ThinkingLevel;
+		temperature?: number;
 		spawnedByRequestId?: string;
 	}): CreateRlmSubagentRuntimeOptions {
 		return {
@@ -9842,6 +9844,7 @@ export class AgentSession {
 			model: options.model,
 			thinkingLevel:
 				options.thinkingLevel ?? (clampThinkingLevel(options.model, this.thinkingLevel) as ThinkingLevel),
+			temperature: options.temperature ?? this.agent.temperature,
 			serviceTier:
 				this.serviceTier === "priority" && !supportsFastMode(options.model) ? "default" : this.serviceTier,
 			scopedModels: [...this._scopedModels],
@@ -9885,6 +9888,7 @@ export class AgentSession {
 				serviceTier: options.serviceTier,
 				tools: [],
 			},
+			temperature: options.temperature,
 			convertToLlm: this.agent.convertToLlm,
 			transformContext: this.agent.transformContext,
 			streamFn: this.agent.streamFn,
@@ -10794,7 +10798,13 @@ export class AgentSession {
 		// executing now. A spawn arriving outside an active run (a detached kernel task
 		// firing while the parent is idle) has no such turn; an absent edge beats a wrong one.
 		const spawnedByRequestId = this.isStreaming ? this._semanticEdges.lastTurnRequestId : undefined;
-		const { name: rawName, model: rawModel, thinking: rawThinking, ...unsupported } = kwargs;
+		const {
+			name: rawName,
+			model: rawModel,
+			thinking: rawThinking,
+			temperature: rawTemperature,
+			...unsupported
+		} = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
@@ -10802,6 +10812,7 @@ export class AgentSession {
 		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName);
 		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel);
 		const requestedThinkingLevel = normalizeRequestedRlmSubagentThinkingLevel(rawThinking);
+		const requestedTemperature = normalizeRequestedRlmSubagentTemperature(rawTemperature);
 		if (requestedSessionName) assertDirectAgentMessageTarget(requestedSessionName);
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
@@ -10955,6 +10966,7 @@ export class AgentSession {
 				sessionDir: childSessionDir,
 				model: modelSelection.model,
 				thinkingLevel: requestedThinkingLevel,
+				temperature: requestedTemperature,
 				spawnedByRequestId,
 			}),
 			onSessionPublished: publishChildSession,

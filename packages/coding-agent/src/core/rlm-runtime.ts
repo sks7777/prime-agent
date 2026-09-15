@@ -115,6 +115,16 @@ export function normalizeRequestedRlmSubagentThinkingLevel(
 	return level as ThinkingLevel;
 }
 
+export function normalizeRequestedRlmSubagentTemperature(value: unknown, operation = "rlm.run"): number | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		throw new Error(`${operation} temperature must be a finite number`);
+	}
+	return value;
+}
+
 export function normalizeRequestedRlmSubagentModel(value: unknown, operation = "rlm.run"): string | undefined {
 	if (value === undefined) {
 		return undefined;
@@ -277,6 +287,8 @@ export interface CreateRlmSubagentRuntimeOptions {
 	sessionDir: string;
 	model: Model<any>;
 	thinkingLevel: ThinkingLevel;
+	/** Sampling temperature for the child's LLM calls (undefined = provider default). */
+	temperature?: number;
 	serviceTier: ServiceTier;
 	scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	activeToolNames: string[];

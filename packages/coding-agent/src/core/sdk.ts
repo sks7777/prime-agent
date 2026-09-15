@@ -282,6 +282,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			serviceTier,
 			tools: [],
 		},
+		temperature: options.temperature,
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
 			const auth = await modelRegistry.getApiKeyAndHeaders(model);

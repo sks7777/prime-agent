@@ -47,6 +47,8 @@ export interface CreateAgentSessionServicesOptions {
 export interface AgentSessionCreationOptions {
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
+	/** Sampling temperature for every LLM call in this session (undefined = provider default). */
+	temperature?: number;
 	serviceTier?: ServiceTier;
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	tools?: string[];
@@ -242,6 +244,7 @@ export async function createAgentSessionFromServices(
 		sessionManager: options.sessionManager,
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,
+		temperature: options.temperature,
 		serviceTier: options.serviceTier,
 		scopedModels: options.scopedModels,
 		tools: options.tools,
