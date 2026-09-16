@@ -219,6 +219,7 @@ const noOpUIContext: ExtensionUIContext = {
 	setEditorText: () => {},
 	getEditorText: () => "",
 	editor: async () => undefined,
+	startSideQuestion: () => {},
 	addAutocompleteProvider: () => {},
 	setEditorComponent: () => {},
 	getEditorComponent: () => undefined,

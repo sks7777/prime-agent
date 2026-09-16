@@ -3817,6 +3817,9 @@ export class InteractiveMode {
 			setEditorText: (text) => this.editor.setText(text),
 			getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
 			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
+			startSideQuestion: (question) => {
+				void this.handleSideQuestion(question);
+			},
 			addAutocompleteProvider: (factory) => {
 				this.autocompleteProviderWrappers.push(factory);
 				this.setupAutocompleteProvider();
@@ -5337,6 +5340,13 @@ export class InteractiveMode {
 				}
 				const value = await this.showExtensionEditor(title, getPayloadString(payload, "prefill"));
 				return value === undefined ? { cancelled: true } : { value };
+			}
+			case "start_side_question": {
+				const question = getPayloadString(payload, "question");
+				if (question) {
+					void this.handleSideQuestion(question);
+				}
+				return undefined;
 			}
 			case "notify": {
 				const message = getPayloadString(payload, "message");

@@ -134,6 +134,7 @@ export function createRpcExtensionUiBridge(output: (request: RpcExtensionUIReque
 		getToolsExpanded: () => false,
 		setToolsExpanded: (_expanded: boolean) => {},
 		bell: () => fireAndForget({ method: "bell" }),
+		startSideQuestion: () => {},
 	};
 
 	return {

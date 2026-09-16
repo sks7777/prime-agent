@@ -204,6 +204,13 @@ export interface ExtensionUIContext {
 	/** Show a multi-line editor for text editing. */
 	editor(title: string, prefill?: string): Promise<string | undefined>;
 
+	/**
+	 * Ask a native side question (/btw): renders in the built-in side pane
+	 * against the live conversation without touching the session. Fire and
+	 * forget; a no-op when no pane host is available (e.g. print/RPC mode).
+	 */
+	startSideQuestion(question: string): void;
+
 	/** Stack additional autocomplete behavior on top of the built-in provider. */
 	addAutocompleteProvider(factory: AutocompleteProviderFactory): void;
 

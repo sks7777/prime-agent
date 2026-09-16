@@ -374,6 +374,7 @@ function createExtensionUIContext(
 					});
 			});
 		},
+		startSideQuestion: (question) => emitUiRequest("start_side_question", { question }),
 		pasteToEditor: (text) => emitUiRequest("setEditorText", { text }),
 		setEditorText: (text) => emitUiRequest("setEditorText", { text }),
 		getEditorText: () => "",

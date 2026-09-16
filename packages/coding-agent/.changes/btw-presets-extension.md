@@ -1,0 +1,1 @@
+- Added the btw-presets extension (/q): side questions with markdown prompt presets in prompts/btw/, a preset picker on bare /q, and follow-up input in the popup pane.
