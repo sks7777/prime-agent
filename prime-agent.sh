@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  LINK_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$LINK_DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 export PRIME_AGENT_LAUNCHER_PATH="$SCRIPT_DIR/prime-agent.sh"
 if BUILD_ID="$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null)"; then
   export PRIME_AGENT_BUILD_ID="$BUILD_ID"
@@ -12,7 +18,8 @@ export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.prime/agent}"
 
 # Check for --no-env / --dist flags
 NO_ENV=false
-USE_DIST=false
+# PRIME_AGENT_USE_DIST=true defaults to the dist bundle (set "true", not 1)
+USE_DIST="${PRIME_AGENT_USE_DIST:-false}"
 ARGS=()
 for arg in "$@"; do
   if [[ "$arg" == "--no-env" ]]; then
