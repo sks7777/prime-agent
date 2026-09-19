@@ -76,8 +76,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 27 adds structured session_recovering failure info for known-but-unaddressable sessions.
 // Revision 28 adds the non-terminal { key, width } extension_ui_response variant for custom widgets.
 // Revision 29 adds the capability-gated prewarm command for the idle worker pool.
-export const DAEMON_SCHEMA_REVISION = 29;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-29-92fb120ad009";
+// Revision 28 publishes the last recorded model on saved-session rows (v0.9.5).
+export const DAEMON_SCHEMA_REVISION = 30;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-30-60e361d45ffa";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -1126,6 +1127,8 @@ export interface DaemonSavedSessionInfo {
 	allMessagesText: string;
 	agentStatus?: AgentConnectionAgentStatus;
 	usage?: SessionUsageSummary;
+	/** Last recorded provider/model selector; absent for sessions that never ran a model. */
+	model?: { provider: string; modelId: string };
 }
 
 export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;
