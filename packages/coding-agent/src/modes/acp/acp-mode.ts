@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -9,6 +9,7 @@ import { VERSION } from "../../config.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
+import { SessionManager } from "../../core/session-manager.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
 import type {
 	AgentConnection,
@@ -55,6 +56,100 @@ function canonicalCwd(path: string): string {
 		canonical = resolved;
 	}
 	return normalizeWindowsDriveLetter(canonical);
+}
+
+/**
+ * Cross-process ACP session registry.
+ *
+ * bb forks an ACP provider by spawning a fresh agent process and sending it
+ * `session/fork` with the *source* session's id, so the forked process must be
+ * able to map that id back to a session file on disk. ACP session ids are
+ * per-process random UUIDs, so `session/new` publishes
+ * `{ACP sessionId -> runtime session id + session file}` into a small JSON
+ * registry inside the session directory; `session/fork` reads it back. The
+ * source and fork processes share the session directory because bb reuses the
+ * source thread's environment for the fork.
+ */
+const ACP_SESSION_REGISTRY_FILENAME = "acp-session-registry.json";
+const ACP_SESSION_REGISTRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface AcpSessionRegistryEntry {
+	/** Protocol-level ACP session id (registry map key is the same value). */
+	runtimeSessionId: string | null;
+	/** Session file at registration time; may be null before the first persist. */
+	sessionFile: string | null;
+	cwd: string;
+	createdAt: number;
+}
+
+type AcpSessionRegistry = Record<string, AcpSessionRegistryEntry>;
+
+function acpSessionRegistryPath(sessionDir: string): string {
+	return join(sessionDir, ACP_SESSION_REGISTRY_FILENAME);
+}
+
+function readAcpSessionRegistry(sessionDir: string): AcpSessionRegistry {
+	try {
+		const parsed = JSON.parse(readFileSync(acpSessionRegistryPath(sessionDir), "utf8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+		return parsed as AcpSessionRegistry;
+	} catch {
+		return {};
+	}
+}
+
+function writeAcpSessionRegistry(sessionDir: string, registry: AcpSessionRegistry): void {
+	mkdirSync(sessionDir, { recursive: true });
+	writeFileSync(acpSessionRegistryPath(sessionDir), `${JSON.stringify(registry, null, "\t")}\n`, "utf8");
+}
+
+function pruneAcpSessionRegistry(registry: AcpSessionRegistry, now = Date.now()): AcpSessionRegistry {
+	const pruned: AcpSessionRegistry = {};
+	for (const [sessionId, entry] of Object.entries(registry)) {
+		if (now - entry.createdAt <= ACP_SESSION_REGISTRY_MAX_AGE_MS) pruned[sessionId] = entry;
+	}
+	return pruned;
+}
+
+function registerAcpSession(
+	sessionDir: string,
+	sessionId: string,
+	entry: { runtimeSessionId: string | null; sessionFile: string | null; cwd: string },
+): void {
+	const registry = pruneAcpSessionRegistry(readAcpSessionRegistry(sessionDir));
+	registry[sessionId] = { ...entry, createdAt: Date.now() };
+	try {
+		writeAcpSessionRegistry(sessionDir, registry);
+	} catch {
+		// A failed registry write only degrades fork support for this session;
+		// session/new must not fail because of it.
+	}
+}
+
+/**
+ * Resolve a registered ACP session id to its session file.
+ *
+ * Prefers the file recorded at registration time; falls back to scanning the
+ * session directory for the runtime session id, which covers sessions whose
+ * file only appeared after the first persist.
+ */
+async function resolveAcpSessionFile(
+	sessionDir: string,
+	sessionId: string,
+): Promise<{ entry: AcpSessionRegistryEntry; sessionFile: string | undefined } | undefined> {
+	const entry = readAcpSessionRegistry(sessionDir)[sessionId];
+	if (!entry) return undefined;
+	if (entry.sessionFile && existsSync(entry.sessionFile)) return { entry, sessionFile: entry.sessionFile };
+	if (entry.runtimeSessionId) {
+		try {
+			const sessions = await SessionManager.list(entry.cwd, sessionDir);
+			const match = sessions.find((session) => session.id === entry.runtimeSessionId);
+			if (match) return { entry, sessionFile: match.path };
+		} catch {
+			// Fall through to the undefined return below.
+		}
+	}
+	return { entry, sessionFile: undefined };
 }
 
 function isJsonRpcResponse(message: unknown, requestId: unknown): boolean {
@@ -677,6 +772,124 @@ export async function runAcpModeWithConnection(
 			});
 	};
 
+	/**
+	 * Admit one ACP session: build the entry, subscribe for its lifetime,
+	 * reconcile the initial child snapshot, and claim the single-session slot.
+	 * Shared by `session/new` and `session/fork`; the caller owns the response
+	 * commit gate (`pendingSessionNewResponse`).
+	 */
+	const admitAcpSession = async (
+		sessionId: string,
+		client: { notify(method: unknown, params: unknown): Promise<unknown> },
+	): Promise<AcpSessionEntry> => {
+		// Install the listener before fetching the snapshot. Child updates can arrive
+		// while the snapshot request is in flight; the connection remains the
+		// authoritative source used when quiescence is emitted below.
+		const producer = new AcpUpdateProducer(sessionId, client);
+		let inputPauseRelease: AcpInputPauseRelease | undefined;
+		if (closedInputPause) {
+			let resolve!: () => void;
+			let reject!: (error: unknown) => void;
+			const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+				resolve = resolvePromise;
+				reject = rejectPromise;
+			});
+			void promise.catch(() => undefined);
+			inputPauseRelease = { promise, resolve, reject };
+		}
+		const mappingState: AcpEventMappingState = {};
+		// Seed the context window before the first turn: a completed assistant
+		// response cannot be reported as an ACP `usage_update` without it.
+		try {
+			const initialState = await connection.getState();
+			mappingState.contextWindow = initialState.model?.contextWindow;
+		} catch {
+			// A failed state read only defers usage reporting to the next turn.
+		}
+		const observedChildren = new Map<string, unknown>();
+		const entry: AcpSessionEntry = {
+			id: sessionId,
+			mappingState,
+			abort: undefined,
+			cancelling: false,
+			cancelTask: undefined,
+			stopFailure: undefined,
+			inputPause: closedInputPause,
+			inputPauseKey: closedInputPauseKey,
+			inputPauseRelease,
+			pendingTerminal: undefined,
+			promptTask: undefined,
+			resolvePromptTask: undefined,
+			unsubscribe: undefined,
+			producer,
+		};
+		// Subscribe for the session lifetime, not per prompt turn: prime-agent
+		// subagents are fire-and-forget and keep reporting after the spawning turn
+		// ends, so a turn-scoped subscription would drop their updates. One
+		// mapping state per session keeps streaming bash output correlated with
+		// the run that produced it.
+		const unsubscribe = connection.subscribe((event) => {
+			// Heartbeats are connection-scoped, including if one races a prompt.
+			// They therefore intentionally use origin turn 0.
+			if (event.type === "heartbeats_changed") {
+				void producer.publish(
+					{ sessionUpdate: "session_info_update", _meta: primeAgentMeta({ heartbeatsChanged: true }) },
+					0,
+					"event",
+				);
+				return;
+			}
+			if (event.type !== "session_event") return;
+			if (event.event.type === "rlm_child_update") {
+				observedChildren.set(event.event.child.id, event.event.child);
+			}
+			const turnId = producer.turnForEvent(event.event);
+			for (const update of acpUpdatesForSessionEvent(event.event, mappingState)) {
+				void producer.publish(update, turnId, "event");
+			}
+		});
+		try {
+			// Reconcile after subscribing so updates cannot be lost while the snapshot
+			// request is in flight. Do not turn a failed read into an empty roster.
+			const initialSnapshot = await connection.getInitialSnapshot();
+			for (const child of initialSnapshot.children ?? []) {
+				if (observedChildren.has(child.id)) continue;
+				observedChildren.set(child.id, child);
+				const event = { type: "rlm_child_update", child } as const;
+				const turnId = producer.turnForEvent(event);
+				for (const update of acpUpdatesForSessionEvent(event, mappingState)) {
+					void producer.publish(update, turnId, "event");
+				}
+			}
+		} catch (error) {
+			producer.failSessionNewAdmission();
+			unsubscribe();
+			await clearAcpMcpServers().catch(() => undefined);
+			throw error;
+		}
+		// Claim the single-session slot only once the subscription and snapshot are
+		// ready, so a failed setup cannot leave it occupied and unusable.
+		entry.unsubscribe = unsubscribe;
+		session = entry;
+		return entry;
+	};
+
+	/**
+	 * Publish an ACP session to the cross-process registry so a later
+	 * `session/fork` (in the process bb spawns for the forked thread) can resolve
+	 * it back to a session file. Best-effort: a failed write only disables
+	 * forking from this session.
+	 */
+	const registerAdmittedAcpSession = async (sessionId: string): Promise<void> => {
+		const state = await connection.getState().catch(() => undefined);
+		if (!state?.sessionDir) return;
+		registerAcpSession(state.sessionDir, sessionId, {
+			runtimeSessionId: state.sessionId ?? null,
+			sessionFile: state.sessionFile ?? null,
+			cwd: state.cwd,
+		});
+	};
+
 	const handle = acp
 		.agent({ name: "prime-agent" })
 		.onRequest("initialize", async () => ({
@@ -687,7 +900,9 @@ export async function runAcpModeWithConnection(
 				...(supportsMcpServers ? { mcpCapabilities: { http: true } } : {}),
 				// Advertise close so a client knows it can release the session (and
 				// the single-session slot) instead of dropping the connection.
-				sessionCapabilities: { close: {} },
+				// Advertise fork so ACP clients (bb side chat, thread forks) can clone
+				// an existing session into a new one via session/fork.
+				sessionCapabilities: { close: {}, fork: {} },
 			},
 			agentInfo: { name: "prime-agent", title: "Prime Agent", version: VERSION },
 			// Advertise prime-agent extras under a namespaced key: ACP reserves
@@ -740,99 +955,101 @@ export async function runAcpModeWithConnection(
 					cwdMismatch = { requested: requestedCwd, actual: actualCwd };
 				}
 				const sessionId = randomUUID();
-				// Install the listener before fetching the snapshot. Child updates can arrive
-				// while the snapshot request is in flight; the connection remains the
-				// authoritative source used when quiescence is emitted below.
-				const producer = new AcpUpdateProducer(sessionId, ctx.client);
-				let inputPauseRelease: AcpInputPauseRelease | undefined;
-				if (closedInputPause) {
-					let resolve!: () => void;
-					let reject!: (error: unknown) => void;
-					const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-						resolve = resolvePromise;
-						reject = rejectPromise;
-					});
-					void promise.catch(() => undefined);
-					inputPauseRelease = { promise, resolve, reject };
-				}
-				const mappingState: AcpEventMappingState = {};
-				// Seed the context window before the first turn: a completed assistant
-				// response cannot be reported as an ACP `usage_update` without it.
-				try {
-					const initialState = await connection.getState();
-					mappingState.contextWindow = initialState.model?.contextWindow;
-				} catch {
-					// A failed state read only defers usage reporting to the next turn.
-				}
-				const observedChildren = new Map<string, unknown>();
-				const entry: AcpSessionEntry = {
-					id: sessionId,
-					mappingState,
-					abort: undefined,
-					cancelling: false,
-					cancelTask: undefined,
-					stopFailure: undefined,
-					inputPause: closedInputPause,
-					inputPauseKey: closedInputPauseKey,
-					inputPauseRelease,
-					pendingTerminal: undefined,
-					promptTask: undefined,
-					resolvePromptTask: undefined,
-					unsubscribe: undefined,
-					producer,
-				};
-				// Subscribe for the session lifetime, not per prompt turn: prime-agent
-				// subagents are fire-and-forget and keep reporting after the spawning turn
-				// ends, so a turn-scoped subscription would drop their updates. One
-				// mapping state per session keeps streaming bash output correlated with
-				// the run that produced it.
-				const unsubscribe = connection.subscribe((event) => {
-					// Heartbeats are connection-scoped, including if one races a prompt.
-					// They therefore intentionally use origin turn 0.
-					if (event.type === "heartbeats_changed") {
-						void producer.publish(
-							{ sessionUpdate: "session_info_update", _meta: primeAgentMeta({ heartbeatsChanged: true }) },
-							0,
-							"event",
-						);
-						return;
-					}
-					if (event.type !== "session_event") return;
-					if (event.event.type === "rlm_child_update") {
-						observedChildren.set(event.event.child.id, event.event.child);
-					}
-					const turnId = producer.turnForEvent(event.event);
-					for (const update of acpUpdatesForSessionEvent(event.event, mappingState)) {
-						void producer.publish(update, turnId, "event");
-					}
-				});
-				try {
-					// Reconcile after subscribing so updates cannot be lost while the snapshot
-					// request is in flight. Do not turn a failed read into an empty roster.
-					const initialSnapshot = await connection.getInitialSnapshot();
-					for (const child of initialSnapshot.children ?? []) {
-						if (observedChildren.has(child.id)) continue;
-						observedChildren.set(child.id, child);
-						const event = { type: "rlm_child_update", child } as const;
-						const turnId = producer.turnForEvent(event);
-						for (const update of acpUpdatesForSessionEvent(event, mappingState)) {
-							void producer.publish(update, turnId, "event");
-						}
-					}
-				} catch (error) {
-					producer.failSessionNewAdmission();
-					unsubscribe();
-					await clearAcpMcpServers().catch(() => undefined);
-					throw error;
-				}
-				// Claim the single-session slot only once the subscription and snapshot are
-				// ready, so a failed setup cannot leave it occupied and unusable.
-				entry.unsubscribe = unsubscribe;
-				session = entry;
+				const entry = await admitAcpSession(sessionId, ctx.client);
+				await registerAdmittedAcpSession(sessionId);
 				const response = {
 					sessionId,
 					...(cwdMismatch ? { _meta: primeAgentMeta({ cwd: cwdMismatch }) } : {}),
 				};
+				// The stream wrapper commits this gate after this exact response has
+				// written. Buffered subscription updates retain producer order.
+				pendingSessionNewResponse = {
+					requestId: ctx.requestId,
+					producer: entry.producer,
+					entry,
+					inputPause: closedInputPause,
+				};
+				return response;
+			} finally {
+				sessionNewInFlight = false;
+			}
+		})
+		.onRequest("session/fork", async (ctx: any) => {
+			// Same single-slot reservation as session/new: the forked session replaces
+			// whatever this process booted with, and a concurrent admission must not
+			// race the replacement.
+			if (session || sessionNewInFlight || sessionCloseInFlight) {
+				throw new Error(
+					"prime-agent ACP mode hosts one session per connection; " +
+						"start another prime-agent process for a second session",
+				);
+			}
+			sessionNewInFlight = true;
+			try {
+				const params = ctx.params as acp.ForkSessionRequest;
+				const mcpServers = params.mcpServers ?? [];
+				if (mcpServers.length > 0 && !supportsMcpServers) {
+					throw acp.RequestError.invalidParams({ reason: "MCP servers are unavailable in this ACP host" });
+				}
+				if (!bound) {
+					// Only latch after a successful bind: a rejected bind must not leave
+					// extensions permanently unavailable for the rest of the process.
+					await options.bindHeadlessExtensions?.();
+					bound = true;
+				}
+				const processState = await connection.getState();
+				if (!processState.sessionDir) {
+					throw acp.RequestError.invalidParams({ reason: "Could not resolve the ACP session directory for fork" });
+				}
+				await replaceAcpMcpServers(mcpServers, processState.cwd);
+				// bb forks by spawning a fresh process and passing the source session's
+				// id; resolve it to a session file through the cross-process registry.
+				const source = await resolveAcpSessionFile(processState.sessionDir, params.sessionId);
+				if (!source) throw new Error(`Unknown ACP session: ${params.sessionId}`);
+				let branchedManager: SessionManager;
+				if (source.sessionFile) {
+					const sourceManager = SessionManager.open(source.sessionFile);
+					const leafId = sourceManager.getLeafId();
+					if (leafId) {
+						// Tip fork: copy the source history path into a new session file.
+						sourceManager.createBranchedSession(leafId);
+						branchedManager = sourceManager;
+					} else {
+						// Empty source session: inherit the parent link without history.
+						branchedManager = SessionManager.create(sourceManager.getCwd(), sourceManager.getSessionDir());
+						branchedManager.newSession({ parentSession: source.sessionFile });
+					}
+				} else {
+					// The source session never persisted (no messages yet): fork is a
+					// fresh session in the same directory.
+					branchedManager = SessionManager.create(processState.cwd, processState.sessionDir);
+					branchedManager.newSession({ parentSession: source.entry.sessionFile ?? undefined });
+				}
+				// createBranchedSession defers writing when the copy has no assistant
+				// message; switchSession needs the file on disk, so flush it now.
+				branchedManager.flushNow();
+				const branchedSessionFile = branchedManager.getSessionFile();
+				if (!branchedSessionFile) {
+					throw new Error("Failed to create forked session file");
+				}
+				// Replace this process's boot session with the branched copy. The source
+				// file itself is never reopened, so the original session stays intact.
+				const switched = await connection.switchSession(branchedSessionFile);
+				if (switched.cancelled) {
+					throw new Error("ACP fork was cancelled by a session hook");
+				}
+				const sessionId = randomUUID();
+				const entry = await admitAcpSession(sessionId, ctx.client);
+				// Point the registry at the branched copy so forking the fork works.
+				const forkedState = await connection.getState().catch(() => undefined);
+				if (forkedState?.sessionDir) {
+					registerAcpSession(forkedState.sessionDir, sessionId, {
+						runtimeSessionId: branchedManager.getSessionId(),
+						sessionFile: branchedSessionFile,
+						cwd: branchedManager.getCwd(),
+					});
+				}
+				const response = { sessionId };
 				// The stream wrapper commits this gate after this exact response has
 				// written. Buffered subscription updates retain producer order.
 				pendingSessionNewResponse = {
