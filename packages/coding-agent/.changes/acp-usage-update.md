@@ -1,0 +1,1 @@
+- Added ACP `usage_update` reporting so bb shows the thread's context window usage for Prime Agent threads.

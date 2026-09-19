@@ -119,6 +119,7 @@ interface AcpInputPauseRelease {
 
 interface AcpSessionEntry {
 	id: string;
+	mappingState: AcpEventMappingState;
 	abort: AbortController | undefined;
 	cancelling: boolean;
 	cancelTask: Promise<void> | undefined;
@@ -754,8 +755,19 @@ export async function runAcpModeWithConnection(
 					void promise.catch(() => undefined);
 					inputPauseRelease = { promise, resolve, reject };
 				}
+				const mappingState: AcpEventMappingState = {};
+				// Seed the context window before the first turn: a completed assistant
+				// response cannot be reported as an ACP `usage_update` without it.
+				try {
+					const initialState = await connection.getState();
+					mappingState.contextWindow = initialState.model?.contextWindow;
+				} catch {
+					// A failed state read only defers usage reporting to the next turn.
+				}
+				const observedChildren = new Map<string, unknown>();
 				const entry: AcpSessionEntry = {
 					id: sessionId,
+					mappingState,
 					abort: undefined,
 					cancelling: false,
 					cancelTask: undefined,
@@ -774,8 +786,6 @@ export async function runAcpModeWithConnection(
 				// ends, so a turn-scoped subscription would drop their updates. One
 				// mapping state per session keeps streaming bash output correlated with
 				// the run that produced it.
-				const mappingState: AcpEventMappingState = {};
-				const observedChildren = new Map<string, unknown>();
 				const unsubscribe = connection.subscribe((event) => {
 					// Heartbeats are connection-scoped, including if one races a prompt.
 					// They therefore intentionally use origin turn 0.
@@ -869,6 +879,15 @@ export async function runAcpModeWithConnection(
 			// Allocate the causal turn before the first await, not when an update is
 			// delivered. This prevents late producer events becoming the next turn.
 			const promptTurnId = entry.producer.beginPrompt();
+			// Refresh per turn: the model (and therefore the context window) can
+			// change between turns, and completed responses report usage against it.
+			try {
+				const turnState = await connection.getState();
+				const turnContextWindow = turnState.model?.contextWindow;
+				if (turnContextWindow) entry.mappingState.contextWindow = turnContextWindow;
+			} catch {
+				// Keep the previously seeded window when a state read fails.
+			}
 			let responseBoundaryEmitted = false;
 			let terminalSettlementCancelled = false;
 			try {

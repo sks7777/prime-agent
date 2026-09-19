@@ -1,4 +1,5 @@
-import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
+import type { AssistantMessageEvent, Usage } from "@earendil-works/pi-ai";
+import { calculateContextTokens } from "../../core/compaction/index.js";
 import type { AgentConnectionSessionEvent } from "../agent-connection/types.js";
 import type { PrimeAgentIpythonMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
 import { primeAgentMeta } from "./acp-meta.js";
@@ -126,6 +127,45 @@ export interface AcpEventMappingState {
 	activeBashRunId?: string;
 	activeAssistantMessageId?: string;
 	nextAssistantMessageSequence?: number;
+	/**
+	 * Context window of the session's current model, refreshed by the ACP mode
+	 * from connection state. Without it a completed assistant message cannot be
+	 * reported as an ACP `usage_update`, because the event carries no model info.
+	 */
+	contextWindow?: number;
+}
+
+/**
+ * ACP `usage_update` for one completed assistant response.
+ *
+ * `used` is the request's context size (`usage.totalTokens`, falling back to the
+ * explicit field sum, exactly like the session's own context estimate), and
+ * `size` is the model's context window. Error/aborted responses carry no
+ * trustworthy usage, and without a known context window there is nothing to
+ * report against, so both cases emit nothing.
+ *
+ * After a compaction the context size is unknown until the next model response
+ * (`AgentSession.getContextUsage()` returns `tokens: null` for the same reason),
+ * and ACP `usage_update.used` has no nullable form, so `compaction_end` emits
+ * nothing: bb keeps the last reported size until the next response corrects it.
+ */
+function usageUpdate(
+	event: Extract<AgentConnectionSessionEvent, { type: "message_end" }>,
+	state: AcpEventMappingState,
+): AcpSessionUpdate[] {
+	if (event.message.role !== "assistant") return [];
+	const assistant = event.message as { stopReason?: unknown; usage?: unknown };
+	if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return [];
+	const usage = assistant.usage as
+		| { totalTokens?: unknown; input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown }
+		| undefined;
+	if (!usage || typeof usage !== "object") return [];
+	const used = calculateContextTokens(usage as Usage);
+	if (!Number.isFinite(used) || used <= 0) return [];
+	if (typeof state.contextWindow !== "number" || !Number.isFinite(state.contextWindow) || state.contextWindow <= 0) {
+		return [];
+	}
+	return [{ sessionUpdate: "usage_update", used, size: state.contextWindow }];
 }
 
 function startAssistantMessage(state: AcpEventMappingState): string {
@@ -153,7 +193,7 @@ export function acpUpdatesForSessionEvent(
 
 		case "message_end":
 			if (event.message.role === "assistant") state.activeAssistantMessageId = undefined;
-			return [];
+			return usageUpdate(event, state);
 
 		case "tool_execution_start": {
 			const cell = event.toolName === IPYTHON_TOOL_NAME ? ipythonCellSource(event.args) : undefined;
@@ -220,6 +260,8 @@ export function acpUpdatesForSessionEvent(
 
 		// Compaction, subagents, goals and recaps have no ACP equivalent: surface
 		// them as namespaced metadata rather than distorting a standard update.
+		// No corrective usage_update here: post-compaction context size is unknown
+		// until the next model response (see usageUpdate doc above).
 		case "compaction_end":
 			return [
 				{

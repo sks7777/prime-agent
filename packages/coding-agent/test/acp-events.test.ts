@@ -313,4 +313,60 @@ describe("ACP session event mapping", () => {
 			[],
 		);
 	});
+
+	it("reports completed assistant responses as usage updates against the seeded context window", () => {
+		const state: AcpEventMappingState = { contextWindow: 200_000 };
+		const message = {
+			role: "assistant",
+			content: [],
+			usage: { input: 1000, output: 50, cacheRead: 250, cacheWrite: 0, totalTokens: 1300 },
+			stopReason: "stop",
+		} as never;
+		const end = { type: "message_end", message } as AgentConnectionSessionEvent;
+
+		expect(acpUpdatesForSessionEvent(end, state)).toEqual([
+			{ sessionUpdate: "usage_update", used: 1300, size: 200_000 },
+		]);
+		// The streaming message id still resets on end.
+		expect(state.activeAssistantMessageId).toBeUndefined();
+	});
+
+	it("omits usage updates without a known context window or usable usage", () => {
+		const message = {
+			role: "assistant",
+			content: [],
+			usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 10 },
+			stopReason: "stop",
+		} as never;
+		const end = { type: "message_end", message } as AgentConnectionSessionEvent;
+
+		// No seeded context window yet.
+		expect(acpUpdatesForSessionEvent(end, {})).toEqual([]);
+		// Zero usage carries no trustworthy context size.
+		const emptyUsage = {
+			role: "assistant",
+			content: [],
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+			stopReason: "stop",
+		} as never;
+		expect(
+			acpUpdatesForSessionEvent({ type: "message_end", message: emptyUsage } as AgentConnectionSessionEvent, {
+				contextWindow: 200_000,
+			}),
+		).toEqual([]);
+	});
+
+	it("skips usage updates for error and aborted responses", () => {
+		const state: AcpEventMappingState = { contextWindow: 200_000 };
+		for (const stopReason of ["error", "aborted"]) {
+			const message = {
+				role: "assistant",
+				content: [],
+				usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110 },
+				stopReason,
+			} as never;
+			const end = { type: "message_end", message } as AgentConnectionSessionEvent;
+			expect(acpUpdatesForSessionEvent(end, state)).toEqual([]);
+		}
+	});
 });
