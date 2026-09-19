@@ -3811,7 +3811,10 @@ export class InteractiveMode {
 		}
 		this.ui.hideOverlay();
 		this.clearExtensionTerminalInputListeners();
-		for (const cleanup of this.customWidgetCleanups.values()) {
+		// Optional chaining tolerates `this` fakes that exercise resetExtensionUI
+		// without running the constructor (e.g. prototype-call tests); real
+		// instances always have the field (fork 90e30d797).
+		for (const cleanup of this.customWidgetCleanups?.values() ?? []) {
 			cleanup();
 		}
 		this.setExtensionFooter(undefined);

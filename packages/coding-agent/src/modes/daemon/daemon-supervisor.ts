@@ -3222,7 +3222,11 @@ export class DaemonSupervisor {
 			this.log(`Prewarm pool sticky spare requested for ${cwd}`);
 			this.handlePrewarmCommand({
 				type: "prewarm",
-				config: { cwd, executionMode: "interactive", serializedRefine: false },
+				// Mirror the consumed create's config (including telemetryDisabled
+				// and any other keys it carried): the next identical launch sends
+				// the same shape, and the pool's consume-time config comparison
+				// skips a spare that differs in any key.
+				config: { ...(command.config ?? {}), cwd },
 				env: undefined,
 				launchEnv: command.launchEnv,
 			});

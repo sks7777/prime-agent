@@ -168,7 +168,7 @@ export function normalizeRequestedRlmSubagentThinkingLevel(
 	return level as ThinkingLevel;
 }
 
-export function normalizeRequestedRlmSubagentTemperature(value: unknown, operation = "rlm.run"): number | undefined {
+export function normalizeRequestedRlmSubagentTemperature(value: unknown, operation = "rlm.spawn"): number | undefined {
 	if (value === undefined) {
 		return undefined;
 	}
@@ -178,7 +178,7 @@ export function normalizeRequestedRlmSubagentTemperature(value: unknown, operati
 	return value;
 }
 
-export function normalizeRequestedRlmSubagentModel(value: unknown, operation = "rlm.run"): string | undefined {
+export function normalizeRequestedRlmSubagentModel(value: unknown, operation = "rlm.spawn"): string | undefined {
 	if (value === undefined) {
 		return undefined;
 	}
