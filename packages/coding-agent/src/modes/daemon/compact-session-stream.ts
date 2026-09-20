@@ -74,7 +74,12 @@ export class CompactAssistantStreamReconstructor {
 	private readonly toolCallJson = new Map<string, string>();
 
 	seed(activeSessionId: string, message: AssistantMessage): void {
-		this.partialMessages.set(activeSessionId, message);
+		// Don't overwrite a partial that observe(message_start) already set up —
+		// a roster-sync or attach seed can be stale relative to the live stream,
+		// causing content-type mismatches that cascade into resync and data loss.
+		if (!this.partialMessages.has(activeSessionId)) {
+			this.partialMessages.set(activeSessionId, message);
+		}
 	}
 
 	observe(message: DaemonOutbound): void {
@@ -110,7 +115,10 @@ export class CompactAssistantStreamReconstructor {
 			case "text_delta": {
 				const content = partial.content[event.contentIndex];
 				if (content?.type !== "text") {
-					return undefined;
+					// Auto-heal: a stale seed may have replaced the partial mid-stream.
+					// text_end will set the correct final text, so a fresh block is safe.
+					partial.content[event.contentIndex] = { type: "text", text: event.delta };
+					break;
 				}
 				content.text += event.delta;
 				break;
@@ -118,7 +126,8 @@ export class CompactAssistantStreamReconstructor {
 			case "text_end": {
 				const content = partial.content[event.contentIndex];
 				if (content?.type !== "text") {
-					return undefined;
+					partial.content[event.contentIndex] = { type: "text", text: event.content };
+					break;
 				}
 				content.text = event.content;
 				break;
@@ -129,7 +138,8 @@ export class CompactAssistantStreamReconstructor {
 			case "thinking_delta": {
 				const content = partial.content[event.contentIndex];
 				if (content?.type !== "thinking") {
-					return undefined;
+					partial.content[event.contentIndex] = { type: "thinking", thinking: event.delta };
+					break;
 				}
 				content.thinking += event.delta;
 				break;
@@ -137,7 +147,8 @@ export class CompactAssistantStreamReconstructor {
 			case "thinking_end": {
 				const content = partial.content[event.contentIndex];
 				if (content?.type !== "thinking") {
-					return undefined;
+					partial.content[event.contentIndex] = { type: "thinking", thinking: event.content };
+					break;
 				}
 				content.thinking = event.content;
 				break;

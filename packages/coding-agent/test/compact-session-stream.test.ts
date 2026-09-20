@@ -140,6 +140,185 @@ describe("compact daemon assistant streaming", () => {
 		});
 	});
 
+	it("does not overwrite a partial that observe(message_start) already set up", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		// observe(message_start) seeds an empty partial
+		reconstructor.observe({
+			type: "session_event",
+			activeSessionId: "active-seed",
+			event: { type: "message_start", message: assistant([]) },
+		});
+		// Simulate a roster-sync seed with a stale completed message
+		reconstructor.seed(
+			"active-seed",
+			assistant([
+				{ type: "thinking", thinking: "old" },
+				{ type: "toolCall", id: "tc-1", name: "search", arguments: {} },
+			]),
+		);
+		// The seed should NOT have overwritten the empty partial from message_start.
+		// A text_start at contentIndex 0 should work (not be blocked by stale thinking block).
+		const started = assistant([{ type: "text", text: "" }]);
+		const startFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-seed",
+			event: {
+				type: "message_update",
+				message: started,
+				assistantMessageEvent: { type: "text_start", contentIndex: 0, partial: started },
+			},
+		});
+		expect(reconstructor.reconstruct(startFrame!)).toMatchObject({
+			event: { message: { content: [{ type: "text", text: "" }] } },
+		});
+	});
+
+	it("seed does not overwrite a partial even from attachClient fallback", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		reconstructor.observe({
+			type: "session_event",
+			activeSessionId: "active-attach",
+			event: { type: "message_start", message: assistant([]) },
+		});
+		// Simulate attachClient fallback: seed with last completed assistant message
+		reconstructor.seed(
+			"active-attach",
+			assistant([
+				{ type: "thinking", thinking: "completed" },
+				{ type: "toolCall", id: "old", name: "done", arguments: {} },
+			]),
+		);
+		// text_delta should still work because seed didn't overwrite the empty partial
+		const updated = assistant([{ type: "text", text: "hello" }]);
+		const deltaFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-attach",
+			event: {
+				type: "message_update",
+				message: updated,
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "hello", partial: updated },
+			},
+		});
+		expect(reconstructor.reconstruct(deltaFrame!)).toMatchObject({
+			event: { message: { content: [{ type: "text", text: "hello" }] } },
+		});
+	});
+
+	it("auto-heals text_delta when content block has wrong type (stale seed)", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		// Seed with a stale message that has toolCall at contentIndex 2
+		reconstructor.seed(
+			"active-heal",
+			assistant([
+				{ type: "thinking", thinking: "old" },
+				{ type: "thinking", thinking: "old2" },
+				{ type: "toolCall", id: "old-tc", name: "old", arguments: {} },
+			]),
+		);
+		// text_delta at ci=2 should auto-heal instead of failing
+		const updated = assistant([
+			{ type: "thinking", thinking: "" },
+			{ type: "thinking", thinking: "" },
+			{ type: "text", text: "the quick brown fox" },
+		]);
+		const deltaFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-heal",
+			event: {
+				type: "message_update",
+				message: updated,
+				assistantMessageEvent: {
+					type: "text_delta",
+					contentIndex: 2,
+					delta: "the quick brown fox",
+					partial: updated,
+				},
+			},
+		});
+		const result = reconstructor.reconstruct(deltaFrame!);
+		expect(result).toBeDefined();
+		expect(result).toMatchObject({
+			event: { message: { content: [{}, {}, { type: "text", text: "the quick brown fox" }] } },
+		});
+	});
+
+	it("text_end corrects auto-healed text with full final content", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		reconstructor.seed("active-end", assistant([{ type: "toolCall", id: "old", name: "old", arguments: {} }]));
+		// text_delta auto-heals with partial text
+		const deltaMsg = assistant([{ type: "text", text: "partial" }]);
+		const deltaFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-end",
+			event: {
+				type: "message_update",
+				message: deltaMsg,
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "partial", partial: deltaMsg },
+			},
+		});
+		expect(reconstructor.reconstruct(deltaFrame!)).toMatchObject({
+			event: { message: { content: [{ type: "text", text: "partial" }] } },
+		});
+		// text_end sets the full correct text
+		const endMsg = assistant([{ type: "text", text: "the full correct text" }]);
+		const endFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-end",
+			event: {
+				type: "message_update",
+				message: endMsg,
+				assistantMessageEvent: {
+					type: "text_end",
+					contentIndex: 0,
+					content: "the full correct text",
+					partial: endMsg,
+				},
+			},
+		});
+		expect(reconstructor.reconstruct(endFrame!)).toMatchObject({
+			event: { message: { content: [{ type: "text", text: "the full correct text" }] } },
+		});
+	});
+
+	it("auto-heals thinking_delta when content block has wrong type", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		reconstructor.seed("active-thinking", assistant([{ type: "text", text: "wrong" }]));
+		const updated = assistant([{ type: "thinking", thinking: "step by step" }]);
+		const deltaFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-thinking",
+			event: {
+				type: "message_update",
+				message: updated,
+				assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "step by step", partial: updated },
+			},
+		});
+		const result = reconstructor.reconstruct(deltaFrame!);
+		expect(result).toBeDefined();
+		expect(result).toMatchObject({
+			event: { message: { content: [{ type: "thinking", thinking: "step by step" }] } },
+		});
+	});
+
+	it("seed is used when no partial exists (initial attach)", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		// No observe(message_start) — seed should set the partial
+		reconstructor.seed("active-initial", assistant([{ type: "text", text: "seeded" }]));
+		const updated = assistant([{ type: "text", text: "seeded hello" }]);
+		const deltaFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-initial",
+			event: {
+				type: "message_update",
+				message: updated,
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " hello", partial: updated },
+			},
+		});
+		expect(reconstructor.reconstruct(deltaFrame!)).toMatchObject({
+			event: { message: { content: [{ type: "text", text: "seeded hello" }] } },
+		});
+	});
+
 	it("continues tool arguments after reconstructing from a snapshot", () => {
 		const reconstructor = new CompactAssistantStreamReconstructor();
 		reconstructor.seed(

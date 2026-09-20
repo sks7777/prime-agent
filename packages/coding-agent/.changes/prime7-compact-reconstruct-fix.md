@@ -1,0 +1,1 @@
+- Fixed compact-stream reconstruction dropping assistant message text when a stale roster-sync or attach seed overwrote the active partial mid-stream.
