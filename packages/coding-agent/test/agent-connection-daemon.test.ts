@@ -2285,6 +2285,10 @@ describe("DaemonAgentConnection", () => {
 
 		expect(events).toEqual([
 			{
+				type: "session_event",
+				event: { type: "stream_resynced", message: streamingMessage },
+			},
+			{
 				type: "session_resynced",
 				snapshot: expect.objectContaining({
 					state: expect.objectContaining({ sessionId: "session-current" }),

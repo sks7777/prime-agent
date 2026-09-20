@@ -1,0 +1,1 @@
+- Fixed lost assistant message text in ACP clients by replaying unforwarded streaming chunks after daemon resyncs.

@@ -653,7 +653,9 @@ export type AgentConnectionSessionEvent =
 			runId?: string;
 	  }
 	| { type: "refine_complete"; result: RefinementResult }
-	| { type: "refine_failed"; error: string };
+	| { type: "refine_failed"; error: string }
+	/** Resync replay of a live streaming message; carries the authoritative partial text. */
+	| { type: "stream_resynced"; message: AgentMessage };
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }

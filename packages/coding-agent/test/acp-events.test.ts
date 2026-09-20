@@ -9,11 +9,15 @@ import { PRIME_AGENT_META_NAMESPACE } from "../src/modes/acp/acp-meta.js";
 import type { AgentConnectionSessionEvent } from "../src/modes/agent-connection/types.js";
 
 /** Real streaming shape: the discriminator is on the event, delta is a string. */
-function assistantDelta(type: "text_delta" | "thinking_delta", delta: string): AgentConnectionSessionEvent {
+function assistantDelta(
+	type: "text_delta" | "thinking_delta",
+	delta: string,
+	contentIndex = 0,
+): AgentConnectionSessionEvent {
 	return {
 		type: "message_update",
 		message: { role: "assistant", content: [], usage: {} } as never,
-		assistantMessageEvent: { type, contentIndex: 0, delta, partial: {} } as never,
+		assistantMessageEvent: { type, contentIndex, delta, partial: {} } as never,
 	} as AgentConnectionSessionEvent;
 }
 
@@ -368,5 +372,77 @@ describe("ACP session event mapping", () => {
 			const end = { type: "message_end", message } as AgentConnectionSessionEvent;
 			expect(acpUpdatesForSessionEvent(end, state)).toEqual([]);
 		}
+	});
+
+	it("re-sends only the unforwarded suffix on a stream resync", () => {
+		const state: AcpEventMappingState = {};
+		const message = { role: "assistant", content: [], usage: {} } as never;
+		const start = { type: "message_start", message } as AgentConnectionSessionEvent;
+		acpUpdatesForSessionEvent(start, state);
+		// Client already received the first 6 chars of text (block 1) and 4 chars of thinking (block 0).
+		acpUpdatesForSessionEvent(assistantDelta("thinking_delta", "thnk", 0), state);
+		acpUpdatesForSessionEvent(assistantDelta("text_delta", "short ", 1), state);
+
+		const streamed = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "thnk deeper" },
+				{ type: "text", text: "short answer body" },
+			],
+		} as never;
+		const updates = acpUpdatesForSessionEvent(
+			{ type: "stream_resynced", message: streamed } as AgentConnectionSessionEvent,
+			state,
+		);
+		expect(updates).toEqual([
+			{
+				sessionUpdate: "agent_thought_chunk",
+				messageId: "prime-agent-assistant-1",
+				content: { type: "text", text: " deeper" },
+			},
+			{
+				sessionUpdate: "agent_message_chunk",
+				messageId: "prime-agent-assistant-1",
+				content: { type: "text", text: "answer body" },
+			},
+		]);
+	});
+
+	it("emits nothing on resync when everything was already forwarded", () => {
+		const state: AcpEventMappingState = {};
+		const message = { role: "assistant", content: [], usage: {} } as never;
+		acpUpdatesForSessionEvent({ type: "message_start", message } as AgentConnectionSessionEvent, state);
+		acpUpdatesForSessionEvent(assistantDelta("text_delta", "complete"), state);
+
+		const streamed = { role: "assistant", content: [{ type: "text", text: "complete" }] } as never;
+		expect(
+			acpUpdatesForSessionEvent(
+				{ type: "stream_resynced", message: streamed } as AgentConnectionSessionEvent,
+				state,
+			),
+		).toEqual([]);
+	});
+
+	it("starts a fresh forwarded-prefix map per assistant message", () => {
+		const state: AcpEventMappingState = {};
+		const message = { role: "assistant", content: [], usage: {} } as never;
+		const start = { type: "message_start", message } as AgentConnectionSessionEvent;
+		acpUpdatesForSessionEvent(start, state);
+		acpUpdatesForSessionEvent(assistantDelta("text_delta", "first message"), state);
+		acpUpdatesForSessionEvent({ type: "message_end", message } as AgentConnectionSessionEvent, state);
+
+		acpUpdatesForSessionEvent(start, state);
+		const streamed = { role: "assistant", content: [{ type: "text", text: "second" }] } as never;
+		const updates = acpUpdatesForSessionEvent(
+			{ type: "stream_resynced", message: streamed } as AgentConnectionSessionEvent,
+			state,
+		);
+		expect(updates).toEqual([
+			{
+				sessionUpdate: "agent_message_chunk",
+				messageId: "prime-agent-assistant-2",
+				content: { type: "text", text: "second" },
+			},
+		]);
 	});
 });

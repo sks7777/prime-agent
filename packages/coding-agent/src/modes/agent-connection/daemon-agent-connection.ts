@@ -638,8 +638,15 @@ export class DaemonAgentConnection implements AgentConnection {
 						if (this.disposed || this.terminalCloseEmitted) return;
 						if (sessionRevision !== this.sessionRevision || this.deferredSessionEventsOverflowed) continue;
 						const snapshot = await this.getInitialSnapshot();
-						if (sessionRevision === this.sessionRevision)
+						if (sessionRevision === this.sessionRevision) {
+							const streaming = snapshot.streamingMessage;
+							if (streaming?.role === "assistant") {
+								deliveries.push(
+									this.emit({ type: "session_event", event: { type: "stream_resynced", message: streaming } }),
+								);
+							}
 							deliveries.push(this.emit({ type: "session_resynced", snapshot }));
+						}
 						continue;
 					}
 					const deferred = this.deferredSessionEvents.shift();
@@ -2005,7 +2012,15 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		if (message.type === "session_resynced") {
 			this.applySessionSnapshot(message.snapshot);
-			await this.emit({ type: "session_resynced", snapshot: this.latestSnapshot! });
+			const streaming = this.latestSnapshot?.streamingMessage;
+			// Both emissions start synchronously so subscribers observe the
+			// catch-up chunks before the snapshot event that follows them.
+			const streamEmit =
+				streaming?.role === "assistant"
+					? this.emit({ type: "session_event", event: { type: "stream_resynced", message: streaming } })
+					: undefined;
+			const snapshotEmit = this.emit({ type: "session_resynced", snapshot: this.latestSnapshot! });
+			await Promise.all([streamEmit, snapshotEmit]);
 			return;
 		}
 		if (message.type === "session_replaced") {

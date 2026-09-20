@@ -1,4 +1,4 @@
-import type { AssistantMessageEvent, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, Usage } from "@earendil-works/pi-ai";
 import { calculateContextTokens } from "../../core/compaction/index.js";
 import type { AgentConnectionSessionEvent } from "../agent-connection/types.js";
 import type { PrimeAgentIpythonMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
@@ -55,12 +55,92 @@ function textContent(text: string): { type: "text"; text: string } {
  * `thinking_delta`) and carries a plain string, so reasoning and visible answer
  * text are distinct ACP update kinds a client can render or hide separately.
  */
-function assistantDeltaUpdates(event: AssistantMessageEvent, messageId: string): AcpSessionUpdate[] {
+function forwardedLength(forwarded: Map<number, number> | undefined, contentIndex: number): number {
+	return forwarded?.get(contentIndex) ?? 0;
+}
+
+function trackForwarded(
+	state: AcpEventMappingState,
+	kind: "thinking" | "text",
+	contentIndex: number,
+	length: number,
+): void {
+	if (kind === "thinking") {
+		state.forwardedThinkingLengths ??= new Map();
+		state.forwardedThinkingLengths.set(contentIndex, length);
+		return;
+	}
+	state.forwardedTextLengths ??= new Map();
+	state.forwardedTextLengths.set(contentIndex, length);
+}
+
+function resetForwardedLengths(state: AcpEventMappingState): void {
+	state.forwardedThinkingLengths?.clear();
+	state.forwardedTextLengths?.clear();
+}
+
+/**
+ * Catch-up chunks for a resynced streaming message.
+ *
+ * A daemon resync replays the consistent streaming message after dropped
+ * transport frames; the client has already rendered the forwarded prefix, so
+ * only the suffix per content block is re-sent. Tool-call arguments have no
+ * ACP chunk form and close via tool_call updates, so they are skipped.
+ */
+function resyncDeltaUpdates(
+	message: AssistantMessage,
+	messageId: string,
+	state: AcpEventMappingState,
+): AcpSessionUpdate[] {
+	const updates: AcpSessionUpdate[] = [];
+	message.content.forEach((block, contentIndex) => {
+		if (block.type === "thinking") {
+			const sent = forwardedLength(state.forwardedThinkingLengths, contentIndex);
+			if (block.thinking.length > sent) {
+				trackForwarded(state, "thinking", contentIndex, block.thinking.length);
+				updates.push({
+					sessionUpdate: "agent_thought_chunk",
+					messageId,
+					content: textContent(block.thinking.slice(sent)),
+				});
+			}
+			return;
+		}
+		if (block.type === "text") {
+			const sent = forwardedLength(state.forwardedTextLengths, contentIndex);
+			if (block.text.length > sent) {
+				trackForwarded(state, "text", contentIndex, block.text.length);
+				updates.push({
+					sessionUpdate: "agent_message_chunk",
+					messageId,
+					content: textContent(block.text.slice(sent)),
+				});
+			}
+		}
+	});
+	return updates;
+}
+
+function assistantDeltaUpdates(
+	event: AssistantMessageEvent,
+	messageId: string,
+	state: AcpEventMappingState,
+): AcpSessionUpdate[] {
 	if (event.type === "thinking_delta" && event.delta.length > 0) {
-		return [{ sessionUpdate: "agent_thought_chunk", messageId, content: textContent(event.delta) }];
+		const sent = forwardedLength(state.forwardedThinkingLengths, event.contentIndex);
+		trackForwarded(state, "thinking", event.contentIndex, sent + event.delta.length);
+		if (event.delta.length > sent) {
+			return [{ sessionUpdate: "agent_thought_chunk", messageId, content: textContent(event.delta.slice(sent)) }];
+		}
+		return [];
 	}
 	if (event.type === "text_delta" && event.delta.length > 0) {
-		return [{ sessionUpdate: "agent_message_chunk", messageId, content: textContent(event.delta) }];
+		const sent = forwardedLength(state.forwardedTextLengths, event.contentIndex);
+		trackForwarded(state, "text", event.contentIndex, sent + event.delta.length);
+		if (event.delta.length > sent) {
+			return [{ sessionUpdate: "agent_message_chunk", messageId, content: textContent(event.delta.slice(sent)) }];
+		}
+		return [];
 	}
 	return [];
 }
@@ -133,6 +213,14 @@ export interface AcpEventMappingState {
 	 * reported as an ACP `usage_update`, because the event carries no model info.
 	 */
 	contextWindow?: number;
+	/**
+	 * Characters already forwarded to the client for the current assistant
+	 * message's content blocks, keyed by content index. A daemon resync replays
+	 * the full streaming message, so the suffix beyond these lengths is re-sent
+	 * as catch-up chunks instead of being lost to dropped transport frames.
+	 */
+	forwardedThinkingLengths?: Map<number, number>;
+	forwardedTextLengths?: Map<number, number>;
 }
 
 /**
@@ -181,7 +269,10 @@ export function acpUpdatesForSessionEvent(
 ): AcpSessionUpdate[] {
 	switch (event.type) {
 		case "message_start":
-			if (event.message.role === "assistant") startAssistantMessage(state);
+			if (event.message.role === "assistant") {
+				startAssistantMessage(state);
+				resetForwardedLengths(state);
+			}
 			return [];
 
 		case "message_update":
@@ -189,11 +280,22 @@ export function acpUpdatesForSessionEvent(
 			return assistantDeltaUpdates(
 				event.assistantMessageEvent,
 				state.activeAssistantMessageId ?? startAssistantMessage(state),
+				state,
 			);
 
 		case "message_end":
-			if (event.message.role === "assistant") state.activeAssistantMessageId = undefined;
+			if (event.message.role === "assistant") {
+				state.activeAssistantMessageId = undefined;
+				resetForwardedLengths(state);
+			}
 			return usageUpdate(event, state);
+
+		case "stream_resynced": {
+			if (event.message.role !== "assistant") return [];
+			const messageId = state.activeAssistantMessageId ?? startAssistantMessage(state);
+			state.activeAssistantMessageId = messageId;
+			return resyncDeltaUpdates(event.message as AssistantMessage, messageId, state);
+		}
 
 		case "tool_execution_start": {
 			const cell = event.toolName === IPYTHON_TOOL_NAME ? ipythonCellSource(event.args) : undefined;
