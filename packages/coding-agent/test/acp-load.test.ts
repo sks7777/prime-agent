@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
@@ -200,6 +200,43 @@ describe("ACP session/load", () => {
 			await stopMode(sourceMode);
 		}
 	}, 60_000);
+
+	it("rejects load requests whose cwd differs from the registered session's cwd", async () => {
+		const { runtimeHost, tempDir } = await createRuntimeHost({ persistSession: true });
+		const sourceMode = await startMode(runtimeHost);
+		try {
+			const sourceSession = await sourceMode.client.agent.request("session/new", {
+				cwd: tempDir,
+				mcpServers: [],
+			});
+
+			// A second mode (fresh process simulation) loading with a different cwd
+			// must be rejected so the client falls back to a fresh session.
+			const resumeMode = await startMode(runtimeHost);
+			try {
+				const otherDir = join(tempDir, "other-workspace");
+				mkdirSync(otherDir, { recursive: true });
+				await expect(
+					resumeMode.client.agent.request("session/load", {
+						sessionId: sourceSession.sessionId,
+						cwd: otherDir,
+						mcpServers: [],
+					}),
+				).rejects.toThrow();
+
+				// The slot stays free after the rejected load.
+				const created = await resumeMode.client.agent.request("session/new", {
+					cwd: tempDir,
+					mcpServers: [],
+				});
+				expect(created.sessionId).toEqual(expect.any(String));
+			} finally {
+				await stopMode(resumeMode);
+			}
+		} finally {
+			await stopMode(sourceMode);
+		}
+	}, 30_000);
 
 	it("rejects load requests for unknown session ids and frees the slot", async () => {
 		const { runtimeHost, tempDir } = await createRuntimeHost({ persistSession: true });

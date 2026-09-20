@@ -1005,6 +1005,14 @@ export async function runAcpModeWithConnection(
 				// (the same map `session/fork` reads back).
 				const source = await resolveAcpSessionFile(processState.sessionDir, params.sessionId);
 				if (!source) throw new Error(`Unknown ACP session: ${params.sessionId}`);
+				// The ACP spec pairs the session id with the request cwd. A stored
+				// session from another workspace must not be restored into this one;
+				// fail so the client falls back to a fresh session.
+				if (typeof params.cwd === "string" && params.cwd.length > 0 && !sameCwd(source.entry.cwd, params.cwd)) {
+					throw acp.RequestError.invalidParams({
+						reason: `ACP session ${params.sessionId} belongs to another working directory`,
+					});
+				}
 				if (source.sessionFile) {
 					// Resume keeps the requested ACP session id, so admit the session
 					// under it after the runtime has switched onto the file.
