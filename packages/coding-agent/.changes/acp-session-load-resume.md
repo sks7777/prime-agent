@@ -1,0 +1,1 @@
+- Added ACP `session/load` so a resumed bb thread restores the agent's in-session history instead of starting fresh.

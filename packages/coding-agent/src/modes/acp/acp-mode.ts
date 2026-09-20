@@ -66,9 +66,9 @@ function canonicalCwd(path: string): string {
  * able to map that id back to a session file on disk. ACP session ids are
  * per-process random UUIDs, so `session/new` publishes
  * `{ACP sessionId -> runtime session id + session file}` into a small JSON
- * registry inside the session directory; `session/fork` reads it back. The
- * source and fork processes share the session directory because bb reuses the
- * source thread's environment for the fork.
+ * registry inside the session directory; `session/fork` and `session/load`
+ * read it back. The source and fork processes share the session directory
+ * because bb reuses the source thread's environment for the fork.
  */
 const ACP_SESSION_REGISTRY_FILENAME = "acp-session-registry.json";
 const ACP_SESSION_REGISTRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -775,8 +775,8 @@ export async function runAcpModeWithConnection(
 	/**
 	 * Admit one ACP session: build the entry, subscribe for its lifetime,
 	 * reconcile the initial child snapshot, and claim the single-session slot.
-	 * Shared by `session/new` and `session/fork`; the caller owns the response
-	 * commit gate (`pendingSessionNewResponse`).
+	 * Shared by `session/new`, `session/load`, and `session/fork`; the caller
+	 * owns the response commit gate (`pendingSessionNewResponse`).
 	 */
 	const admitAcpSession = async (
 		sessionId: string,
@@ -895,7 +895,7 @@ export async function runAcpModeWithConnection(
 		.onRequest("initialize", async () => ({
 			protocolVersion: acp.PROTOCOL_VERSION,
 			agentCapabilities: {
-				loadSession: false,
+				loadSession: true,
 				promptCapabilities: { image: true, embeddedContext: true },
 				...(supportsMcpServers ? { mcpCapabilities: { http: true } } : {}),
 				// Advertise close so a client knows it can release the session (and
@@ -970,6 +970,62 @@ export async function runAcpModeWithConnection(
 					inputPause: closedInputPause,
 				};
 				return response;
+			} finally {
+				sessionNewInFlight = false;
+			}
+		})
+		.onRequest("session/load", async (ctx: any) => {
+			// Same single-slot reservation as session/new: the loaded session
+			// replaces whatever this process booted with.
+			if (session || sessionNewInFlight || sessionCloseInFlight) {
+				throw new Error(
+					"prime-agent ACP mode hosts one session per connection; " +
+						"start another prime-agent process for a second session",
+				);
+			}
+			sessionNewInFlight = true;
+			try {
+				const params = ctx.params as acp.LoadSessionRequest;
+				const mcpServers = params.mcpServers ?? [];
+				if (mcpServers.length > 0 && !supportsMcpServers) {
+					throw acp.RequestError.invalidParams({ reason: "MCP servers are unavailable in this ACP host" });
+				}
+				if (!bound) {
+					// Only latch after a successful bind: a rejected bind must not leave
+					// extensions permanently unavailable for the rest of the process.
+					await options.bindHeadlessExtensions?.();
+					bound = true;
+				}
+				const processState = await connection.getState();
+				if (!processState.sessionDir) {
+					throw acp.RequestError.invalidParams({ reason: "Could not resolve the ACP session directory for load" });
+				}
+				await replaceAcpMcpServers(mcpServers, processState.cwd);
+				// Resolve the requested session id through the cross-process registry
+				// (the same map `session/fork` reads back).
+				const source = await resolveAcpSessionFile(processState.sessionDir, params.sessionId);
+				if (!source) throw new Error(`Unknown ACP session: ${params.sessionId}`);
+				if (source.sessionFile) {
+					// Resume keeps the requested ACP session id, so admit the session
+					// under it after the runtime has switched onto the file.
+					const switched = await connection.switchSession(source.sessionFile);
+					if (switched.cancelled) {
+						throw new Error("ACP load was cancelled by a session hook");
+					}
+				}
+				// No persisted file means the source session never wrote history
+				// (no messages yet): loading it is a no-op on the fresh boot session.
+				const entry = await admitAcpSession(params.sessionId, ctx.client);
+				await registerAdmittedAcpSession(params.sessionId);
+				// The stream wrapper commits this gate after this exact response has
+				// written. Buffered subscription updates retain producer order.
+				pendingSessionNewResponse = {
+					requestId: ctx.requestId,
+					producer: entry.producer,
+					entry,
+					inputPause: closedInputPause,
+				};
+				return {};
 			} finally {
 				sessionNewInFlight = false;
 			}
