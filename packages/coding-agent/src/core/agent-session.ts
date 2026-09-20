@@ -469,9 +469,7 @@ export type AgentSessionEvent =
 			runId?: string;
 	  }
 	| { type: "refine_complete"; result: RefinementResult }
-	| { type: "refine_failed"; error: string }
-	/** Resync replay of a live streaming message; carries the authoritative partial text. */
-	| { type: "stream_resynced"; message: AgentMessage };
+	| { type: "refine_failed"; error: string };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 

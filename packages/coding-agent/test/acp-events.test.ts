@@ -408,6 +408,91 @@ describe("ACP session event mapping", () => {
 		]);
 	});
 
+	it("forwards every live delta in full and concatenates them per block", () => {
+		const state: AcpEventMappingState = {};
+		const message = { role: "assistant", content: [], usage: {} } as never;
+		acpUpdatesForSessionEvent({ type: "message_start", message } as AgentConnectionSessionEvent, state);
+		const chunks = [
+			acpUpdatesForSessionEvent(assistantDelta("text_delta", "Hello ", 0), state),
+			acpUpdatesForSessionEvent(assistantDelta("text_delta", "from ", 0), state),
+			acpUpdatesForSessionEvent(assistantDelta("text_delta", "prime-agent", 0), state),
+		];
+		expect(
+			chunks
+				.flat()
+				.map((update) => (update.content as { text: string }).text)
+				.join(""),
+		).toBe("Hello from prime-agent");
+	});
+
+	it("sends only the incremental suffix when deltas resume after a resync", () => {
+		const state: AcpEventMappingState = {};
+		const message = { role: "assistant", content: [], usage: {} } as never;
+		acpUpdatesForSessionEvent({ type: "message_start", message } as AgentConnectionSessionEvent, state);
+		acpUpdatesForSessionEvent(assistantDelta("text_delta", "head, ", 0), state);
+
+		const streamed = { role: "assistant", content: [{ type: "text", text: "head, tail" }] } as never;
+		const resync = acpUpdatesForSessionEvent(
+			{ type: "stream_resynced", message: streamed } as AgentConnectionSessionEvent,
+			state,
+		);
+		expect((resync[0]?.content as { text: string }).text).toBe("tail");
+
+		const resumed = acpUpdatesForSessionEvent(assistantDelta("text_delta", " and more", 0), state);
+		expect((resumed[0]?.content as { text: string }).text).toBe(" and more");
+	});
+
+	it("sends only the incremental suffix on a repeated resync", () => {
+		const state: AcpEventMappingState = {};
+		const message = { role: "assistant", content: [], usage: {} } as never;
+		acpUpdatesForSessionEvent({ type: "message_start", message } as AgentConnectionSessionEvent, state);
+		acpUpdatesForSessionEvent(assistantDelta("text_delta", "ab", 0), state);
+
+		const first = acpUpdatesForSessionEvent(
+			{
+				type: "stream_resynced",
+				message: { role: "assistant", content: [{ type: "text", text: "abcd" }] },
+			} as AgentConnectionSessionEvent,
+			state,
+		);
+		expect((first[0]?.content as { text: string }).text).toBe("cd");
+
+		const second = acpUpdatesForSessionEvent(
+			{
+				type: "stream_resynced",
+				message: { role: "assistant", content: [{ type: "text", text: "abcdef" }] },
+			} as AgentConnectionSessionEvent,
+			state,
+		);
+		expect((second[0]?.content as { text: string }).text).toBe("ef");
+	});
+
+	it("re-syncs the tracked length when a resynced block is shorter than forwarded", () => {
+		const state: AcpEventMappingState = {};
+		const message = { role: "assistant", content: [], usage: {} } as never;
+		acpUpdatesForSessionEvent({ type: "message_start", message } as AgentConnectionSessionEvent, state);
+		acpUpdatesForSessionEvent(assistantDelta("text_delta", "longer prefix", 0), state);
+
+		// A truncated replay resets the forwarded length; later deltas flow again.
+		const shrunk = acpUpdatesForSessionEvent(
+			{
+				type: "stream_resynced",
+				message: { role: "assistant", content: [{ type: "text", text: "tiny" }] },
+			} as AgentConnectionSessionEvent,
+			state,
+		);
+		expect(shrunk).toEqual([]);
+
+		const resumed = acpUpdatesForSessionEvent(assistantDelta("text_delta", "X", 0), state);
+		expect(resumed).toEqual([
+			{
+				sessionUpdate: "agent_message_chunk",
+				messageId: "prime-agent-assistant-1",
+				content: { type: "text", text: "X" },
+			},
+		]);
+	});
+
 	it("emits nothing on resync when everything was already forwarded", () => {
 		const state: AcpEventMappingState = {};
 		const message = { role: "assistant", content: [], usage: {} } as never;

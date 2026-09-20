@@ -2703,10 +2703,15 @@ describe("DaemonAgentConnection", () => {
 			sequence: number,
 			sessionId: string,
 		) => {
+			const streamingMessage =
+				purpose === "resync"
+					? ({ role: "assistant", content: [{ type: "text", text: "resynced tail" }] } as AgentMessage)
+					: undefined;
 			const messages: AgentMessage[] = [{ role: "user", content: purpose, timestamp: sequence }];
 			const full = createAttachResult("active-1", "client-1", undefined, sequence, {
 				state: createConnectionState("active-1", sessionId),
 				messages,
+				streamingMessage,
 			});
 			const { messages: _messages, ...snapshot } = full.snapshot;
 			fakeClient.emitMessage({
@@ -2737,9 +2742,16 @@ describe("DaemonAgentConnection", () => {
 
 		emitSnapshot("resync", "snapshot-resync", 13, "session-current");
 		emitSnapshot("replacement", "snapshot-replacement", 14, "session-next");
-		await vi.waitFor(() => expect(events).toHaveLength(2));
+		await vi.waitFor(() => expect(events).toHaveLength(3));
 
 		expect(events).toEqual([
+			expect.objectContaining({
+				type: "session_event",
+				event: {
+					type: "stream_resynced",
+					message: { role: "assistant", content: [{ type: "text", text: "resynced tail" }] },
+				},
+			}),
 			expect.objectContaining({
 				type: "session_resynced",
 				snapshot: expect.objectContaining({

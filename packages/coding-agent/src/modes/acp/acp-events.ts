@@ -96,6 +96,12 @@ function resyncDeltaUpdates(
 	message.content.forEach((block, contentIndex) => {
 		if (block.type === "thinking") {
 			const sent = forwardedLength(state.forwardedThinkingLengths, contentIndex);
+			// A shorter replayed block means earlier forwarded content no longer
+			// matches; resync from the replayed length so later deltas keep flowing.
+			if (block.thinking.length < sent) {
+				trackForwarded(state, "thinking", contentIndex, block.thinking.length);
+				return;
+			}
 			if (block.thinking.length > sent) {
 				trackForwarded(state, "thinking", contentIndex, block.thinking.length);
 				updates.push({
@@ -108,6 +114,10 @@ function resyncDeltaUpdates(
 		}
 		if (block.type === "text") {
 			const sent = forwardedLength(state.forwardedTextLengths, contentIndex);
+			if (block.text.length < sent) {
+				trackForwarded(state, "text", contentIndex, block.text.length);
+				return;
+			}
 			if (block.text.length > sent) {
 				trackForwarded(state, "text", contentIndex, block.text.length);
 				updates.push({
@@ -126,21 +136,18 @@ function assistantDeltaUpdates(
 	messageId: string,
 	state: AcpEventMappingState,
 ): AcpSessionUpdate[] {
+	// Live deltas are increments, not replays: forward them whole and extend the
+	// forwarded-prefix length. Overlap trimming lives in resyncDeltaUpdates,
+	// where the event does carry absolute block content.
 	if (event.type === "thinking_delta" && event.delta.length > 0) {
 		const sent = forwardedLength(state.forwardedThinkingLengths, event.contentIndex);
 		trackForwarded(state, "thinking", event.contentIndex, sent + event.delta.length);
-		if (event.delta.length > sent) {
-			return [{ sessionUpdate: "agent_thought_chunk", messageId, content: textContent(event.delta.slice(sent)) }];
-		}
-		return [];
+		return [{ sessionUpdate: "agent_thought_chunk", messageId, content: textContent(event.delta) }];
 	}
 	if (event.type === "text_delta" && event.delta.length > 0) {
 		const sent = forwardedLength(state.forwardedTextLengths, event.contentIndex);
 		trackForwarded(state, "text", event.contentIndex, sent + event.delta.length);
-		if (event.delta.length > sent) {
-			return [{ sessionUpdate: "agent_message_chunk", messageId, content: textContent(event.delta.slice(sent)) }];
-		}
-		return [];
+		return [{ sessionUpdate: "agent_message_chunk", messageId, content: textContent(event.delta) }];
 	}
 	return [];
 }

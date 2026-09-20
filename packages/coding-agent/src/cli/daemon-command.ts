@@ -1377,7 +1377,7 @@ class DaemonAttachTerminal {
 				this.rl?.prompt();
 				return;
 			case "session_event":
-				if (message.event.type !== "refine_complete") {
+				if (message.event.type !== "refine_complete" && message.event.type !== "stream_resynced") {
 					this.handleSessionEvent(message.event);
 				}
 				return;
