@@ -16,20 +16,29 @@ fi
 # their config dir; point them at the prime-agent config directory.
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.prime/agent}"
 
-# Check for --no-env / --dist flags
+# Check for --no-env / --dist / --source flags
 NO_ENV=false
-# PRIME_AGENT_USE_DIST=true defaults to the dist bundle (set "true", not 1)
-USE_DIST="${PRIME_AGENT_USE_DIST:-false}"
+# Dist bundle is the default; --source (or PRIME_AGENT_USE_DIST=false|0|no) runs tsx.
+USE_DIST=true
+USE_SOURCE=false
 ARGS=()
 for arg in "$@"; do
   if [[ "$arg" == "--no-env" ]]; then
     NO_ENV=true
   elif [[ "$arg" == "--dist" ]]; then
     USE_DIST=true
+  elif [[ "$arg" == "--source" ]]; then
+    USE_SOURCE=true
   else
     ARGS+=("$arg")
   fi
 done
+case "${PRIME_AGENT_USE_DIST:-}" in
+  false|0|no) USE_DIST=false ;;
+esac
+if [[ "$USE_SOURCE" == "true" ]]; then
+  USE_DIST=false
+fi
 
 if [[ "$NO_ENV" == "true" ]]; then
   # Unset API keys (see packages/ai/src/env-api-keys.ts)
@@ -72,7 +81,7 @@ if [[ "$NO_ENV" == "true" ]]; then
   echo "Running Prime Agent without API keys..."
 fi
 
-# --dist runs the bundled build (what users get; ~3x faster startup than tsx).
+# Dist bundle (default): the shipped build; ~3x faster startup than tsx.
 if [[ "$USE_DIST" == "true" ]]; then
   BUNDLE="$SCRIPT_DIR/packages/coding-agent/dist/bundle/cli.js"
   if [[ ! -f "$BUNDLE" ]]; then

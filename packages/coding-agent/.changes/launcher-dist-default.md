@@ -1,0 +1,1 @@
+- Changed prime-agent launcher to default to the dist bundle, with --source or PRIME_AGENT_USE_DIST=false falling back to tsx.
