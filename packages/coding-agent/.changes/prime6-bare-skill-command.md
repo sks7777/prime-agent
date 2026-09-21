@@ -1,0 +1,1 @@
+- Added bare `/<skill-name>` slash invocation: the skill body expands when the name matches exactly and no builtin, session, prompt-template, or extension command claims that name.
