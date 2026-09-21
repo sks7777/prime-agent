@@ -284,6 +284,8 @@ export interface KernelClient {
 	readonly ownerSessionId: string | undefined;
 	readonly isRunning: boolean;
 	readonly hasBackgroundWork: boolean;
+	/** Background bash handles that exited without their completion notice being flushed yet. */
+	readonly hasUnsettledBashCompletions: boolean;
 	/** Terminal: the kernel died or was torn down; only a fresh manager can serve again. */
 	readonly isDefunct: boolean;
 	start(options?: KernelStartOptions): Promise<void>;

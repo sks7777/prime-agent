@@ -182,6 +182,9 @@ export class ReplKernelManager {
 	private pendingBackgroundOutputTruncated = false;
 	private readonly inFlightHostRequests = new Set<Promise<void>>();
 	private readonly backgroundBashHandles = new Map<string, number>();
+	/** Bash handles whose process already exited but whose completion notice the
+	 * host has not flushed yet; the quiescence barrier owns this window. */
+	private readonly settlingBashCompletions = new Set<string>();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
 	/** Bumped by every teardown so a stale in-flight doStart can never touch a newer kernel. */
 	private startGeneration = 0;
@@ -228,6 +231,16 @@ export class ReplKernelManager {
 
 	get hasBackgroundWork(): boolean {
 		return this.backgroundBashHandles.size > 0;
+	}
+
+	/**
+	 * Whether any background bash handle exited without its completion notice
+	 * being flushed yet. A still-running handle is environment state (emulator,
+	 * dev server) the turn left behind; only the delivery window is unsettled
+	 * work for the strong quiescence barrier.
+	 */
+	get hasUnsettledBashCompletions(): boolean {
+		return this.settlingBashCompletions.size > 0;
 	}
 
 	private appendKernelDiagnostic(message: string): void {
@@ -772,8 +785,14 @@ export class ReplKernelManager {
 					if (!this.backgroundBashHandles.has(activity.id)) {
 						this.backgroundBashHandles.set(activity.id, activity.pid);
 					}
-				} else if (this.backgroundBashHandles.get(activity.id) === activity.pid) {
-					this.backgroundBashHandles.delete(activity.id);
+					if (activity.exited === true) this.settlingBashCompletions.add(activity.id);
+					else this.settlingBashCompletions.delete(activity.id);
+				} else {
+					if (this.backgroundBashHandles.get(activity.id) === activity.pid) {
+						this.backgroundBashHandles.delete(activity.id);
+					}
+					// The flush that removes the handle also retires its notice window.
+					this.settlingBashCompletions.delete(activity.id);
 				}
 			}
 			return;
@@ -1298,6 +1317,7 @@ export class ReplKernelManager {
 		this.lateSentAgentMessageHandlers.clear();
 		this.pendingDoneWaiters.clear();
 		this.backgroundBashHandles.clear();
+		this.settlingBashCompletions.clear();
 		// Stale pre-teardown background output must not surface after a restart.
 		this.pendingBackgroundOutput = "";
 		this.pendingBackgroundOutputTruncated = false;

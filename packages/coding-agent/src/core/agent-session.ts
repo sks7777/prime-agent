@@ -328,6 +328,7 @@ import {
 	BUILTIN_SLASH_COMMANDS,
 	findSlashCommandSuggestion,
 	isBuiltinSlashCommandName,
+	isSessionSlashCommandName,
 	parseRefineCommandOptions,
 	parseSessionSlashCommand,
 	parseSlashCommand,
@@ -5174,6 +5175,10 @@ export class AgentSession {
 		) {
 			return;
 		}
+		// A bare skill name is a valid invocation (bb lists skills that way).
+		if (this._resolveBareSkillName(parsed.name) !== undefined) {
+			return;
+		}
 		const skills = this.resourceLoader.getSkills().skills.map((skill) => skill.name);
 		const candidates = [
 			...BUILTIN_SLASH_COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]),
@@ -5874,12 +5879,36 @@ export class AgentSession {
 	 * Returns the expanded text, or the original text if not a skill command or skill not found.
 	 * Emits errors via extension runner if file read fails.
 	 */
+	private _resolveBareSkillName(name: string): string | undefined {
+		// bb (and other UIs) list skills under their bare name and insert
+		// "/<name>", so accept that spelling when it matches a skill exactly.
+		// A name that is also a builtin command, session command, prompt
+		// template, or extension command keeps its existing meaning.
+		if (name.length === 0 || name.startsWith("skill:")) return undefined;
+		if (isBuiltinSlashCommandName(name)) return undefined;
+		if (isSessionSlashCommandName(name)) return undefined;
+		if (this.promptTemplates.some((template) => template.name === name)) return undefined;
+		if (this._extensionRunner.getRegisteredCommands().some((command) => command.invocationName === name)) {
+			return undefined;
+		}
+		const skills = this.resourceLoader.getSkills().skills;
+		return skills.some((skill) => skill.name === name) ? name : undefined;
+	}
+
 	private _expandSkillCommand(text: string): string {
-		if (!text.startsWith("/skill:")) return text;
+		if (!text.startsWith("/")) return text;
 
 		const parsed = parseSlashCommand(text);
-		if (!parsed?.name.startsWith("skill:")) return text;
-		const skillName = parsed.name.slice("skill:".length);
+		if (!parsed) return text;
+		let skillName: string;
+		if (parsed.name.startsWith("skill:")) {
+			skillName = parsed.name.slice("skill:".length);
+			if (!this.resourceLoader.getSkills().skills.some((s) => s.name === skillName)) return text; // Unknown skill, pass through
+		} else {
+			const bare = this._resolveBareSkillName(parsed.name);
+			if (bare === undefined) return text; // Not a skill command, pass through
+			skillName = bare;
+		}
 		const args = parsed.args;
 
 		const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
@@ -7372,6 +7401,12 @@ export class AgentSession {
 	get isSessionActive(): boolean {
 		return (
 			this._ipythonKernelProvisioner?.manager?.hasBackgroundWork === true ||
+			this._hasSessionWorkExcludingBackgroundBash()
+		);
+	}
+
+	private _hasSessionWorkExcludingBackgroundBash(): boolean {
+		return (
 			this.isStreaming ||
 			this.isCompacting ||
 			this.isRetrying ||
@@ -7381,6 +7416,20 @@ export class AgentSession {
 			this._postCompactionContinuationSettlement !== undefined ||
 			this.unfinishedActionCount > 0
 		);
+	}
+
+	/**
+	 * Strong-quiescence work: everything {@link isSessionActive} owns except a
+	 * still-running background bash process. A process the kernel tracks as
+	 * running is environment state the turn deliberately left behind (an
+	 * emulator, a dev server); its liveness must not hold the terminal barrier
+	 * forever. The work quiescence owns is the kernel's completion-notice
+	 * delivery window plus every other active-work clause.
+	 */
+	private _hasUnsettledQuiescenceWork(): boolean {
+		if (this._hasDeferredRlmTerminalNotices()) return true;
+		if (this._ipythonKernelProvisioner?.manager?.hasUnsettledBashCompletions === true) return true;
+		return this._hasSessionWorkExcludingBackgroundBash();
 	}
 
 	getSessionActionSnapshot(): SessionActionSnapshot {
@@ -11574,7 +11623,7 @@ export class AgentSession {
 		if (this._hasDeferredRlmTerminalNotices()) return true;
 		if ([...this._unsettledRlmChildRuns].some((run) => !run.settled)) return true;
 		return this._rlmChildSessionSnapshot().some(
-			(child) => child.isSessionActive || child._hasUnsettledRlmQuiescenceWork(),
+			(child) => child._hasUnsettledQuiescenceWork() || child._hasUnsettledRlmQuiescenceWork(),
 		);
 	}
 
@@ -11600,8 +11649,10 @@ export class AgentSession {
 		try {
 			while (true) {
 				await wait(this.waitForHeadlessIdle());
-				// Strong RLM quiescence also owns work that interactive waitForIdle ignores.
-				if (this.isSessionActive || this._hasDeferredRlmTerminalNotices()) {
+				// Strong RLM quiescence also owns work that interactive waitForIdle
+				// ignores — except a still-running background bash process, whose
+				// liveness is environment state; only its completion-notice window is work.
+				if (this._hasUnsettledQuiescenceWork()) {
 					await wait(this._waitForSessionActivityChange(cancellation.signal));
 					continue;
 				}

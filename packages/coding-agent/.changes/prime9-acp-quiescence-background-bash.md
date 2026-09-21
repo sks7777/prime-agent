@@ -1,0 +1,1 @@
+- Fixed ACP (bb) threads hanging in running after the final message when the agent left a long-lived background process running: terminal quiescence now waits for the background-bash completion-notice delivery window instead of process liveness.

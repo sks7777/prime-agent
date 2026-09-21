@@ -102,6 +102,65 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("ok-default", result.output)
 
+    async def test_completion_notice_signals_exited_before_flush(self):
+        # The quiescence barrier must track the completion-notice delivery window,
+        # not handle liveness: a running handle is environment state, while an
+        # exited handle with an unflushed notice is unsettled work. The kernel
+        # marks the transition with an "exited" activity emission before the
+        # bash.completed host request, then retires it with active=False.
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        emitted: list[dict] = []
+        completed: list[dict] = []
+
+        async def fake_host_request(payload):
+            completed.append(payload)
+            return {"status": "ok"}
+
+        from rlm import repl as repl_module
+
+        with mock.patch.object(repl_module, "emit", lambda event: emitted.append(event)), mock.patch.object(
+            repl_module, "host_request", fake_host_request
+        ), mock.patch.object(repl_module, "is_active", lambda: True):
+            handle = bash("echo hi")
+            activity = {"id": "a" * 32, "pid": handle.pid, "active": True}
+            cell_finished = asyncio.Event()
+            cell_finished.set()
+            await bash_module.BashHandle._notify_background_completion(handle, cell_finished, activity)
+
+        self.assertEqual(
+            [next(iter(event.values())) for event in emitted],
+            [{**activity, "active": True, "exited": True}, {**activity, "active": False}],
+        )
+        self.assertEqual(completed[0]["type"], "bash.completed")
+        self.assertEqual(completed[0]["exitCode"], 0)
+
+    async def test_completion_notice_signals_exited_when_flush_is_skipped(self):
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        emitted: list[dict] = []
+        completed: list[dict] = []
+
+        async def fake_host_request(payload):
+            completed.append(payload)
+            return {"status": "ok"}
+
+        from rlm import repl as repl_module
+
+        with mock.patch.object(repl_module, "emit", lambda event: emitted.append(event)), mock.patch.object(
+            repl_module, "host_request", fake_host_request
+        ), mock.patch.object(repl_module, "is_active", lambda: True):
+            handle = bash("echo hi")
+            handle._result_consumed = True
+            activity = {"id": "b" * 32, "pid": handle.pid, "active": True}
+            cell_finished = asyncio.Event()
+            cell_finished.set()
+            await bash_module.BashHandle._notify_background_completion(handle, cell_finished, activity)
+
+        self.assertEqual(
+            [next(iter(event.values())) for event in emitted],
+            [{**activity, "active": True, "exited": True}, {**activity, "active": False}],
+        )
+        self.assertEqual(completed, [])
+
     async def test_backgrounded_tail_and_kill(self):
         handle = bash("echo start; sleep 30")
         self.assertIsNone(handle.poll())

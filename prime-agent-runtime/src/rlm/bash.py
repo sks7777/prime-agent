@@ -701,6 +701,10 @@ class BashHandle:
         try:
             result = await self._wait()
             await self._wait_reaped()
+            # The process is gone: move the host's tracking from "running" to
+            # "settling" so its quiescence barrier blocks on the pending
+            # completion notice, not on the (possibly never-exiting) liveness.
+            repl.emit({"application/vnd.prime-agent.bash-activity+json": {**activity, "active": True, "exited": True}})
             # The cell may do other work before awaiting this handle. Do not classify
             # it as detached until that whole cell has crossed its completion barrier.
             await cell_finished.wait()
