@@ -1,6 +1,7 @@
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, ServiceTier, TextContent, Transport, Usage } from "@earendil-works/pi-ai";
 import type { AgentSessionMessageReceipt, AgentSessionMessageSafetyStatus } from "../../core/agent-messages.js";
+import type { PlanCodeState } from "../../core/agent-session.js";
 import type { AuthSourceToken } from "../../core/auth-storage.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import type { BashResult } from "../../core/bash-executor.js";
@@ -350,6 +351,8 @@ export interface AgentConnectionState {
 	sessionActions: SessionActionSnapshot;
 	compactionCount: number;
 	goal: GoalState;
+	/** Latest plan-code extension mode state; undefined before the extension first persists. */
+	planCode?: PlanCodeState;
 	heartbeat?: AgentCronJob | null;
 	scopedModels: AgentConnectionScopedModel[];
 	activeToolNames: string[];
@@ -640,6 +643,7 @@ export type AgentConnectionSessionEvent =
 	| { type: "rlm_progress_note"; message: string; timestamp: number }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
+	| { type: "plan_code_mode"; planCode: PlanCodeState }
 	| { type: "bash_start"; command: string; excludeFromContext: boolean; transient?: boolean; runId?: string }
 	| { type: "bash_output"; chunk: string }
 	| {

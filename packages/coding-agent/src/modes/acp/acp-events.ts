@@ -1,7 +1,7 @@
 import type { AssistantMessage, AssistantMessageEvent, Usage } from "@earendil-works/pi-ai";
 import { calculateContextTokens } from "../../core/compaction/index.js";
 import type { AgentConnectionSessionEvent } from "../agent-connection/types.js";
-import type { PrimeAgentIpythonMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
+import type { PrimeAgentIpythonMeta, PrimeAgentPlanCodeMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
 import { primeAgentMeta } from "./acp-meta.js";
 
 /**
@@ -446,6 +446,20 @@ export function acpUpdatesForSessionEvent(
 				},
 			];
 
+		case "plan_code_mode":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({
+						planCode: {
+							...(event.planCode.mode === undefined ? {} : { mode: event.planCode.mode }),
+							...(event.planCode.executing === undefined ? {} : { executing: event.planCode.executing }),
+							...(event.planCode.todos === undefined ? {} : { todos: event.planCode.todos }),
+						},
+					}),
+				},
+			];
+
 		case "ipython_sent_agent_message":
 			return [
 				{
@@ -471,4 +485,4 @@ export function bashToolCallId(runId: string | undefined): string {
 	return runId ? `${BASH_TOOL_CALL_PREFIX}-${runId}` : BASH_TOOL_CALL_PREFIX;
 }
 
-export type { PrimeAgentSessionMeta };
+export type { PrimeAgentPlanCodeMeta, PrimeAgentSessionMeta };

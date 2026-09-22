@@ -224,6 +224,41 @@ describe("ACP session event mapping", () => {
 		});
 	});
 
+	it("surfaces plan-code mode state as namespaced metadata", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "plan_code_mode",
+			planCode: {
+				mode: "plan",
+				executing: true,
+				todos: [
+					{ step: 1, text: "Read the plan", completed: true },
+					{ step: 2, text: "Ship it", completed: false },
+				],
+			},
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]?.sessionUpdate).toBe("session_info_update");
+		expect(updates[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				planCode: {
+					mode: "plan",
+					executing: true,
+					todos: [
+						{ step: 1, text: "Read the plan", completed: true },
+						{ step: 2, text: "Ship it", completed: false },
+					],
+				},
+			},
+		});
+
+		// Exit (no mode) publishes an empty planCode payload the dialect can use
+		// to clear the mode state.
+		const cleared = acpUpdatesForSessionEvent({
+			type: "plan_code_mode",
+			planCode: {},
+		} as AgentConnectionSessionEvent);
+		expect(cleared[0]?._meta).toMatchObject({ [PRIME_AGENT_META_NAMESPACE]: { planCode: {} } });
+	});
+
 	it("surfaces continual-harness refinement outcomes, applied edits only", () => {
 		const done = acpUpdatesForSessionEvent({
 			type: "refine_complete",

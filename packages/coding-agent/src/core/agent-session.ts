@@ -397,6 +397,16 @@ export interface RlmChildAgentSnapshot {
 
 export type CompactionReason = "manual" | "threshold" | "overflow" | "requested";
 
+/**
+ * Plan-code extension mode state, mirroring the extension's persisted
+ * `plan-code-mode` session entry. `mode` is undefined when no mode is active.
+ */
+export interface PlanCodeState {
+	mode?: "plan" | "code" | "debug";
+	executing?: boolean;
+	todos?: { step: number; text: string; completed: boolean }[];
+}
+
 export type AgentSessionEvent =
 	| AgentEvent
 	| {
@@ -451,6 +461,7 @@ export type AgentSessionEvent =
 	| { type: "rlm_progress_note"; message: string; timestamp: number }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
+	| { type: "plan_code_mode"; planCode: PlanCodeState }
 	| {
 			type: "bash_start";
 			command: string;
@@ -1076,6 +1087,32 @@ interface RlmSubagentModelSelection {
 
 const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
 const RLM_MAX_DEPTH_STATE_CUSTOM_TYPE = "rlm_max_depth_state";
+const PLAN_CODE_MODE_CUSTOM_TYPE = "plan-code-mode";
+
+/** Type guard for the plan-code extension's persisted mode entries. */
+function isPlanCodeState(data: unknown): data is PlanCodeState {
+	if (typeof data !== "object" || data === null) return false;
+	const value = data as {
+		mode?: unknown;
+		executing?: unknown;
+		todos?: unknown;
+	};
+	if (value.mode !== undefined && value.mode !== "plan" && value.mode !== "code" && value.mode !== "debug") {
+		return false;
+	}
+	if (value.executing !== undefined && typeof value.executing !== "boolean") return false;
+	if (value.todos !== undefined) {
+		if (!Array.isArray(value.todos)) return false;
+		for (const item of value.todos) {
+			if (typeof item !== "object" || item === null) return false;
+			const todo = item as { step?: unknown; text?: unknown; completed?: unknown };
+			if (typeof todo.step !== "number" || typeof todo.text !== "string" || typeof todo.completed !== "boolean") {
+				return false;
+			}
+		}
+	}
+	return true;
+}
 /** Minimum spacing between accepted progress notes from one child session. */
 const RLM_PROGRESS_NOTE_MIN_INTERVAL_MS = 10_000;
 /** Bounded ring of progress notes kept per child run; the snapshot exposes the newest. */
@@ -1422,6 +1459,8 @@ export class AgentSession {
 
 	private _goalState: GoalState = emptyGoalState();
 	private _goalAccountingStartedAt: number | undefined = undefined;
+	/** Cached latest plan-code extension mode state; invalidated on re-append. */
+	private _planCodeState: PlanCodeState | undefined = undefined;
 	private _goalContinuationAwaitsRlmWork = false;
 	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
 	private _goalAbortInProgress = false;
@@ -5021,6 +5060,30 @@ export class AgentSession {
 
 	get goalState(): GoalState {
 		return { ...this._goalWithCurrentWallClock() };
+	}
+
+	/**
+	 * Latest plan-code extension mode state from the session branch, or
+	 * undefined before the extension first persisted its mode. Cached in
+	 * memory between changes; the extension re-appends its entry on every
+	 * mode change, so the last matching entry is authoritative.
+	 */
+	get planCodeState(): PlanCodeState | undefined {
+		if (this._planCodeState) return this._planCodeState;
+		const branch = this.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i] as { type?: string; customType?: string; data?: unknown };
+			if (entry.type !== "custom" || entry.customType !== PLAN_CODE_MODE_CUSTOM_TYPE) continue;
+			if (isPlanCodeState(entry.data)) {
+				this._planCodeState = {
+					...(entry.data.mode === undefined ? {} : { mode: entry.data.mode }),
+					...(entry.data.executing === undefined ? {} : { executing: entry.data.executing }),
+					...(entry.data.todos === undefined ? {} : { todos: entry.data.todos }),
+				};
+				return this._planCodeState;
+			}
+		}
+		return undefined;
 	}
 
 	getAutonomousStatus(): AgentAutonomousStatus {
@@ -10107,6 +10170,16 @@ export class AgentSession {
 				},
 				appendEntry: (customType, data) => {
 					this.sessionManager.appendCustomEntry(customType, data);
+					// The plan-code extension persists its mode on every change; expose
+					// the latest state to mode-aware hosts (ACP) the same way goals do.
+					if (customType === PLAN_CODE_MODE_CUSTOM_TYPE && isPlanCodeState(data)) {
+						this._planCodeState = {
+							...(data.mode === undefined ? {} : { mode: data.mode }),
+							...(data.executing === undefined ? {} : { executing: data.executing }),
+							...(data.todos === undefined ? {} : { todos: data.todos }),
+						};
+						this._emit({ type: "plan_code_mode", planCode: this._planCodeState });
+					}
 				},
 				setSessionName: async (name) => {
 					if (this._agentMessageController?.setSessionName) {

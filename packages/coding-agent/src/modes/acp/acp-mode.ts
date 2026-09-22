@@ -10,12 +10,14 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { SessionManager } from "../../core/session-manager.js";
+import { parseSlashCommand } from "../../core/slash-commands.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
 import type {
 	AgentConnection,
 	AgentConnectionRlmChildAgentSnapshot,
 	AgentConnectionSessionEvent,
 	AgentConnectionSessionInputPause,
+	AgentConnectionState,
 } from "../agent-connection/types.js";
 import { latestAutonomousGateAttempt } from "../headless-completion.js";
 import { type AcpEventMappingState, acpUpdatesForSessionEvent } from "./acp-events.js";
@@ -444,6 +446,107 @@ function promptContent(blocks: readonly unknown[]): { text: string; images: Imag
 		}
 	}
 	return { text: texts.join("\n"), images };
+}
+
+/**
+ * A leading `<system_instructions>` wrapper block (the bridge attaches it to a
+ * spawned thread's first prompt) must not merge into the user's prompt text:
+ * slash-command execution only fires when the prompt text starts with "/". This
+ * separates the leading wrapper from the rest so a leading slash command still
+ * routes to the session's command handling.
+ */
+const ACP_INSTRUCTIONS_PATTERN = /^<system_instructions>[\s\S]*<\/system_instructions>$/;
+
+interface AcpPromptSplit {
+	/** Leading instruction-wrapper texts, joined. Empty when absent. */
+	instructionsText: string;
+	/** Text blocks after the instruction wrapper, in order. */
+	restTexts: string[];
+	images: ImageContent[];
+}
+
+function splitAcpPromptBlocks(blocks: readonly unknown[]): AcpPromptSplit {
+	const instructionTexts: string[] = [];
+	const restTexts: string[] = [];
+	const images: ImageContent[] = [];
+	for (const block of blocks) {
+		if (!block || typeof block !== "object") continue;
+		const typed = block as {
+			type?: string;
+			text?: string;
+			data?: string;
+			mimeType?: string;
+		};
+		if (typed.type === "image" && typeof typed.data === "string" && typeof typed.mimeType === "string") {
+			images.push({ type: "image", data: typed.data, mimeType: typed.mimeType });
+			continue;
+		}
+		if (typed.type !== "text" || typeof typed.text !== "string") continue;
+		if (restTexts.length === 0 && ACP_INSTRUCTIONS_PATTERN.test(typed.text.trim())) {
+			instructionTexts.push(typed.text);
+		} else {
+			restTexts.push(typed.text);
+		}
+	}
+	return { instructionsText: instructionTexts.join("\n"), restTexts, images };
+}
+
+/**
+ * Detect a prompt that begins with a registered extension command. The command
+ * itself should execute as a command; everything after it — arguments, then the
+ * instruction wrapper — becomes the model's turn content. Returns undefined
+ * when the prompt does not start with a registered command.
+ */
+/**
+ * Cross-thread tells ("[bb message from thread:X]" attribution line) prefix the
+ * sender attribution before the message text, so a steer like "/exit" from
+ * another thread reaches the agent with the attribution glued to the command.
+ * Strip that leading attribution line so the command detection below still
+ * sees the slash command.
+ */
+const ACP_TELL_ATTRIBUTION_PATTERN = /^\[bb message from thread:[^\]]*\]\s*$/u;
+
+export function headWithoutTellAttribution(head: string): string {
+	const lines = head.split("\n");
+	while (lines.length > 1 && ACP_TELL_ATTRIBUTION_PATTERN.test(lines[0].trim())) {
+		lines.shift();
+	}
+	return lines.join("\n").trim();
+}
+
+async function acpLeadingCommandTurn(
+	connection: AgentConnection,
+	split: AcpPromptSplit,
+): Promise<{ commandInvocation: string; turnText: string; images?: ImageContent[] } | undefined> {
+	if (split.restTexts.length === 0) return undefined;
+	const head = headWithoutTellAttribution(split.restTexts[0].trim());
+	const command = parseSlashCommand(head);
+	if (!command) return undefined;
+	const registered = await connection
+		.getCommands()
+		.then((commands) =>
+			commands.some(
+				(candidate) =>
+					candidate.source === "extension" &&
+					(candidate.name === command.name || candidate.registeredName === command.name),
+			),
+		)
+		.catch(() => false);
+	if (!registered) return undefined;
+	const turnParts = [
+		...(command.args ? [command.args] : []),
+		...split.restTexts.slice(1),
+		...(split.instructionsText ? [split.instructionsText] : []),
+	];
+	const turnText = turnParts
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0)
+		.join("\n\n");
+	return {
+		commandInvocation: `/${command.name}`,
+		turnText,
+		...(turnText.length > 0 && split.images.length > 0 ? { images: split.images } : {}),
+	};
 }
 
 function autonomousMeta(status: AgentAutonomousStatus | undefined): PrimeAgentAutonomousMeta | undefined {
@@ -1182,12 +1285,43 @@ export async function runAcpModeWithConnection(
 				// heartbeats) keeps the resident session busy. ACP has no native queue
 				// field, so queue the host turn behind that work with follow-up
 				// semantics instead of rejecting it as "Agent is already processing".
-				await connection.promptAndWait(text, {
+				const promptOptions = {
 					...(images.length > 0 ? { images } : {}),
-					streamingBehavior: "followUp",
+					streamingBehavior: "followUp" as const,
 					queueIfBusy: true,
 					signal: abort.signal,
-				});
+				};
+				// A prompt that begins with a registered extension command (with
+				// optional arguments) executes as a command first, then the remaining
+				// text — arguments and the instruction wrapper — reaches the model as
+				// the turn content. Without the split, the wrapper prefix stops
+				// parseSlashCommand from ever seeing the command.
+				const leadingCommand = await acpLeadingCommandTurn(connection, splitAcpPromptBlocks(params.prompt));
+				if (leadingCommand) {
+					await connection.promptAndWait(leadingCommand.commandInvocation, {
+						streamingBehavior: "followUp",
+						queueIfBusy: true,
+						signal: abort.signal,
+					});
+					if (abort.signal.aborted) {
+						await entry.producer.drain();
+						return { stopReason: "cancelled" satisfies AcpStopReason };
+					}
+					if (leadingCommand.turnText.length > 0) {
+						await connection.promptAndWait(leadingCommand.turnText, {
+							...(leadingCommand.images ? { images: leadingCommand.images } : {}),
+							streamingBehavior: "followUp" as const,
+							queueIfBusy: true,
+							signal: abort.signal,
+						});
+						if (abort.signal.aborted) {
+							await entry.producer.drain();
+							return { stopReason: "cancelled" satisfies AcpStopReason };
+						}
+					}
+				} else {
+					await connection.promptAndWait(text, promptOptions);
+				}
 				if (abort.signal.aborted) {
 					await entry.producer.drain();
 					return { stopReason: "cancelled" satisfies AcpStopReason };
@@ -1225,10 +1359,24 @@ export async function runAcpModeWithConnection(
 					outcome,
 				);
 				if (!responseBoundaryEmitted) throw new Error("Failed to publish ACP response boundary");
+				// Fold the current plan-code mode into the completion update so a
+				// fresh or resumed session reports the active mode without waiting
+				// for the next mode change. Read fresh: the mode may have changed
+				// during the turn (extension appends mid-turn).
+				let planCodeState: AgentConnectionState["planCode"];
+				try {
+					planCodeState = (await connection.getState()).planCode;
+				} catch {
+					// Mode display is best-effort; a failed state read just skips it.
+				}
 				const completionUpdateEmitted = await entry.producer.publish(
 					{
 						sessionUpdate: "session_info_update",
-						_meta: primeAgentMeta({ ...(autonomous ? { autonomous } : {}), quiescence: observedQuiescence }),
+						_meta: primeAgentMeta({
+							...(autonomous ? { autonomous } : {}),
+							quiescence: observedQuiescence,
+							...(planCodeState ? { planCode: planCodeState } : {}),
+						}),
 					},
 					promptTurnId,
 					"event",

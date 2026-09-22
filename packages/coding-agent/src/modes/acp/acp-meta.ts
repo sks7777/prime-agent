@@ -80,6 +80,19 @@ export interface PrimeAgentCwdMeta {
 }
 
 /**
+ * Plan-code extension mode state (`/plan`, `/code`, `/dbg`, `/exit`).
+ *
+ * Mirrors the extension's persisted `plan-code-mode` session entry: `mode` is
+ * undefined when no mode is active. `todos` carries the extracted plan steps
+ * and their completion state while a plan is being executed.
+ */
+export interface PrimeAgentPlanCodeMeta {
+	mode?: "plan" | "code" | "debug";
+	executing?: boolean;
+	todos?: { step: number; text: string; completed: boolean }[];
+}
+
+/**
  * Producer-side ordering and causality for ACP updates.
  *
  * `promptTurnId` is allocated when ACP accepts a prompt, never inferred from
@@ -118,6 +131,8 @@ export interface PrimeAgentSessionMeta {
 	sessionId?: string;
 	rlmDepth?: number;
 	rlmMaxDepth?: number;
+	/** Active plan-code extension mode and plan execution progress. */
+	planCode?: PrimeAgentPlanCodeMeta;
 	compaction?: { tokensBefore?: number; summary?: string };
 	subagents?: PrimeAgentSubagentMeta[];
 	autonomous?: PrimeAgentAutonomousMeta;
