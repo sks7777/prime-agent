@@ -1,0 +1,1 @@
+- Added bb mirror threads for RLM subagents: `rlm.spawn(bb_mirror=True)` defers the child's admission prompt, the ACP frontend rebinds onto the named session via an `[rlm-attach:<id>]` marker, and the new `bb_subagents.spawn_mirror` skill spawns the visible bb thread in one call.

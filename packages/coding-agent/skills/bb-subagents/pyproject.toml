@@ -1,0 +1,15 @@
+[project]
+name = "bb-subagents"
+version = "0.1.0"
+description = "RLM subagents with visible bb mirror threads (PRIME-11)"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bb_subagents"]
+
+[tool.prime_agent.skill]
+import = "bb_subagents"

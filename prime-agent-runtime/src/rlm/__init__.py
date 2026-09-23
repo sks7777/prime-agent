@@ -164,6 +164,7 @@ async def spawn(
     name: str,
     model: str | None = None,
     thinking: str | None = None,
+    bb_mirror: bool = False,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -171,6 +172,9 @@ async def spawn(
     ``model`` selects a child with an exact ``provider/model`` selector.
     ``thinking`` sets the child reasoning level (e.g. 'off', 'low', 'medium', 'high');
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
+    ``bb_mirror`` defers the admission prompt: the child waits for its task from a
+    bb mirror thread (the orchestrator spawns that thread with the task as its
+    prompt and a leading ``[rlm-attach:<active_session_id>]`` marker line).
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -179,6 +183,8 @@ async def spawn(
         kwargs["model"] = model
     if thinking is not None:
         kwargs["thinking"] = thinking
+    if bb_mirror:
+        kwargs["bb_mirror"] = True
     # Wire type stays "rlm.run" so kernels and hosts of different versions stay compatible.
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
@@ -538,8 +544,9 @@ class _RLMNamespace:
         name: str,
         model: str | None = None,
         thinking: str | None = None,
+        bb_mirror: bool = False,
     ) -> RLMSpawnHandle:
-        return await spawn(prompt, name=name, model=model, thinking=thinking)
+        return await spawn(prompt, name=name, model=model, thinking=thinking, bb_mirror=bb_mirror)
 
     async def create_session(
         self,

@@ -798,6 +798,13 @@ export interface AgentConnection {
 	reload(): Promise<void>;
 	newSession(options?: AgentConnectionNewSessionOptions): Promise<{ cancelled: boolean }>;
 	switchSession(sessionPath: string, options?: AgentConnectionSwitchSessionOptions): Promise<{ cancelled: boolean }>;
+	/**
+	 * Rebind this live connection onto another daemon session in place (mirror
+	 * attach). Daemon-backed adapters only; absent on in-process adapters.
+	 */
+	attachActiveSession?(targetActiveSessionId: string): Promise<void>;
+	/** Kill a daemon session by id; used to reap a mirror thread's draft session. */
+	killSession?(activeSessionId: string): Promise<void>;
 	fork(entryId: string, options?: AgentConnectionForkOptions): Promise<{ cancelled: boolean; selectedText?: string }>;
 	navigateTree(
 		targetId: string,

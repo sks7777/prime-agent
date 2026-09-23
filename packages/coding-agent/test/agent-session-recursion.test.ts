@@ -875,6 +875,30 @@ describe("AgentSession rlm recursion", () => {
 		expect(doneUpdate?.toolUseCount).toBeUndefined();
 	});
 
+	it("defers a bb-mirror child's admission turn until the mirror thread prompts it", async () => {
+		const root = createSession({});
+		const childUpdates: Array<{ status: string; answerPreview?: string }> = [];
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") childUpdates.push(event.child);
+		});
+
+		const result = await root.runRlmChild("mirror task", { bb_mirror: true });
+
+		const child = root.getRlmChildSession(result.rlm_child_id);
+		expect(child).toBeTruthy();
+		// The admission prompt is withheld: nothing runs and nothing is sent yet.
+		await sleep(50);
+		expect(childUpdates.every((update) => update.status !== "done")).toBe(true);
+		expect(child?.messages.length).toBe(0);
+
+		// The mirror thread's ACP frontend prompts the child directly.
+		await child!.promptAndWait("[task from parent]\n\nmirror task");
+		await waitFor(() => childUpdates.some((update) => update.status === "done"));
+		const done = [...childUpdates].reverse().find((update) => update.status === "done");
+		// The answer preview is compacted to its last line.
+		expect(done?.answerPreview).toBe("child answer: mirror task");
+	});
+
 	it("wakes the agent with a follow-up when a detached bash handle completes", async () => {
 		const prompts: string[] = [];
 		const root = createSession({

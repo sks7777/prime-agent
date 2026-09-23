@@ -1492,6 +1492,22 @@ export class DaemonAgentConnection implements AgentConnection {
 		});
 	}
 
+	/**
+	 * Rebind this live connection onto another daemon session in place (mirror
+	 * attach): the daemon detaches this client from the current session and
+	 * attaches it to the target, replaying a fresh snapshot. The object identity
+	 * is stable, so already-subscribed listeners keep receiving events for the
+	 * new session.
+	 */
+	async attachActiveSession(targetActiveSessionId: string): Promise<void> {
+		await this.reattachSession(this.activeSessionId, targetActiveSessionId);
+	}
+
+	/** Kill a daemon session by id (the mirror rebind reaps its draft session). */
+	async killSession(activeSessionId: string): Promise<void> {
+		await this.requestOk({ type: "kill", activeSessionId });
+	}
+
 	async switchSession(
 		sessionPath: string,
 		options?: AgentConnectionSwitchSessionOptions,

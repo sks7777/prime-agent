@@ -10,6 +10,35 @@ from unittest.mock import AsyncMock, patch
 rlm_module = importlib.import_module("rlm")
 
 
+class RlmSpawnMirrorKwargsTest(unittest.TestCase):
+    def test_spawn_passes_name_model_thinking_by_default(self) -> None:
+        host_request = AsyncMock(
+            return_value={"rlm_child_id": "sub-1", "name": "worker", "session_dir": "/tmp/s", "model": "prov/m"}
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            handle = asyncio.run(rlm_module.spawn("task", name="worker", thinking="high"))
+
+        self.assertEqual(handle.rlm_child_id, "sub-1")
+        host_request.assert_awaited_once_with(
+            "rlm.run",
+            {"prompt": "task", "kwargs": {"name": "worker", "thinking": "high"}},
+        )
+
+    def test_spawn_defers_admission_prompt_for_bb_mirror(self) -> None:
+        host_request = AsyncMock(
+            return_value={"rlm_child_id": "sub-2", "name": "worker", "session_dir": "/tmp/s", "model": "prov/m"}
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            asyncio.run(rlm_module.spawn("task", name="worker", bb_mirror=True))
+
+        self.assertEqual(
+            host_request.await_args.args,
+            ("rlm.run", {"prompt": "task", "kwargs": {"name": "worker", "bb_mirror": True}}),
+        )
+
+
 class RlmSubagentRegistryTest(unittest.TestCase):
     def test_lists_parent_scoped_subagents_from_host(self) -> None:
         host_request = AsyncMock(

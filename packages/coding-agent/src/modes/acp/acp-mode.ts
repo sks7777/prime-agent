@@ -457,7 +457,25 @@ function promptContent(blocks: readonly unknown[]): { text: string; images: Imag
  */
 const ACP_INSTRUCTIONS_PATTERN = /^<system_instructions>[\s\S]*<\/system_instructions>$/;
 
-interface AcpPromptSplit {
+/**
+ * The same wrapper, but with the user's text concatenated after the closing tag
+ * in one block. Some clients (bb's remote-view and skill-injection prompts) send
+ * a single merged block, and then the whole-wrapper pattern above no longer
+ * matches, so the trailing slash command never reaches command handling.
+ */
+const ACP_INSTRUCTIONS_PREFIX_PATTERN = /^<system_instructions>[\s\S]*?<\/system_instructions>/;
+
+/** Split a merged wrapper+text block into its wrapper and its trailing text. */
+function splitAcpInstructionPrefix(text: string): { instructions: string; rest: string } | undefined {
+	const trimmed = text.trim();
+	const match = ACP_INSTRUCTIONS_PREFIX_PATTERN.exec(trimmed);
+	if (!match) return undefined;
+	const rest = trimmed.slice(match[0].length).trim();
+	if (rest.length === 0) return undefined;
+	return { instructions: match[0], rest };
+}
+
+export interface AcpPromptSplit {
 	/** Leading instruction-wrapper texts, joined. Empty when absent. */
 	instructionsText: string;
 	/** Text blocks after the instruction wrapper, in order. */
@@ -465,7 +483,7 @@ interface AcpPromptSplit {
 	images: ImageContent[];
 }
 
-function splitAcpPromptBlocks(blocks: readonly unknown[]): AcpPromptSplit {
+export function splitAcpPromptBlocks(blocks: readonly unknown[]): AcpPromptSplit {
 	const instructionTexts: string[] = [];
 	const restTexts: string[] = [];
 	const images: ImageContent[] = [];
@@ -484,9 +502,19 @@ function splitAcpPromptBlocks(blocks: readonly unknown[]): AcpPromptSplit {
 		if (typed.type !== "text" || typeof typed.text !== "string") continue;
 		if (restTexts.length === 0 && ACP_INSTRUCTIONS_PATTERN.test(typed.text.trim())) {
 			instructionTexts.push(typed.text);
-		} else {
-			restTexts.push(typed.text);
+			continue;
 		}
+		// A merged wrapper+text block counts as the leading wrapper with the
+		// user's text appended; split it so a leading slash command still runs.
+		if (restTexts.length === 0 && instructionTexts.length === 0) {
+			const merged = splitAcpInstructionPrefix(typed.text);
+			if (merged) {
+				instructionTexts.push(merged.instructions);
+				restTexts.push(merged.rest);
+				continue;
+			}
+		}
+		restTexts.push(typed.text);
 	}
 	return { instructionsText: instructionTexts.join("\n"), restTexts, images };
 }
@@ -512,6 +540,28 @@ export function headWithoutTellAttribution(head: string): string {
 		lines.shift();
 	}
 	return lines.join("\n").trim();
+}
+
+const RLM_ATTACH_MARKER_PATTERN = /^\[rlm-attach:([A-Za-z0-9][A-Za-z0-9._-]*)\][ \t]*$/u;
+
+export interface RlmAttachMarker {
+	target: string;
+	remaining: string;
+}
+
+/**
+ * Mirror threads carry the RLM subagent's daemon session id as a leading
+ * marker line, so the ACP frontend can rebind onto that live session before
+ * the task prompt runs. bb tell attribution may precede the marker.
+ */
+export function parseRlmAttachMarker(text: string): RlmAttachMarker | undefined {
+	const stripped = headWithoutTellAttribution(text);
+	const firstBreak = stripped.indexOf("\n");
+	const head = (firstBreak === -1 ? stripped : stripped.slice(0, firstBreak)).trim();
+	const match = RLM_ATTACH_MARKER_PATTERN.exec(head);
+	if (!match) return undefined;
+	const remaining = (firstBreak === -1 ? "" : stripped.slice(firstBreak + 1)).trim();
+	return { target: match[1]!, remaining };
 }
 
 async function acpLeadingCommandTurn(
@@ -978,6 +1028,39 @@ export async function runAcpModeWithConnection(
 	};
 
 	/**
+	 * Mirror rebind (PRIME-11): a mirror thread's spawn prompt names the RLM
+	 * subagent's daemon session as a leading `[rlm-attach:<id>]` marker line.
+	 * Rebind the single ACP session slot onto that live session, re-admit it
+	 * under the same ACP session id, and reap the draft session this process
+	 * booted with. The forwarded prompt (minus the marker) becomes the
+	 * deferred child's admission turn.
+	 */
+	const rebindToRlmMirrorSession = async (
+		target: string,
+		acpSessionId: string,
+		client: { notify(method: unknown, params: unknown): Promise<unknown> },
+	): Promise<void> => {
+		const draft = session;
+		if (!draft || draft.id !== acpSessionId) {
+			throw new Error(`ACP session ${acpSessionId} is not bound; cannot rebind onto ${target}`);
+		}
+		if (!connection.attachActiveSession || !connection.killSession) {
+			// In-process (non-daemon) frontends cannot rebind; the stripped task
+			// prompt still runs on the booted session, degrading to a normal agent.
+			return;
+		}
+		const draftSessionId = (await connection.getState()).activeSessionId;
+		await connection.attachActiveSession(target);
+		draft.unsubscribe?.();
+		session = undefined;
+		const fresh = await admitAcpSession(acpSessionId, client);
+		// There is no in-flight session/new response for the re-admission, so
+		// release the new producer's admission gate directly.
+		fresh.producer.commitSessionNewResponse();
+		if (draftSessionId) void connection.killSession(draftSessionId).catch(() => undefined);
+	};
+
+	/**
 	 * Publish an ACP session to the cross-process registry so a later
 	 * `session/fork` (in the process bb spawns for the forked thread) can resolve
 	 * it back to a session file. Best-effort: a failed write only disables
@@ -1232,6 +1315,18 @@ export async function runAcpModeWithConnection(
 		})
 		.onRequest("session/prompt", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string; prompt: readonly unknown[] };
+			// Mirror rebind (PRIME-11): a virgin frontend whose first prompt names
+			// an RLM subagent session rebinds onto it before the turn runs.
+			const probe = promptContent(params.prompt);
+			const mirror = parseRlmAttachMarker(probe.text);
+			if (
+				mirror &&
+				session?.id === params.sessionId &&
+				!session.abort &&
+				(await connection.getMessages()).length === 0
+			) {
+				await rebindToRlmMirrorSession(mirror.target, params.sessionId, ctx.client);
+			}
 			const entry = session?.id === params.sessionId ? session : undefined;
 			if (!entry) throw new Error(`Unknown ACP session: ${params.sessionId}`);
 			if (sessionCloseInFlight) throw new Error(`ACP session is closing: ${params.sessionId}`);
@@ -1275,7 +1370,8 @@ export async function runAcpModeWithConnection(
 			let responseBoundaryEmitted = false;
 			let terminalSettlementCancelled = false;
 			try {
-				const { text, images } = promptContent(params.prompt);
+				const { text: parsedText, images } = promptContent(params.prompt);
+				const text = mirror?.remaining ?? parsedText;
 				const priorMessages = turnBoundary(await connection.getMessages());
 				if (abort.signal.aborted) {
 					await entry.producer.drain();

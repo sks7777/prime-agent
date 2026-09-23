@@ -11943,16 +11943,21 @@ export class AgentSession {
 			model: rawModel,
 			thinking: rawThinking,
 			temperature: rawTemperature,
+			bb_mirror: rawBbMirror,
 			...unsupported
 		} = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.spawn kwargs: ${unsupportedKwargs.sort().join(", ")}`);
 		}
+		if (rawBbMirror !== undefined && typeof rawBbMirror !== "boolean") {
+			throw new Error("rlm.spawn bb_mirror must be a boolean");
+		}
 		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName);
 		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel);
 		const requestedThinkingLevel = normalizeRequestedRlmSubagentThinkingLevel(rawThinking);
 		const requestedTemperature = normalizeRequestedRlmSubagentTemperature(rawTemperature);
+		const bbMirror = rawBbMirror === true;
 		if (requestedSessionName) assertDirectAgentMessageTarget(requestedSessionName);
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
@@ -12181,12 +12186,22 @@ export class AgentSession {
 				throwIfCancelled();
 				run.status = "running";
 				emitChildUpdate();
+				// PRIME-11 bb mirror: with bb_mirror the child waits for its
+				// admission turn from the mirror thread's ACP frontend instead of
+				// being prompted here.
+				let resolveFirstTurnStarted!: () => void;
+				const firstTurnStarted = bbMirror
+					? new Promise<void>((resolve) => {
+							resolveFirstTurnStarted = resolve;
+						})
+					: undefined;
 				const unsubscribeChildEvents = child.subscribe((event) => {
 					if (event.type === "rlm_child_update") {
 						this._emit(event);
 						return;
 					}
 					if (event.type === "agent_start") {
+						resolveFirstTurnStarted?.();
 						run.activity = { kind: "waiting" };
 						touchRlmChildActivity(run);
 						emitChildUpdate();
@@ -12259,31 +12274,40 @@ export class AgentSession {
 					}
 				});
 				run.unsubscribe = unsubscribeChildEvents;
-				const content = `[task from parent]\n\n${prompt}`;
-				const spawnMessage: AgentSessionMessage = {
-					role: "custom",
-					customType: AGENT_MESSAGE_CUSTOM_TYPE,
-					content,
-					display: true,
-					details: {
-						id: `spawn:${run.id}`,
-						message: prompt,
-						from: {
-							sessionId: this.sessionId,
-							sessionName: this.sessionName,
-							activeSessionId: await this._currentActiveSessionId(),
+				let parentReplyCountBeforeRun = child._parentReplyCount;
+				if (firstTurnStarted) {
+					// bb mirror: the task turn arrives from the mirror thread's ACP
+					// frontend; wait for it, then settle as usual.
+					throwIfCancelled();
+					await firstTurnStarted;
+					throwIfCancelled();
+				} else {
+					const content = `[task from parent]\n\n${prompt}`;
+					const spawnMessage: AgentSessionMessage = {
+						role: "custom",
+						customType: AGENT_MESSAGE_CUSTOM_TYPE,
+						content,
+						display: true,
+						details: {
+							id: `spawn:${run.id}`,
+							message: prompt,
+							from: {
+								sessionId: this.sessionId,
+								sessionName: this.sessionName,
+								activeSessionId: await this._currentActiveSessionId(),
+							},
+							fromRelationship: "parent",
 						},
-						fromRelationship: "parent",
-					},
-					timestamp: Date.now(),
-				};
-				throwIfCancelled();
-				const parentReplyCountBeforeRun = child._parentReplyCount;
-				await child.promptAndWait(content, {
-					expandPromptTemplates: false,
-					source: "extension",
-					customMessage: spawnMessage,
-				});
+						timestamp: Date.now(),
+					};
+					throwIfCancelled();
+					parentReplyCountBeforeRun = child._parentReplyCount;
+					await child.promptAndWait(content, {
+						expandPromptTemplates: false,
+						source: "extension",
+						customMessage: spawnMessage,
+					});
+				}
 				await child.waitForRlmQuiescence();
 				if (run.error) throw new Error(run.error);
 				run.status = "done";
