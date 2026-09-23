@@ -1508,6 +1508,15 @@ export class DaemonAgentConnection implements AgentConnection {
 		await this.requestOk({ type: "kill", activeSessionId });
 	}
 
+	/** Read one session summary without attaching (mirror claim validation). */
+	async getActiveSessionState(activeSessionId: string): Promise<SessionSummary> {
+		const response = await this.requestData<SessionSummary>({
+			type: "get_state",
+			activeSessionId,
+		});
+		return response;
+	}
+
 	async switchSession(
 		sessionPath: string,
 		options?: AgentConnectionSwitchSessionOptions,

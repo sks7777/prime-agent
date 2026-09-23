@@ -1020,6 +1020,9 @@ type AutonomousRuntimeSnapshot = Pick<
 	"continuationsUsed" | "gateAttempts" | "lastGateFailure" | "lastGateFailureSnapshot"
 >;
 
+/** A bb-mirror child waits this long for its mirror thread's admission turn. */
+const BB_MIRROR_WAIT_TIMEOUT_MS = 10 * 60_000;
+
 interface RlmChildRun {
 	id: string;
 	prompt: string;
@@ -1047,6 +1050,8 @@ interface RlmChildRun {
 	lastActivityMonotonicAt?: number;
 	error?: string;
 	abort: () => void;
+	/** Settles a bb-mirror run waiting for its deferred admission turn. */
+	resolveWaitingMirrorRun?: (reason: string) => void;
 	publication: AgentMessageDeferred;
 	/** Resolves after terminal result publication and detached-run cleanup finish. */
 	settlement: AgentMessageDeferred;
@@ -10915,6 +10920,9 @@ export class AgentSession {
 			return false;
 		}
 		run.status = "cancelled";
+		// A bb-mirror run parked on its deferred admission turn must settle now,
+		// or the quiescence barrier waits on its settlement forever.
+		run.resolveWaitingMirrorRun?.(reason);
 		if (this._sessionInputPumpSuspended) this._abandonRlmRunForQuiescence(run);
 		run.error = reason;
 		run.publication.reject(new Error(reason));
@@ -12188,13 +12196,32 @@ export class AgentSession {
 				emitChildUpdate();
 				// PRIME-11 bb mirror: with bb_mirror the child waits for its
 				// admission turn from the mirror thread's ACP frontend instead of
-				// being prompted here.
+				// being prompted here. A deadline plus the run-abort path settle
+				// the deferred run even when the mirror thread never prompts, so
+				// the parent's quiescence barrier cannot wedge.
 				let resolveFirstTurnStarted!: () => void;
+				let rejectFirstTurnStarted!: (error: Error) => void;
 				const firstTurnStarted = bbMirror
-					? new Promise<void>((resolve) => {
+					? new Promise<void>((resolve, reject) => {
 							resolveFirstTurnStarted = resolve;
+							rejectFirstTurnStarted = reject;
 						})
 					: undefined;
+				const settleWaitingMirrorRun = (reason: string) => {
+					if (run.status !== "running") return;
+					rejectFirstTurnStarted?.(new Error(reason));
+				};
+				if (firstTurnStarted) {
+					const mirrorWaitTimer = setTimeout(
+						() =>
+							settleWaitingMirrorRun(
+								`bb-mirror child ${run.id} was never prompted by its mirror thread (10m timeout)`,
+							),
+						BB_MIRROR_WAIT_TIMEOUT_MS,
+					);
+					void firstTurnStarted.finally(() => clearTimeout(mirrorWaitTimer));
+				}
+				run.resolveWaitingMirrorRun = settleWaitingMirrorRun;
 				const unsubscribeChildEvents = child.subscribe((event) => {
 					if (event.type === "rlm_child_update") {
 						this._emit(event);
@@ -12274,7 +12301,7 @@ export class AgentSession {
 					}
 				});
 				run.unsubscribe = unsubscribeChildEvents;
-				let parentReplyCountBeforeRun = child._parentReplyCount;
+				const parentReplyCountBeforeRun = child._parentReplyCount;
 				if (firstTurnStarted) {
 					// bb mirror: the task turn arrives from the mirror thread's ACP
 					// frontend; wait for it, then settle as usual.
@@ -12301,7 +12328,6 @@ export class AgentSession {
 						timestamp: Date.now(),
 					};
 					throwIfCancelled();
-					parentReplyCountBeforeRun = child._parentReplyCount;
 					await child.promptAndWait(content, {
 						expandPromptTemplates: false,
 						source: "extension",

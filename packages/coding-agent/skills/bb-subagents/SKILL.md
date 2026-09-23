@@ -24,13 +24,16 @@ mirror["handle"]            # rlm.spawn handle fields (rlm_child_id, session_dir
 ## Mechanics (B-deferred mirror)
 
 - The child is admitted with its admission prompt deferred (`rlm.spawn` `bb_mirror=True`).
-- The mirror thread's prompt is the task prefixed with a leading
-  `[rlm-attach:<active_session_id>]` marker line. The mirror thread's ACP frontend rebinds onto
-  the child's live daemon session and the bb prompt becomes the child's admission turn — the
-  whole task runs inside the bb turn, so live streaming, status, and the stop button work
-  natively.
+- The skill writes a single-use claim file (`<agent dir>/acp-mirror-claims/<nonce>.json`, 10 min
+  TTL) naming the child's daemon session, and the mirror thread's prompt carries only a leading
+  `[rlm-mirror:<nonce>]` marker line. The mirror thread's ACP frontend resolves the nonce to the
+  child, verifies it is an RLM subagent session of the same working directory, rebinds, consumes
+  the claim, and the bb prompt becomes the child's admission turn — the whole task runs inside
+  the bb turn, so live streaming, status, and the stop button work natively.
 - The marker only rebinds a freshly booted frontend; a later prompt on the mirror thread
   steers the same session.
+- A waiting child settles on its own: cancellation/`rlm.delete_subagent` resolves it, and an
+  unprompted child times out after 10 minutes (failed child, parent unblocked).
 
 ## Semantics and limits
 
@@ -40,7 +43,7 @@ mirror["handle"]            # rlm.spawn handle fields (rlm_child_id, session_dir
   headless runs must use plain `rlm.spawn`.
 - The thread's stop button aborts the child's current turn (not the child itself); the parent
   sees the aborted turn as a failed child turn.
-- A stale/missing target session degrades: without the marker the thread runs as a normal
-  agent thread.
+- A stale/invalid claim degrades: the thread runs as a normal agent thread (the parent sees
+  the untouched child via `rlm.collect`).
 - Finished mirror threads are kept in the list (user preference); archive manually with
   `bbtools_thread_archive` if desired.

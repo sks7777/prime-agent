@@ -805,6 +805,15 @@ export interface AgentConnection {
 	attachActiveSession?(targetActiveSessionId: string): Promise<void>;
 	/** Kill a daemon session by id; used to reap a mirror thread's draft session. */
 	killSession?(activeSessionId: string): Promise<void>;
+	/** Read one session summary without attaching (mirror claim validation). */
+	getActiveSessionState?(activeSessionId: string): Promise<{
+		activeSessionId?: string;
+		cwd?: string;
+		sessionFile?: string;
+		rlmDepth?: number;
+		runtimeKind?: string;
+		sessionName?: string;
+	}>;
 	fork(entryId: string, options?: AgentConnectionForkOptions): Promise<{ cancelled: boolean; selectedText?: string }>;
 	navigateTree(
 		targetId: string,

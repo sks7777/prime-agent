@@ -174,7 +174,7 @@ async def spawn(
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
     ``bb_mirror`` defers the admission prompt: the child waits for its task from a
     bb mirror thread (the orchestrator spawns that thread with the task as its
-    prompt and a leading ``[rlm-attach:<active_session_id>]`` marker line).
+    prompt and a leading ``[rlm-mirror:<claim-nonce>]`` marker line).
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")

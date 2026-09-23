@@ -1,13 +1,14 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { TransformStream } from "node:stream/web";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseRlmAttachMarker, runAcpModeWithConnection } from "../src/modes/acp/acp-mode.js";
-import type {
-	AgentConnection,
-	AgentConnectionEventListener,
-	AgentConnectionState,
-} from "../src/modes/agent-connection/types.js";
+import type { AgentConnection, AgentConnectionEventListener } from "../src/modes/agent-connection/types.js";
+
+const CLAIM_NONCE = "a".repeat(32);
 
 function usagelessAutonomousStatus() {
 	return {
@@ -28,7 +29,11 @@ function usagelessAutonomousStatus() {
 }
 
 interface FakeSessionRecord {
-	state: Partial<AgentConnectionState>;
+	state: {
+		activeSessionId: string;
+		sessionId: string;
+		cwd: string;
+	};
 	messages: AgentMessage[];
 }
 
@@ -39,6 +44,7 @@ class FakeMirrorConnection {
 	readonly killCalls: string[] = [];
 	readonly prompts: string[];
 	readonly withAttach: boolean;
+	claimSummaries = new Map<string, { cwd?: string; rlmDepth?: number }>();
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 
 	constructor(withAttach = true) {
@@ -58,6 +64,7 @@ class FakeMirrorConnection {
 			state: { activeSessionId: "child-1", sessionId: "child-session", cwd: "/tmp/mirror" },
 			messages: [],
 		});
+		this.claimSummaries.set("child-1", { cwd: "/tmp/mirror", rlmDepth: 1 });
 		this.prompts = [];
 	}
 
@@ -100,6 +107,12 @@ class FakeMirrorConnection {
 		return [];
 	}
 
+	async getActiveSessionState(activeSessionId: string) {
+		const summary = this.claimSummaries.get(activeSessionId);
+		if (!summary) throw new Error(`Unknown active session: ${activeSessionId}`);
+		return summary;
+	}
+
 	async attachActiveSession(target: string) {
 		if (!this.withAttach) throw new Error("attachActiveSession should not be called");
 		this.attachCalls.push(target);
@@ -120,34 +133,48 @@ function textPrompt(text: string) {
 describe("ACP mirror rebind (PRIME-11)", () => {
 	let toAgent: TransformStream<Uint8Array, Uint8Array>;
 	let toClient: TransformStream<Uint8Array, Uint8Array>;
+	let agentDir: string;
 
 	beforeEach(() => {
 		toAgent = new TransformStream<Uint8Array, Uint8Array>();
 		toClient = new TransformStream<Uint8Array, Uint8Array>();
+		agentDir = mkdtempSync(join(tmpdir(), "mirror-claims-"));
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = agentDir;
 	});
 
 	afterEach(() => {
 		void toAgent.writable.abort().catch(() => undefined);
 		void toClient.writable.abort().catch(() => undefined);
+		delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		rmSync(agentDir, { recursive: true, force: true });
 	});
 
-	it("parses the rlm-attach marker and strips tell attribution", () => {
-		expect(parseRlmAttachMarker("[rlm-attach:child-1]\nDo the thing")).toEqual({
-			target: "child-1",
+	function writeClaim(nonce: string, target: string, createdAtMs = Date.now()): void {
+		const claimsDir = join(agentDir, "acp-mirror-claims");
+		mkdirSync(claimsDir, { recursive: true });
+		writeFileSync(join(claimsDir, `${nonce}.json`), JSON.stringify({ target, createdAtMs }));
+	}
+
+	it("parses the rlm-mirror marker and strips tell attribution", () => {
+		expect(parseRlmAttachMarker(`[rlm-mirror:${CLAIM_NONCE}]\nDo the thing`)).toEqual({
+			claimNonce: CLAIM_NONCE,
 			remaining: "Do the thing",
 		});
-		expect(parseRlmAttachMarker("[bb message from thread:thr_x]\n[rlm-attach:child-1]\nDo the thing")).toEqual({
-			target: "child-1",
-			remaining: "Do the thing",
-		});
+		expect(parseRlmAttachMarker(`[bb message from thread:thr_x]\n[rlm-mirror:${CLAIM_NONCE}]\nDo the thing`)).toEqual(
+			{
+				claimNonce: CLAIM_NONCE,
+				remaining: "Do the thing",
+			},
+		);
 		expect(parseRlmAttachMarker("plain task")).toBeUndefined();
-		expect(parseRlmAttachMarker("[rlm-attach:not a session] rest")).toBeUndefined();
-		expect(parseRlmAttachMarker("[rlm-attach:child-1] trailing text")).toBeUndefined();
+		expect(parseRlmAttachMarker("[rlm-mirror:not-a-nonce] rest")).toBeUndefined();
+		expect(parseRlmAttachMarker(`[rlm-mirror:${CLAIM_NONCE}] trailing text`)).toBeUndefined();
 	});
 
-	it("rebinds a virgin frontend onto the named RLM session and forwards the stripped task", async () => {
+	it("rebinds a virgin frontend onto the claimed RLM session and forwards the marker-stripped task", async () => {
 		const connection = new FakeMirrorConnection();
-		const updates: any[] = [];
+		writeClaim(CLAIM_NONCE, "child-1");
+		const updates: unknown[] = [];
 		void runAcpModeWithConnection(
 			connection as unknown as AgentConnection,
 			{
@@ -171,12 +198,14 @@ describe("ACP mirror rebind (PRIME-11)", () => {
 
 		const first = (await handle.agent.request("session/prompt", {
 			sessionId: session.sessionId,
-			prompt: textPrompt("[rlm-attach:child-1]\nDo the thing"),
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]\nDo the thing`),
 		})) as { stopReason?: string };
 		expect(first.stopReason).toBe("end_turn");
 		expect(connection.attachCalls).toEqual(["child-1"]);
 		expect(connection.killCalls).toEqual(["draft-1"]);
 		expect(connection.prompts).toEqual(["Do the thing"]);
+		// The claim is consumed (single use).
+		expect(existsSync(join(agentDir, "acp-mirror-claims", `${CLAIM_NONCE}.json`))).toBe(false);
 
 		// A later prompt on the mirror thread steers the same session verbatim.
 		const second = (await handle.agent.request("session/prompt", {
@@ -186,7 +215,6 @@ describe("ACP mirror rebind (PRIME-11)", () => {
 		expect(second.stopReason).toBe("end_turn");
 		expect(connection.attachCalls).toEqual(["child-1"]);
 		expect(connection.prompts).toEqual(["Do the thing", "status update"]);
-		void handle;
 		void updates;
 	});
 
@@ -212,9 +240,105 @@ describe("ACP mirror rebind (PRIME-11)", () => {
 		};
 		const first = (await handle.agent.request("session/prompt", {
 			sessionId: session.sessionId,
-			prompt: textPrompt("[rlm-attach:child-1]\nDo the thing"),
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]\nDo the thing`),
 		})) as { stopReason?: string };
 		expect(first.stopReason).toBe("end_turn");
 		expect(connection.prompts).toEqual(["Do the thing"]);
+	});
+
+	it("degrades to a normal turn on a stale claim and leaves the draft alive", async () => {
+		const connection = new FakeMirrorConnection();
+		writeClaim(CLAIM_NONCE, "child-1", Date.now() - 11 * 60_000);
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		const first = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]\nDo the thing`),
+		})) as { stopReason?: string };
+		expect(first.stopReason).toBe("end_turn");
+		expect(connection.attachCalls).toEqual([]);
+		expect(connection.killCalls).toEqual([]);
+		expect(connection.prompts).toEqual(["Do the thing"]);
+	});
+
+	it("degrades without touching anything when the claim names a non-subagent session", async () => {
+		const connection = new FakeMirrorConnection();
+		writeClaim(CLAIM_NONCE, "not-a-session");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		const first = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]\nDo the thing`),
+		})) as { stopReason?: string };
+		expect(first.stopReason).toBe("end_turn");
+		expect(connection.attachCalls).toEqual([]);
+		expect(connection.prompts).toEqual(["Do the thing"]);
+	});
+
+	it("rebinds through a leading system_instructions wrapper block", async () => {
+		const connection = new FakeMirrorConnection();
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		const first = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: [
+				{ type: "text", text: "<system_instructions>You are viewing bb remotely.</system_instructions>" },
+				{ type: "text", text: `[rlm-mirror:${CLAIM_NONCE}]\nDo the thing` },
+			],
+		})) as { stopReason?: string };
+		expect(first.stopReason).toBe("end_turn");
+		expect(connection.attachCalls).toEqual(["child-1"]);
+		expect(connection.prompts[0]).toContain("<system_instructions>");
+		expect(connection.prompts[0]).toContain("Do the thing");
+		expect(connection.prompts[0]).not.toContain("[rlm-mirror:");
 	});
 });

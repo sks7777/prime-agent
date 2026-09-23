@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { VERSION } from "../../config.js";
+import { getAgentDir, VERSION } from "../../config.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
@@ -542,17 +542,21 @@ export function headWithoutTellAttribution(head: string): string {
 	return lines.join("\n").trim();
 }
 
-const RLM_ATTACH_MARKER_PATTERN = /^\[rlm-attach:([A-Za-z0-9][A-Za-z0-9._-]*)\][ \t]*$/u;
+const RLM_ATTACH_MARKER_PATTERN = /^\[rlm-mirror:([a-f0-9]{32})\][ \t]*$/u;
+const RLM_MIRROR_CLAIMS_DIR = "acp-mirror-claims";
+/** A stale claim must not rebind; the parent re-spawns instead. */
+const RLM_MIRROR_CLAIM_TTL_MS = 10 * 60_000;
 
 export interface RlmAttachMarker {
-	target: string;
+	claimNonce: string;
 	remaining: string;
 }
 
 /**
- * Mirror threads carry the RLM subagent's daemon session id as a leading
- * marker line, so the ACP frontend can rebind onto that live session before
- * the task prompt runs. bb tell attribution may precede the marker.
+ * Mirror threads carry a single-use claim nonce as a leading marker line; the
+ * nonce resolves to the RLM subagent's daemon session through the parent's
+ * claim file, so the marker never names a rebind target directly. bb tell
+ * attribution may precede the marker.
  */
 export function parseRlmAttachMarker(text: string): RlmAttachMarker | undefined {
 	const stripped = headWithoutTellAttribution(text);
@@ -561,7 +565,68 @@ export function parseRlmAttachMarker(text: string): RlmAttachMarker | undefined 
 	const match = RLM_ATTACH_MARKER_PATTERN.exec(head);
 	if (!match) return undefined;
 	const remaining = (firstBreak === -1 ? "" : stripped.slice(firstBreak + 1)).trim();
-	return { target: match[1]!, remaining };
+	return { claimNonce: match[1]!, remaining };
+}
+
+/** Remove the marker line from the full prompt text; the wrapper text must survive. */
+function stripRlmMirrorMarkerLine(text: string, claimNonce: string): string {
+	const markerLine = `[rlm-mirror:${claimNonce}]`;
+	const lines = text.split("\n");
+	const index = lines.findIndex((line) => line.trim() === markerLine);
+	if (index === -1) return text.trim();
+	lines.splice(index, 1);
+	return lines.join("\n").trim();
+}
+
+interface RlmMirrorClaim {
+	target: string;
+	createdAtMs: number;
+}
+
+/**
+ * Resolve the claim a mirror marker points at, then consume it (single use).
+ * Claims live in the agent dir: only a claim written by the spawning parent on
+ * this machine can name a rebind target, so a leaked marker cannot rebind onto
+ * an arbitrary session by name.
+ */
+function readRlmMirrorClaim(nonce: string): RlmMirrorClaim | undefined {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(join(getAgentDir(), RLM_MIRROR_CLAIMS_DIR, `${nonce}.json`), "utf8"),
+		) as Partial<RlmMirrorClaim>;
+		if (typeof parsed.target !== "string" || parsed.target.length === 0) return undefined;
+		const createdAtMs = typeof parsed.createdAtMs === "number" ? parsed.createdAtMs : 0;
+		if (Date.now() - createdAtMs > RLM_MIRROR_CLAIM_TTL_MS) return undefined;
+		return { target: parsed.target, createdAtMs: createdAtMs };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Consume a claim after a successful rebind so its nonce cannot be replayed. */
+function consumeRlmMirrorClaim(nonce: string): void {
+	try {
+		rmSync(join(getAgentDir(), RLM_MIRROR_CLAIMS_DIR, `${nonce}.json`));
+	} catch {
+		// A leftover claim only stays valid until its TTL expires.
+	}
+}
+
+/**
+ * Only an RLM subagent session of this same working directory may host a
+ * mirror rebind: the claim file already pins the target, and this shape check
+ * keeps a leaked/replayed claim from reaching unrelated sessions.
+ */
+function isRlmMirrorTargetSummary(
+	summary: {
+		cwd?: string;
+		rlmDepth?: number;
+	},
+	requestedCwd: string,
+): boolean {
+	if (typeof summary.cwd !== "string" || !sameCwd(summary.cwd, requestedCwd)) return false;
+	// Daemon RLM subagent sessions always carry rlmDepth > 0.
+	return summary.rlmDepth !== undefined && summary.rlmDepth > 0;
 }
 
 async function acpLeadingCommandTurn(
@@ -1036,28 +1101,73 @@ export async function runAcpModeWithConnection(
 	 * deferred child's admission turn.
 	 */
 	const rebindToRlmMirrorSession = async (
-		target: string,
+		claimNonce: string,
 		acpSessionId: string,
 		client: { notify(method: unknown, params: unknown): Promise<unknown> },
 	): Promise<void> => {
 		const draft = session;
 		if (!draft || draft.id !== acpSessionId) {
-			throw new Error(`ACP session ${acpSessionId} is not bound; cannot rebind onto ${target}`);
+			throw new Error(`ACP session ${acpSessionId} is not bound; cannot rebind mirror claim ${claimNonce}`);
 		}
 		if (!connection.attachActiveSession || !connection.killSession) {
 			// In-process (non-daemon) frontends cannot rebind; the stripped task
 			// prompt still runs on the booted session, degrading to a normal agent.
 			return;
 		}
-		const draftSessionId = (await connection.getState()).activeSessionId;
-		await connection.attachActiveSession(target);
-		draft.unsubscribe?.();
-		session = undefined;
-		const fresh = await admitAcpSession(acpSessionId, client);
-		// There is no in-flight session/new response for the re-admission, so
-		// release the new producer's admission gate directly.
-		fresh.producer.commitSessionNewResponse();
-		if (draftSessionId) void connection.killSession(draftSessionId).catch(() => undefined);
+		const claim = readRlmMirrorClaim(claimNonce);
+		if (!claim) return;
+		const draftState = await connection.getState();
+		// Validate the claimed target BEFORE rebinding: it must be an RLM
+		// subagent session in this same working directory. Attaching to an
+		// arbitrary session would let any thread read or steer it.
+		let targetOk = false;
+		try {
+			const summary = await connection.getActiveSessionState?.(claim.target);
+			targetOk = summary !== undefined && isRlmMirrorTargetSummary(summary, draftState.cwd);
+		} catch {
+			targetOk = false;
+		}
+		if (!targetOk) {
+			consumeRlmMirrorClaim(claimNonce);
+			// Stale/invalid claim: degrade to a normal turn instead of failing the
+			// mirror thread; the parent notices the untouched child via collect.
+			return;
+		}
+		const draftSessionId = draftState.activeSessionId;
+		// Block a concurrent session/new for the whole switch: a second admission
+		// could interleave and double-bind the same ACP session id.
+		sessionNewInFlight = true;
+		try {
+			await connection.attachActiveSession(claim.target);
+			let fresh: Awaited<ReturnType<typeof admitAcpSession>>;
+			try {
+				session = undefined;
+				fresh = await admitAcpSession(acpSessionId, client);
+			} catch (error) {
+				// Roll back to the draft so the ACP session id stays bound: the
+				// connection is back on the draft session and its entry, still
+				// subscribed, keeps serving turns.
+				session = draft;
+				try {
+					await connection.attachActiveSession(draftSessionId ?? "");
+				} catch {
+					// Neither session is reachable; leave the error to the caller.
+				}
+				throw error;
+			}
+			// There is no in-flight session/new response for the re-admission, so
+			// release the new producer's admission gate directly.
+			fresh.producer.commitSessionNewResponse();
+			// Keep the cross-process ACP session registry pointing at the LIVE
+			// session file; a later session/fork of the mirror thread must not
+			// resolve the draft we are about to kill.
+			await registerAdmittedAcpSession(acpSessionId).catch(() => undefined);
+			consumeRlmMirrorClaim(claimNonce);
+			draft.unsubscribe?.();
+			if (draftSessionId) void connection.killSession(draftSessionId).catch(() => undefined);
+		} finally {
+			sessionNewInFlight = false;
+		}
 	};
 
 	/**
@@ -1315,17 +1425,21 @@ export async function runAcpModeWithConnection(
 		})
 		.onRequest("session/prompt", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string; prompt: readonly unknown[] };
-			// Mirror rebind (PRIME-11): a virgin frontend whose first prompt names
-			// an RLM subagent session rebinds onto it before the turn runs.
-			const probe = promptContent(params.prompt);
-			const mirror = parseRlmAttachMarker(probe.text);
+			// Mirror rebind (PRIME-11): a virgin frontend whose first prompt carries
+			// a mirror claim nonce rebinds onto the claimed subagent session before
+			// the turn runs. The probe matches the first post-wrapper text block,
+			// so a leading <system_instructions> wrapper cannot hide the marker.
+			const probeBlocks = splitAcpPromptBlocks(params.prompt);
+			const probeText = probeBlocks.restTexts[0] ?? "";
+			const mirror = parseRlmAttachMarker(probeText);
 			if (
 				mirror &&
+				mirror.remaining.length > 0 &&
 				session?.id === params.sessionId &&
 				!session.abort &&
 				(await connection.getMessages()).length === 0
 			) {
-				await rebindToRlmMirrorSession(mirror.target, params.sessionId, ctx.client);
+				await rebindToRlmMirrorSession(mirror.claimNonce, params.sessionId, ctx.client);
 			}
 			const entry = session?.id === params.sessionId ? session : undefined;
 			if (!entry) throw new Error(`Unknown ACP session: ${params.sessionId}`);
@@ -1371,7 +1485,10 @@ export async function runAcpModeWithConnection(
 			let terminalSettlementCancelled = false;
 			try {
 				const { text: parsedText, images } = promptContent(params.prompt);
-				const text = mirror?.remaining ?? parsedText;
+				const text =
+					mirror && mirror.remaining.length > 0
+						? stripRlmMirrorMarkerLine(parsedText, mirror.claimNonce)
+						: parsedText;
 				const priorMessages = turnBoundary(await connection.getMessages());
 				if (abort.signal.aborted) {
 					await entry.producer.drain();
