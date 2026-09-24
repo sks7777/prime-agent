@@ -59,6 +59,21 @@ export interface PrimeAgentRefinementMeta {
 	error?: string;
 }
 
+export type PrimeAgentAutoRetryReason = "usage" | "unavailable" | "backup" | "restart";
+
+export interface PrimeAgentAutoRetryMeta {
+	/** waiting while the retry timer runs, recovered when a retry succeeded, exhausted when retries ran out */
+	phase: "waiting" | "recovered" | "exhausted";
+	attempt?: number;
+	maxAttempts?: number;
+	/** Server-requested or computed delay before the next attempt. */
+	delayMs?: number;
+	reason?: PrimeAgentAutoRetryReason;
+	backupModel?: string;
+	restoredModel?: string;
+	errorMessage?: string;
+}
+
 export interface PrimeAgentQuiescenceMeta {
 	/** Subagents that have not reached a terminal state at the observation point. */
 	outstandingSubagents: number;
@@ -127,6 +142,7 @@ export interface PrimeAgentSessionMeta {
 	heartbeatsChanged?: boolean;
 	goal?: PrimeAgentGoalMeta;
 	refinement?: PrimeAgentRefinementMeta;
+	autoRetry?: PrimeAgentAutoRetryMeta;
 	agentMessage?: PrimeAgentAgentMessageMeta;
 	sessionId?: string;
 	rlmDepth?: number;

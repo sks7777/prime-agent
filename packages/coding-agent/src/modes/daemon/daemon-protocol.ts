@@ -77,8 +77,10 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 28 adds the non-terminal { key, width } extension_ui_response variant for custom widgets.
 // Revision 29 adds the capability-gated prewarm command for the idle worker pool.
 // Revision 28 publishes the last recorded model on saved-session rows (v0.9.5).
-export const DAEMON_SCHEMA_REVISION = 30;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-30-60e361d45ffa";
+// Revision 30 adds structured update_restarting failure info on the wire.
+// Revision 31 marks supervisor_generation_stale failures with structured error info.
+export const DAEMON_SCHEMA_REVISION = 31;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-31-60e361d45ffa";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -1057,6 +1059,7 @@ export type DaemonErrorInfo =
 	| { code: "session_import_file_not_found"; filePath: string }
 	| { code: "session_already_active"; sessionPath: string; activeSessionId?: string }
 	| { code: "session_recovering"; activeSessionId: string }
+	| { code: "supervisor_generation_stale" }
 	| { code: "command_result_uncertain"; clientId: DaemonClientId; commandId: DaemonCommandId };
 
 export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced" | "update";

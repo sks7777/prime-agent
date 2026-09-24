@@ -77,7 +77,12 @@ import {
 import { CommandRecoveryJournal, createCommandIdempotencyKey } from "./command-recovery-journal.js";
 import { CompactAssistantStreamReconstructor, isCompactAssistantDelta } from "./compact-session-stream.js";
 import { DAEMON_CATALOG_ROLE_ENV, DaemonCatalogClient } from "./daemon-catalog-process.js";
-import { DaemonSessionRecoveringError, deserializeDaemonError, serializeDaemonError } from "./daemon-errors.js";
+import {
+	DaemonSessionRecoveringError,
+	DaemonSupervisorStaleError,
+	deserializeDaemonError,
+	serializeDaemonError,
+} from "./daemon-errors.js";
 import {
 	collectDaemonClientEnv,
 	createDaemonEventMeta,
@@ -1485,12 +1490,10 @@ export class DaemonSupervisor {
 	private async assertCurrentOwnership(): Promise<void> {
 		const ownership = this.ownership;
 		if (!ownership) {
-			const error = new Error(
+			throw new DaemonSupervisorStaleError(
 				`Daemon supervisor generation ${this.generation} holds no registry ownership (never acquired or already released); ` +
 					`socket: ${this.socketPath}; restart the daemon to recover — sessions are preserved`,
 			);
-			Object.assign(error, { code: "supervisor_generation_stale" as const });
-			throw error;
 		}
 		await ownership.assertCurrent();
 	}
@@ -7398,9 +7401,9 @@ export class DaemonSupervisor {
 	private assertSupervisorServing(): void {
 		this.assertSocketLeaseHeld();
 		if (this.shuttingDown) {
-			const error = new Error(`Daemon supervisor generation ${this.generation} is shutting down; retry the command`);
-			Object.assign(error, { code: "supervisor_generation_stale" as const });
-			throw error;
+			throw new DaemonSupervisorStaleError(
+				`Daemon supervisor generation ${this.generation} is shutting down; retry the command`,
+			);
 		}
 	}
 

@@ -224,6 +224,55 @@ describe("ACP session event mapping", () => {
 		});
 	});
 
+	it("surfaces provider auto-retry wait state as namespaced metadata", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "auto_retry_start",
+			attempt: 2,
+			maxAttempts: 3,
+			delayMs: 8000,
+			errorMessage: "503 Service temporarily unavailable",
+			reason: "unavailable",
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]?.sessionUpdate).toBe("session_info_update");
+		expect(updates[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				autoRetry: {
+					phase: "waiting",
+					attempt: 2,
+					maxAttempts: 3,
+					delayMs: 8000,
+					reason: "unavailable",
+					errorMessage: "503 Service temporarily unavailable",
+				},
+			},
+		});
+	});
+
+	it("surfaces provider auto-retry recovery as namespaced metadata", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 2,
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]?.sessionUpdate).toBe("session_info_update");
+		expect(updates[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				autoRetry: { phase: "recovered", attempt: 2 },
+			},
+		});
+		const failed = acpUpdatesForSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt: 3,
+			finalError: "retry exhausted",
+		} as AgentConnectionSessionEvent);
+		expect(failed[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				autoRetry: { phase: "exhausted", attempt: 3, errorMessage: "retry exhausted" },
+			},
+		});
+	});
+
 	it("surfaces plan-code mode state as namespaced metadata", () => {
 		const updates = acpUpdatesForSessionEvent({
 			type: "plan_code_mode",

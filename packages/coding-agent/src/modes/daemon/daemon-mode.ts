@@ -144,7 +144,7 @@ import {
 } from "./agent-roster.js";
 import { createCompactAssistantDelta } from "./compact-session-stream.js";
 import { filterClientEnv, withClientEnv } from "./daemon-client-env.js";
-import { deserializeDaemonError, serializeDaemonError } from "./daemon-errors.js";
+import { DaemonSupervisorStaleError, deserializeDaemonError, serializeDaemonError } from "./daemon-errors.js";
 import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
 	collectDaemonLaunchEnv,
@@ -3819,7 +3819,8 @@ export class AgentDaemon {
 				try {
 					ownerFingerprint = await this.assertSupervisorClaimCurrent(claim);
 				} catch {
-					this.write(client, failure(commandId, "worker_auth", "supervisor_generation_stale"));
+					const stale = new DaemonSupervisorStaleError("supervisor_generation_stale");
+					this.write(client, failure(commandId, "worker_auth", stale, serializeDaemonError(stale)));
 					client.socket.end();
 					return;
 				}
@@ -3884,6 +3885,7 @@ export class AgentDaemon {
 							typeof parsed.id === "string" ? parsed.id : undefined,
 							"worker_auth",
 							"supervisor_generation_stale",
+							{ code: "supervisor_generation_stale" },
 						),
 					);
 					client.socket.end();
@@ -3917,6 +3919,7 @@ export class AgentDaemon {
 							typeof parsed.id === "string" ? parsed.id : undefined,
 							typeof parsed.type === "string" ? parsed.type : "worker_auth",
 							admissionCancelled ? error : "supervisor_generation_stale",
+							admissionCancelled ? serializeDaemonError(error) : { code: "supervisor_generation_stale" },
 						),
 					);
 					// Cancelling this prompt only abandons its admission wait. A genuine

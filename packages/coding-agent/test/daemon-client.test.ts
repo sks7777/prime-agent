@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DaemonClient, getDaemonSocketCloseReason } from "../src/modes/daemon/daemon-client.js";
+import {
+	DAEMON_STALE_PARK_TIMEOUT_MS,
+	DaemonClient,
+	getDaemonSocketCloseReason,
+} from "../src/modes/daemon/daemon-client.js";
+import { DaemonSupervisorStaleError } from "../src/modes/daemon/daemon-errors.js";
 import {
 	DAEMON_COMMAND_COMPATIBILITY,
 	DAEMON_PROTOCOL_VERSION,
@@ -1023,6 +1028,120 @@ describe("DaemonClient", () => {
 			`${JSON.stringify({ id: firstEnvelope.id, type: "response", command: "list", success: true })}\n`,
 		);
 		await expect(response).resolves.toMatchObject({ id: firstEnvelope.id, success: true });
+		client.close();
+	});
+
+	it("parks a recoverable request on a supervisor_generation_stale dispatch failure and replays it after the restart hello", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		client.enableRequestRecovery();
+		const firstConnect = client.connect();
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+		emitHello(firstSocket);
+
+		const response = client.request({ type: "prompt", activeSessionId: "active-1", message: "hello" });
+		const firstEnvelope = JSON.parse(firstSocket.writes[0]!) as { id: string };
+		// A shutting-down supervisor rejects BEFORE dispatch and keeps the socket
+		// open for a moment: the failure carries the structured stale marker.
+		firstSocket.emit(
+			"data",
+			`${JSON.stringify({
+				id: firstEnvelope.id,
+				type: "response",
+				command: "prompt",
+				success: false,
+				error: "Daemon supervisor generation g1 is shutting down; retry the command",
+				errorInfo: { code: "supervisor_generation_stale" },
+			})}\n`,
+		);
+		await vi.waitFor(() => expect(firstSocket.writes).toHaveLength(1));
+		// Still parked: no rejection, no replay yet.
+		let settled = false;
+		void response.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		await new Promise((resolveTick) => setTimeout(resolveTick, 20));
+		expect(settled).toBe(false);
+		expect(firstSocket.writes).toHaveLength(1);
+
+		// The supervisor exits: socket close keeps the request parked...
+		firstSocket.emit("close");
+		const secondConnect = client.connect();
+		const secondSocket = netMock.sockets[1]!;
+		secondSocket.emit("connect");
+		await secondConnect;
+		emitHello(secondSocket);
+		// ...and the replacement daemon's hello triggers exactly one replay.
+		expect(secondSocket.writes).toEqual([firstSocket.writes[0]!]);
+		secondSocket.emit(
+			"data",
+			`${JSON.stringify({ id: firstEnvelope.id, type: "response", command: "prompt", success: true })}\n`,
+		);
+		await expect(response).resolves.toMatchObject({ id: firstEnvelope.id, success: true });
+		client.close();
+	});
+
+	it("rejects a stale-parked request when no restart hello arrives within the park deadline", async () => {
+		vi.useFakeTimers();
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		client.enableRequestRecovery();
+		const firstConnect = client.connect();
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+		emitHello(firstSocket);
+
+		const response = client.request({ type: "list" }, DAEMON_STALE_PARK_TIMEOUT_MS * 10);
+		const firstEnvelope = JSON.parse(firstSocket.writes[0]!) as { id: string };
+		firstSocket.emit(
+			"data",
+			`${JSON.stringify({
+				id: firstEnvelope.id,
+				type: "response",
+				command: "list",
+				success: false,
+				error: "Daemon supervisor generation g1 is shutting down; retry the command",
+				errorInfo: { code: "supervisor_generation_stale" },
+			})}\n`,
+		);
+
+		const rejection = expect(response).rejects.toThrow(DaemonSupervisorStaleError);
+		await vi.advanceTimersByTimeAsync(DAEMON_STALE_PARK_TIMEOUT_MS + 10);
+		await rejection;
+		client.close();
+	});
+
+	it("does not park requests when request recovery is disabled", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const firstConnect = client.connect();
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+		emitHello(firstSocket);
+
+		const response = client.request({ type: "list" }, 5000, { recoverable: false });
+		const firstEnvelope = JSON.parse(firstSocket.writes[0]!) as { id: string };
+		firstSocket.emit(
+			"data",
+			`${JSON.stringify({
+				id: firstEnvelope.id,
+				type: "response",
+				command: "list",
+				success: false,
+				error: "Daemon supervisor generation g1 is shutting down; retry the command",
+				errorInfo: { code: "supervisor_generation_stale" },
+			})}\n`,
+		);
+
+		// Recovery disabled: the stale failure resolves like any other response;
+		// the caller layer (deserializeDaemonError) turns it into an error.
+		await expect(response).resolves.toMatchObject({ id: firstEnvelope.id, success: false });
 		client.close();
 	});
 });

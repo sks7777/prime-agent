@@ -1272,9 +1272,13 @@ export async function main(args: string[], options?: MainOptions) {
 	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
 	// Kick off daemon spawn/readiness immediately so it overlaps session-manager
 	// and runtime-services preparation; attach only connects to an existing daemon.
+	// ACP clients (bb) attach immediately after boot: a cold daemon would fail
+	// the first connect, so ACP startup also awaits daemon readiness here.
 	let daemonReady = shouldEnsureInteractiveDaemonForStartup(useDaemonClient, publicCommand.attachAgent)
 		? ensureInteractiveDaemonRunning(daemonSocketPath)
-		: undefined;
+		: appMode === "acp" && useDaemonClient
+			? ensureInteractiveDaemonRunning(daemonSocketPath)
+			: undefined;
 	// Errors are rethrown at the await sites below; this only avoids an unhandled
 	// rejection if startup exits before reaching them.
 	daemonReady?.catch(() => {});

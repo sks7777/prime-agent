@@ -14,6 +14,7 @@ import { parseSlashCommand } from "../../core/slash-commands.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
 import type {
 	AgentConnection,
+	AgentConnectionPromptOptions,
 	AgentConnectionRlmChildAgentSnapshot,
 	AgentConnectionSessionEvent,
 	AgentConnectionSessionInputPause,
@@ -662,6 +663,85 @@ async function acpLeadingCommandTurn(
 		turnText,
 		...(turnText.length > 0 && split.images.length > 0 ? { images: split.images } : {}),
 	};
+}
+
+/**
+ * Prompt-stage daemon restart recovery (PRIME-16).
+ *
+ * A prime-agent daemon restart rejects in-flight prompts before dispatch
+ * (supervisor_generation_stale) or drops the transport. The DaemonClient parks
+ * recoverable requests for the pre-dispatch case, but a request that already
+ * failed here needs the turn to stay alive: hold the ACP session/prompt open,
+ * wait (bounded) for the daemon connection to recover, then re-issue the same
+ * prompt. The recovered session resumes from the persisted transcript, so the
+ * re-issued prompt continues the turn instead of duplicating it.
+ */
+const PROMPT_RECOVERY_MAX_WAIT_MS = 180_000;
+const PROMPT_RECOVERY_PROBE_MS = 2_000;
+
+function isPromptRecoveryRetryableError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const message = error.message ?? "";
+	return (
+		message.includes("shutting down; retry the command") ||
+		message.includes("supervisor_generation_stale") ||
+		message.includes("is not connected") ||
+		message.includes("not running") ||
+		message.includes("Daemon reconnection failed") ||
+		message.includes("Connection to the Prime Agent daemon closed")
+	);
+}
+
+function promptRecoveryMeta(
+	phase: "waiting" | "recovered" | "exhausted",
+	errorMessage: string,
+): Record<string, unknown> {
+	return primeAgentMeta({
+		autoRetry: {
+			phase,
+			reason: "restart",
+			...(phase === "waiting" ? { delayMs: PROMPT_RECOVERY_PROBE_MS } : {}),
+			...(phase === "exhausted" ? { attempt: 1, maxAttempts: 1 } : {}),
+			errorMessage,
+		},
+	});
+}
+
+async function runPromptWithRecovery(
+	connection: AgentConnection,
+	message: string,
+	options: AgentConnectionPromptOptions,
+	publish: (update: Record<string, unknown>) => Promise<void>,
+): Promise<void> {
+	const startedAt = Date.now();
+	for (;;) {
+		try {
+			await connection.promptAndWait(message, options);
+			return;
+		} catch (error) {
+			if (options.signal?.aborted || !isPromptRecoveryRetryableError(error)) {
+				throw error;
+			}
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			const deadline = startedAt + PROMPT_RECOVERY_MAX_WAIT_MS;
+			let recovered = false;
+			while (Date.now() < deadline && !options.signal?.aborted) {
+				await new Promise((resolveWait) => setTimeout(resolveWait, PROMPT_RECOVERY_PROBE_MS));
+				try {
+					await connection.getState();
+					recovered = true;
+					break;
+				} catch {
+					// Still down: keep waiting inside the same ACP prompt request.
+				}
+			}
+			if (!recovered) {
+				await publish(promptRecoveryMeta("exhausted", errorMessage));
+				throw error;
+			}
+			await publish(promptRecoveryMeta("waiting", errorMessage));
+		}
+	}
 }
 
 function autonomousMeta(status: AgentAutonomousStatus | undefined): PrimeAgentAutonomousMeta | undefined {
@@ -1518,30 +1598,43 @@ export async function runAcpModeWithConnection(
 				// the turn content. Without the split, the wrapper prefix stops
 				// parseSlashCommand from ever seeing the command.
 				const leadingCommand = await acpLeadingCommandTurn(connection, splitAcpPromptBlocks(params.prompt));
+				const publishPromptRecovery = async (update: Record<string, unknown>): Promise<void> => {
+					await entry.producer.publish(update, promptTurnId, "event");
+				};
 				if (leadingCommand) {
-					await connection.promptAndWait(leadingCommand.commandInvocation, {
-						streamingBehavior: "followUp",
-						queueIfBusy: true,
-						signal: abort.signal,
-					});
+					await runPromptWithRecovery(
+						connection,
+						leadingCommand.commandInvocation,
+						{
+							streamingBehavior: "followUp",
+							queueIfBusy: true,
+							signal: abort.signal,
+						},
+						publishPromptRecovery,
+					);
 					if (abort.signal.aborted) {
 						await entry.producer.drain();
 						return { stopReason: "cancelled" satisfies AcpStopReason };
 					}
 					if (leadingCommand.turnText.length > 0) {
-						await connection.promptAndWait(leadingCommand.turnText, {
-							...(leadingCommand.images ? { images: leadingCommand.images } : {}),
-							streamingBehavior: "followUp" as const,
-							queueIfBusy: true,
-							signal: abort.signal,
-						});
+						await runPromptWithRecovery(
+							connection,
+							leadingCommand.turnText,
+							{
+								...(leadingCommand.images ? { images: leadingCommand.images } : {}),
+								streamingBehavior: "followUp" as const,
+								queueIfBusy: true,
+								signal: abort.signal,
+							},
+							publishPromptRecovery,
+						);
 						if (abort.signal.aborted) {
 							await entry.producer.drain();
 							return { stopReason: "cancelled" satisfies AcpStopReason };
 						}
 					}
 				} else {
-					await connection.promptAndWait(text, promptOptions);
+					await runPromptWithRecovery(connection, text, promptOptions, publishPromptRecovery);
 				}
 				if (abort.signal.aborted) {
 					await entry.producer.drain();

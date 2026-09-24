@@ -1,0 +1,1 @@
+- Added seamless recovery of running bb threads across prime-agent daemon restarts: pre-dispatch `supervisor_generation_stale` rejections are parked and replayed on the replacement daemon, ACP prompts re-issue after bounded connection recovery, ACP startup awaits daemon readiness, and provider auto-retry state is published as namespaced metadata for timeline visibility.

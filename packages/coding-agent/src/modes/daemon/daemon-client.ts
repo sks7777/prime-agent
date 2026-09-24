@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { getDaemonLogPath } from "../../config.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
+import { DaemonSupervisorStaleError, isSupervisorGenerationStaleMessage } from "./daemon-errors.js";
 import {
 	createDaemonCommandEnvelope,
 	DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION,
@@ -58,6 +59,26 @@ interface PendingDaemonRequest {
 	recoverable: boolean;
 	/** Re-checked against the new hello before a reconnect replay. */
 	compatibilities: readonly DaemonCommandCompatibility[];
+	/**
+	 * Deadline for a request parked on a supervisor_generation_stale dispatch
+	 * failure. The supervisor exits right after, so the parked request normally
+	 * replays on the replacement's hello; this timer rejects it if neither
+	 * happens (a parked request would otherwise wait forever).
+	 */
+	staleParkTimeout?: ReturnType<typeof setTimeout>;
+}
+
+/** How long a stale-parked request may wait for the replacement daemon's hello. */
+export const DAEMON_STALE_PARK_TIMEOUT_MS = 120_000;
+
+/**
+ * A failure response the supervisor sends INSTEAD of dispatching (shutdown
+ * admission, or lost registry ownership). The command never reached a session
+ * worker, so re-issuing it after the daemon restarts cannot duplicate work.
+ */
+export function isSupervisorGenerationStaleResponse(response: Extract<DaemonResponse, { success: false }>): boolean {
+	if (response.errorInfo?.code === "supervisor_generation_stale") return true;
+	return isSupervisorGenerationStaleMessage(response.error) || response.error === "supervisor_generation_stale";
 }
 
 function daemonEndpointDetails(socketPath: string): string {
@@ -479,6 +500,10 @@ export class DaemonClient {
 						continue;
 					}
 					pending.awaitingReconnect = false;
+					if (pending.staleParkTimeout) {
+						clearTimeout(pending.staleParkTimeout);
+						pending.staleParkTimeout = undefined;
+					}
 					const missingCompatibility = pending.compatibilities.find(
 						(compatibility) => !meetsDaemonCommandCompatibility(message, compatibility),
 					);
@@ -505,6 +530,36 @@ export class DaemonClient {
 		if (isDaemonResponse(message) && message.id) {
 			const pending = this.pendingRequests.get(message.id);
 			if (pending) {
+				// A shutting-down (or lease-stale) supervisor rejects commands
+				// BEFORE dispatch. For recoverable requests, park the pending so
+				// the replacement daemon's hello replays it (same path as a socket
+				// close) instead of surfacing a transient shutdown error. The
+				// stale-park deadline bounds the wait if no restart follows.
+				if (
+					!message.success &&
+					this.requestRecoveryEnabled &&
+					pending.recoverable &&
+					isSupervisorGenerationStaleResponse(message)
+				) {
+					const staleReason = message.error;
+					const staleId = message.id;
+					if (pending.timeout) {
+						clearTimeout(pending.timeout);
+						pending.timeout = undefined;
+					}
+					pending.awaitingReconnect = true;
+					clearTimeout(pending.staleParkTimeout);
+					pending.staleParkTimeout = setTimeout(() => {
+						this.pendingRequests.delete(staleId);
+						pending.staleParkTimeout = undefined;
+						pending.reject(
+							new DaemonSupervisorStaleError(
+								`${staleReason}. The daemon did not restart within ${DAEMON_STALE_PARK_TIMEOUT_MS}ms. ${daemonEndpointDetails(this.socketPath)}`,
+							),
+						);
+					}, DAEMON_STALE_PARK_TIMEOUT_MS);
+					return;
+				}
 				if (pending.timeout) {
 					clearTimeout(pending.timeout);
 				}
@@ -563,6 +618,10 @@ export class DaemonClient {
 			}
 			if (pending.timeout) {
 				clearTimeout(pending.timeout);
+			}
+			if (pending.staleParkTimeout) {
+				clearTimeout(pending.staleParkTimeout);
+				pending.staleParkTimeout = undefined;
 			}
 			pending.reject(error);
 			this.pendingRequests.delete(id);

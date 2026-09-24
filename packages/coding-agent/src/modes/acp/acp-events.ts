@@ -446,6 +446,43 @@ export function acpUpdatesForSessionEvent(
 				},
 			];
 
+		// Provider auto-retry and wait-for-recovery would otherwise look like a
+		// dead thread to the client: the prompt request stays open while the
+		// session loop waits and re-issues. Publish the loop state so a client
+		// can show "retrying" instead of silence (PRIME-16).
+		case "auto_retry_start":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({
+						autoRetry: {
+							phase: "waiting",
+							attempt: event.attempt,
+							maxAttempts: event.maxAttempts,
+							delayMs: event.delayMs,
+							...(event.reason ? { reason: event.reason } : {}),
+							...(event.backupModel ? { backupModel: event.backupModel } : {}),
+							...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
+						},
+					}),
+				},
+			];
+
+		case "auto_retry_end":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({
+						autoRetry: {
+							phase: event.success ? "recovered" : "exhausted",
+							attempt: event.attempt,
+							...(event.finalError ? { errorMessage: event.finalError } : {}),
+							...(event.restoredModel ? { restoredModel: event.restoredModel } : {}),
+						},
+					}),
+				},
+			];
+
 		case "plan_code_mode":
 			return [
 				{
