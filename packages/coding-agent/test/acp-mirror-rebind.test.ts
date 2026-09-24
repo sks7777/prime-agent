@@ -43,6 +43,8 @@ class FakeMirrorConnection {
 	readonly attachCalls: string[] = [];
 	readonly killCalls: string[] = [];
 	readonly prompts: string[];
+	readonly cancelCalls: string[] = [];
+	rlmChildren: { id: string; waitingMirrorAdmission?: boolean }[] = [];
 	readonly withAttach: boolean;
 	claimSummaries = new Map<string, { cwd?: string; rlmDepth?: number }>();
 	private readonly listeners = new Set<AgentConnectionEventListener>();
@@ -104,7 +106,22 @@ class FakeMirrorConnection {
 	}
 
 	async getRlmChildSnapshots() {
-		return [];
+		return this.rlmChildren as never;
+	}
+
+	async abortAndClearQueue() {
+		return { steering: [], followUp: [] };
+	}
+
+	async waitForIdle() {}
+
+	async cancelRlmChild(childId: string) {
+		this.cancelCalls.push(childId);
+		return true;
+	}
+
+	async acquireSessionInputPause(_leaseKey: string) {
+		return { release: async () => {} };
 	}
 
 	async getActiveSessionState(activeSessionId: string) {
@@ -216,6 +233,40 @@ describe("ACP mirror rebind (PRIME-11)", () => {
 		expect(connection.attachCalls).toEqual(["child-1"]);
 		expect(connection.prompts).toEqual(["Do the thing", "status update"]);
 		void updates;
+	});
+
+	it("keeps deferred mirror children parked across a stop/close cycle", async () => {
+		const connection = new FakeMirrorConnection();
+		connection.rlmChildren = [{ id: "parked-child", waitingMirrorAdmission: true }, { id: "running-child" }];
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]
+Do the thing`),
+		});
+
+		// Closing the mirror thread stops outstanding turns but must not kill a
+		// child parked on its deferred admission turn; a normal child still goes.
+		await handle.agent.request("session/close", { sessionId: session.sessionId });
+		expect(connection.cancelCalls).toEqual(["running-child"]);
 	});
 
 	it("degrades to a normal turn when the adapter cannot rebind", async () => {

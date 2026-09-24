@@ -919,7 +919,15 @@ export async function runAcpModeWithConnection(
 
 	const cancelOutstandingRlmChildren = async (): Promise<void> => {
 		const children = await connection.getRlmChildSnapshots();
-		const cancellations = await Promise.allSettled(children.map((child) => connection.cancelRlmChild(child.id)));
+		const cancellations = await Promise.allSettled(
+			children
+				// A bb-mirror child parked on its deferred admission turn waits across
+				// parent turns; a turn-boundary stop or close must not kill it. The
+				// mirror thread's first prompt or an explicit subagent delete still
+				// settles it.
+				.filter((child) => child.waitingMirrorAdmission !== true)
+				.map((child) => connection.cancelRlmChild(child.id)),
+		);
 		const failed = cancellations.find((result) => result.status === "rejected");
 		if (failed?.status === "rejected") throw failed.reason;
 	};

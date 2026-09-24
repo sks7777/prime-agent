@@ -33,7 +33,14 @@ def _bb_env() -> dict[str, str]:
             "bb_subagents.spawn_mirror requires a bb thread environment (BB_THREAD_ID/BB_PROJECT_ID); "
             "use plain rlm.spawn outside bb"
         )
-    return {"BB_THREAD_ID": thread_id, "BB_PROJECT_ID": project_id}
+    env = {"BB_THREAD_ID": thread_id, "BB_PROJECT_ID": project_id}
+    # Pin the mirror thread to the parent's environment so its frontend boots in
+    # the parent's checkout: the rebind validation requires matching cwds, and
+    # bb's remembered defaults may otherwise give the mirror a fresh worktree.
+    environment_id = os.environ.get("BB_ENVIRONMENT_ID")
+    if environment_id:
+        env["BB_ENVIRONMENT_ID"] = environment_id
+    return env
 
 
 async def _resolve_active_session_id(handle: Any, timeout_s: float) -> str:
@@ -168,6 +175,11 @@ async def spawn_mirror(
                 "--json",
                 "--project",
                 env["BB_PROJECT_ID"],
+                *(
+                    ["--environment", env["BB_ENVIRONMENT_ID"]]
+                    if env.get("BB_ENVIRONMENT_ID")
+                    else []
+                ),
                 "--parent-self",
                 "--provider",
                 "acp-prime-agent",

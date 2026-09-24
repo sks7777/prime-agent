@@ -392,6 +392,8 @@ export interface RlmChildAgentSnapshot {
 	 * session does not flag every running child stale on wake.
 	 */
 	activityStaleMs?: number;
+	/** True while a bb-mirror child is parked waiting for its mirror thread's first prompt. */
+	waitingMirrorAdmission?: boolean;
 	error?: string;
 }
 
@@ -1052,6 +1054,8 @@ interface RlmChildRun {
 	abort: () => void;
 	/** Settles a bb-mirror run waiting for its deferred admission turn. */
 	resolveWaitingMirrorRun?: (reason: string) => void;
+	/** True while a bb-mirror run is parked waiting for its mirror thread's admission turn. */
+	waitingMirrorAdmission?: boolean;
 	publication: AgentMessageDeferred;
 	/** Resolves after terminal result publication and detached-run cleanup finish. */
 	settlement: AgentMessageDeferred;
@@ -11596,6 +11600,7 @@ export class AgentSession {
 			progressNote: run.progressNotes.at(-1),
 			lastActivityAt: run.lastActivityAt,
 			activityStaleMs: rlmActivityStaleMs(run.status, run.activity, run.lastActivityAt, run.lastActivityMonotonicAt),
+			waitingMirrorAdmission: run.waitingMirrorAdmission === true || undefined,
 			error: run.error,
 		};
 	}
@@ -12096,6 +12101,7 @@ export class AgentSession {
 			settlement: createAgentMessageDeferred(),
 			deletionReservation: createAgentMessageDeferred(),
 		};
+		if (bbMirror) run.waitingMirrorAdmission = true;
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
 		};
@@ -12209,6 +12215,7 @@ export class AgentSession {
 					: undefined;
 				const settleWaitingMirrorRun = (reason: string) => {
 					if (run.status !== "running") return;
+					run.waitingMirrorAdmission = false;
 					rejectFirstTurnStarted?.(new Error(reason));
 				};
 				if (firstTurnStarted) {
@@ -12229,6 +12236,7 @@ export class AgentSession {
 					}
 					if (event.type === "agent_start") {
 						resolveFirstTurnStarted?.();
+						run.waitingMirrorAdmission = false;
 						run.activity = { kind: "waiting" };
 						touchRlmChildActivity(run);
 						emitChildUpdate();

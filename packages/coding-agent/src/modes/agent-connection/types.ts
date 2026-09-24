@@ -594,6 +594,8 @@ export interface AgentConnectionRlmChildAgentSnapshot {
 	lastActivityAt?: number;
 	/** Set when a running child has had no tracked activity for the staleness threshold. */
 	activityStaleMs?: number;
+	/** True while a bb-mirror child is parked waiting for its mirror thread's first prompt. */
+	waitingMirrorAdmission?: boolean;
 	error?: string;
 }
 
