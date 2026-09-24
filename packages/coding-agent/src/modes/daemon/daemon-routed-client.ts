@@ -51,10 +51,14 @@ export class DaemonRoutedClient implements DaemonTransportClient {
 	private unsubscribeDirectClose?: () => void;
 	private closed = false;
 
+	private servedActiveSessionId?: string;
+
 	constructor(
 		private readonly supervisor: DaemonTransportClient,
 		direct: DaemonWorkerClient,
+		servedActiveSessionId?: string,
 	) {
+		this.servedActiveSessionId = servedActiveSessionId;
 		this.direct = direct;
 		this.unsubscribeSupervisorMessage = supervisor.onMessage((message) => this.emitMessage(message));
 		this.unsubscribeSupervisorClose = supervisor.onClose((error) => {
@@ -133,7 +137,14 @@ export class DaemonRoutedClient implements DaemonTransportClient {
 		if (command.type === "reattach") {
 			// Reattach may land on a different worker; the direct link to the old one is stale on success.
 			return this.requestControlPlane(command, timeoutMs, options).then((response) => {
-				if (response.success) this.fallbackToSupervisor();
+				if (response.success) {
+					this.fallbackToSupervisor();
+					// Track the new served session so later session-plane commands
+					// for it can use a re-established direct link.
+					if ("targetActiveSessionId" in command && typeof command.targetActiveSessionId === "string") {
+						this.servedActiveSessionId = command.targetActiveSessionId;
+					}
+				}
 				return response;
 			});
 		}
@@ -146,6 +157,19 @@ export class DaemonRoutedClient implements DaemonTransportClient {
 
 	private servesDirect(direct: DaemonWorkerClient, command: DaemonCommandBody): boolean {
 		if (!isSessionPlaneDaemonCommand(command.type)) return false;
+		// The direct peer link serves exactly one session. A session-plane
+		// command naming a different session (e.g. the mirror rebind probing a
+		// parked child on the parent's worker) must go to the supervisor, which
+		// routes cross-worker; serving it here fails with "Command is not
+		// allowed on this direct peer transport".
+		if (
+			this.servedActiveSessionId !== undefined &&
+			"activeSessionId" in command &&
+			typeof command.activeSessionId === "string" &&
+			command.activeSessionId !== this.servedActiveSessionId
+		) {
+			return false;
+		}
 		const hello = direct.hello;
 		if (!hello) return false;
 		return getDaemonCommandCompatibilities(command as DaemonCommand).every((compatibility) =>
@@ -243,7 +267,7 @@ export async function createDaemonSessionTransport(
 		await direct.connect(1000);
 		await direct.waitForHello();
 		await direct.authenticatePeer(ticket);
-		return new DaemonRoutedClient(supervisor, direct);
+		return new DaemonRoutedClient(supervisor, direct, activeSessionId);
 	} catch {
 		direct?.close();
 		return supervisor;

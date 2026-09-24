@@ -12213,6 +12213,10 @@ export class AgentSession {
 							rejectFirstTurnStarted = reject;
 						})
 					: undefined;
+				// A timeout/cancel rejection must never escape as an unhandled
+				// rejection (it killed a worker once); the run body's own await
+				// below converts it into the child's failed outcome.
+				firstTurnStarted?.catch(() => undefined);
 				const settleWaitingMirrorRun = (reason: string) => {
 					if (run.status !== "running") return;
 					run.waitingMirrorAdmission = false;
