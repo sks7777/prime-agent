@@ -46,6 +46,7 @@ class FakeMirrorConnection {
 	readonly cancelCalls: string[] = [];
 	rlmChildren: { id: string; waitingMirrorAdmission?: boolean }[] = [];
 	readonly withAttach: boolean;
+	failInitialSnapshotFor?: string;
 	claimSummaries = new Map<string, { cwd?: string; rlmDepth?: number }>();
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 
@@ -88,6 +89,9 @@ class FakeMirrorConnection {
 	}
 
 	async getInitialSnapshot() {
+		if (this.failInitialSnapshotFor === this.activeSessionId) {
+			throw new Error(`simulated re-admission failure for ${this.activeSessionId}`);
+		}
 		const record = this.sessions.get(this.activeSessionId);
 		if (!record) throw new Error(`no fake session ${this.activeSessionId}`);
 		return { state: record.state, messages: record.messages, children: [] };
@@ -233,6 +237,41 @@ describe("ACP mirror rebind (PRIME-11)", () => {
 		expect(connection.attachCalls).toEqual(["child-1"]);
 		expect(connection.prompts).toEqual(["Do the thing", "status update"]);
 		void updates;
+	});
+
+	it("does not rebind on a marker-only prompt and keeps it as the turn content", async () => {
+		const connection = new FakeMirrorConnection();
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+
+		const only = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]`),
+		})) as { stopReason?: string };
+		expect(only.stopReason).toBe("end_turn");
+		// No rebind: no attach, no kill, and the claim file is untouched.
+		expect(connection.attachCalls).toEqual([]);
+		expect(connection.killCalls).toEqual([]);
+		expect(existsSync(join(agentDir, "acp-mirror-claims", `${CLAIM_NONCE}.json`))).toBe(true);
+		// The bare marker still runs as a normal turn on the draft.
+		expect(connection.prompts).toEqual([`[rlm-mirror:${CLAIM_NONCE}]`]);
 	});
 
 	it("keeps deferred mirror children parked across a stop/close cycle", async () => {

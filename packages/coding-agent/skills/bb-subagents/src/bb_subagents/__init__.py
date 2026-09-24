@@ -86,13 +86,11 @@ def _write_mirror_claim(nonce: str, target: str) -> None:
 
 async def _delete_waiting_child(handle: Any) -> None:
     """Best-effort cleanup of a deferred child whose mirror thread never existed."""
-    from rlm import host_request as _hr
-
     child_id = getattr(handle, "rlm_child_id", None)
     if not child_id:
         return
     try:
-        await _hr("rlm.delete_subagent", {"target": child_id})
+        await host_request("rlm.delete_subagent", {"target": child_id})
     except Exception:
         pass
 
@@ -137,10 +135,10 @@ async def spawn_mirror(
 
     The child is admitted with its admission prompt deferred (`rlm.spawn`
     `bb_mirror=True`); the mirror thread's first prompt — the task, prefixed
-    with an `[rlm-attach:<active_session_id>]` marker — becomes the child's
-    admission turn through the mirror thread's ACP frontend. Results still
-    arrive through agent_message replies or files; the parent consumes them
-    with rlm.collect / list_subagents as usual.
+    with an `[rlm-mirror:<nonce>]` marker resolving a single-use claim file —
+    becomes the child's admission turn through the mirror thread's ACP
+    frontend. Results still arrive through agent_message replies or files; the
+    parent consumes them with rlm.collect / list_subagents as usual.
 
     Args:
         task: The subagent task text (also the mirror thread's prompt body).

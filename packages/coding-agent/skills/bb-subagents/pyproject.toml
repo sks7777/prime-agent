@@ -1,3 +1,7 @@
+# Kernel-side package for the bundled bb-subagents skill. It imports
+# prime-agent-runtime (rlm.spawn / list_subagents / host_request), which is
+# always installed in the kernel venv before skills, so it is intentionally
+# not declared as a dependency (it is not published on PyPI).
 [project]
 name = "bb-subagents"
 version = "0.1.0"

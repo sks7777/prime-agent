@@ -899,6 +899,24 @@ describe("AgentSession rlm recursion", () => {
 		expect(done?.answerPreview).toBe("child answer: mirror task");
 	});
 
+	it("settles a parked bb-mirror child when the parent cancels it (no quiescence wedge)", async () => {
+		const root = createSession({});
+		const childUpdates: Array<{ id: string; status: string; error?: string }> = [];
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") childUpdates.push(event.child);
+		});
+
+		const result = await root.runRlmChild("mirror task", { bb_mirror: true });
+		await sleep(50);
+		expect(root.cancelRlmChildRun(result.rlm_child_id)).toBe(true);
+
+		// The run body must settle from the cancellation instead of parking on
+		// its deferred admission wait forever.
+		await root.waitForRlmQuiescence();
+		const cancelled = childUpdates.reverse().find((update) => update.id === result.rlm_child_id);
+		expect(cancelled?.status).toBe("cancelled");
+	});
+
 	it("wakes the agent with a follow-up when a detached bash handle completes", async () => {
 		const prompts: string[] = [];
 		const root = createSession({

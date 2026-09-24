@@ -1190,12 +1190,13 @@ export async function runAcpModeWithConnection(
 	};
 
 	/**
-	 * Mirror rebind (PRIME-11): a mirror thread's spawn prompt names the RLM
-	 * subagent's daemon session as a leading `[rlm-attach:<id>]` marker line.
-	 * Rebind the single ACP session slot onto that live session, re-admit it
-	 * under the same ACP session id, and reap the draft session this process
-	 * booted with. The forwarded prompt (minus the marker) becomes the
-	 * deferred child's admission turn.
+	 * Mirror rebind (PRIME-11): a mirror thread's spawn prompt carries a leading
+	 * `[rlm-mirror:<nonce>]` marker line; the nonce resolves to the RLM
+	 * subagent's live daemon session through a single-use claim file. Rebind the
+	 * single ACP session slot onto that live session, re-admit it under the same
+	 * ACP session id, and reap the draft session this process booted with. The
+	 * forwarded prompt (minus the marker) becomes the deferred child's admission
+	 * turn.
 	 */
 	const rebindToRlmMirrorSession = async (
 		claimNonce: string,
@@ -1231,8 +1232,12 @@ export async function runAcpModeWithConnection(
 			return;
 		}
 		const draftSessionId = draftState.activeSessionId;
-		// Block a concurrent session/new for the whole switch: a second admission
-		// could interleave and double-bind the same ACP session id.
+		// Block a concurrent session/new (or a second rebind) for the whole
+		// switch: a second admission could interleave and double-bind the same
+		// ACP session id.
+		if (sessionNewInFlight) {
+			throw new Error(`ACP session ${acpSessionId} is already switching; cannot rebind mirror claim ${claimNonce}`);
+		}
 		sessionNewInFlight = true;
 		try {
 			await connection.attachActiveSession(claim.target);
@@ -1243,12 +1248,16 @@ export async function runAcpModeWithConnection(
 			} catch (error) {
 				// Roll back to the draft so the ACP session id stays bound: the
 				// connection is back on the draft session and its entry, still
-				// subscribed, keeps serving turns.
+				// subscribed, keeps serving turns. The claim survives on purpose:
+				// a transient re-admission failure must not burn the nonce while
+				// its TTL holds; getMessages() > 0 blocks same-process replay.
 				session = draft;
-				try {
-					await connection.attachActiveSession(draftSessionId ?? "");
-				} catch {
-					// Neither session is reachable; leave the error to the caller.
+				if (draftSessionId) {
+					try {
+						await connection.attachActiveSession(draftSessionId);
+					} catch {
+						// Neither session is reachable; leave the error to the caller.
+					}
 				}
 				throw error;
 			}

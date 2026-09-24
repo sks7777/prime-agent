@@ -12217,8 +12217,14 @@ export class AgentSession {
 				// rejection (it killed a worker once); the run body's own await
 				// below converts it into the child's failed outcome.
 				firstTurnStarted?.catch(() => undefined);
+				// Settle exactly once, regardless of who arrives first (timeout,
+				// cancel, or delete): _cancelRlmChildRun flips the status before
+				// calling this, so the old status guard skipped rejection and left
+				// the run body parked on firstTurnStarted forever.
+				let mirrorWaitSettled = false;
 				const settleWaitingMirrorRun = (reason: string) => {
-					if (run.status !== "running") return;
+					if (mirrorWaitSettled) return;
+					mirrorWaitSettled = true;
 					run.waitingMirrorAdmission = false;
 					rejectFirstTurnStarted?.(new Error(reason));
 				};
@@ -12226,11 +12232,15 @@ export class AgentSession {
 					const mirrorWaitTimer = setTimeout(
 						() =>
 							settleWaitingMirrorRun(
-								`bb-mirror child ${run.id} was never prompted by its mirror thread (10m timeout)`,
+								`bb-mirror child ${run.id} was never prompted by its mirror thread (${BB_MIRROR_WAIT_TIMEOUT_MS / 60_000}m timeout)`,
 							),
 						BB_MIRROR_WAIT_TIMEOUT_MS,
 					);
-					void firstTurnStarted.finally(() => clearTimeout(mirrorWaitTimer));
+					mirrorWaitTimer.unref?.();
+					// .finally re-raises the rejection on its derived promise; swallow it
+					// here because the run body's await already converts it into the
+					// child's failed outcome.
+					void firstTurnStarted.finally(() => clearTimeout(mirrorWaitTimer)).catch(() => undefined);
 				}
 				run.resolveWaitingMirrorRun = settleWaitingMirrorRun;
 				const unsubscribeChildEvents = child.subscribe((event) => {
