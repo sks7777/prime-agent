@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
+import { isDaemonSessionSummary } from "../../cli/daemon-launch.js";
 import { appendRotatingLog, getAgentLogPath, getDaemonLogPath } from "../../config.js";
 import type { AgentSessionMessageReceipt, AgentSessionMessageSafetyStatus } from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
@@ -199,6 +200,13 @@ export interface DaemonAgentConnectionOptions {
 	ownedSession?: boolean;
 	/** Fresh runtime context used only if the owned worker must be relaunched. */
 	ownedSessionRecoveryConfig?: AgentSessionRuntimeConfig;
+	/**
+	 * Runtime context for the resident-session recreate fallback: a graceful
+	 * daemon shutdown stops workers and tombstones their descriptors, so the
+	 * replacement daemon cannot attach the old session — it must be re-created
+	 * from the attached session file.
+	 */
+	sessionRestartConfig?: AgentSessionRuntimeConfig;
 	/** Require the target worker to have been created with telemetry disabled. */
 	telemetryDisabled?: true;
 }
@@ -337,13 +345,18 @@ export class DaemonAgentConnection implements AgentConnection {
 			return;
 		}
 		// An authoritative shutdown/update reason outranks the surviving direct link.
+		// A client that owns daemon recovery (ACP) rides out a supervisor shutdown:
+		// the session resumes on the replacement daemon like an update restart.
 		const closeReason = getDaemonSocketCloseReason(error);
-		if (closeReason === "shutdown") {
+		if (closeReason === "shutdown" && !this.options.recoverDaemon) {
 			this.terminalCloseEmitted = true;
 			void this.emit({ type: "closed", error: this.formatDaemonSessionClosedError("shutdown") });
 			return;
 		}
-		if ((this.updateRestartPending || closeReason === "update") && !this.updateReconnectFailed) {
+		if (
+			(this.updateRestartPending || closeReason === "update" || closeReason === "shutdown") &&
+			!this.updateReconnectFailed
+		) {
 			this.updateRestartPending = true;
 			void this.reconnectAfterUpdate();
 			return;
@@ -2087,7 +2100,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			return;
 		}
 		if (message.type === "session_closed") {
-			if (message.reason === "update") {
+			if (message.reason === "update" || (message.reason === "shutdown" && this.options.recoverDaemon)) {
 				this.captureDaemonLogPath();
 				this.updateRestartPending = true;
 				void this.reconnectAfterUpdate();
@@ -2151,7 +2164,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		void this.emit({
 			type: "connection_status",
 			status: "reconnecting",
-			error: "The Prime Agent daemon is restarting for an update.",
+			error: "The Prime Agent daemon is restarting.",
 		});
 		const reconnectPromise = reconnectDaemonTransportAfterUpdate(this.client)
 			.then(() => this.restoreConnectionAfterUpdate())
@@ -2186,10 +2199,18 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (!sessionId && !sessionFile) {
 			throw new Error("the previous session identity is unavailable");
 		}
+		// A graceful shutdown stops workers and tombstones their descriptors, so
+		// the replacement daemon cannot adopt the old session; the resident
+		// fallback re-creates it from the attached session file instead.
+		const recreateFallback =
+			!this.options.ownedSession && sessionFile !== undefined && this.options.sessionRestartConfig !== undefined;
 		const deadline = Date.now() + UPDATE_RECONNECT_TIMEOUT_MS;
 		let lastError: unknown;
 		while (!this.disposed && !this.terminalCloseEmitted && Date.now() < deadline) {
 			try {
+				// A shutdown has no self-relaunching supervisor: the client starts a
+				// replacement daemon itself when one is not already running.
+				await this.options.recoverDaemon?.();
 				await this.client.reconnect(1000);
 				if (this.disposed || this.terminalCloseEmitted) {
 					return;
@@ -2210,24 +2231,11 @@ export class DaemonAgentConnection implements AgentConnection {
 							(sessionId !== undefined && summary.sessionId === sessionId)),
 				);
 				if (restored?.activeSessionId) {
-					if (this.disposed || this.terminalCloseEmitted) {
-						return;
-					}
-					this.sessionRevision++;
-					this.activeSessionId = restored.activeSessionId;
-					this.lastEventSequence = undefined;
-					this.lastEventCursor = undefined;
-					this.retiredEventGenerations.clear();
-					await this.attach({ recoverable: false });
-					if (this.disposed || this.terminalCloseEmitted) {
-						return;
-					}
-					const snapshot = await this.getInitialSnapshot({ recoverable: false });
-					if (this.disposed || this.terminalCloseEmitted) {
-						return;
-					}
-					this.updateRestartPending = false;
-					void this.emit({ type: "session_resynced", snapshot });
+					await this.resyncOntoRestoredSession(restored.activeSessionId);
+					return;
+				}
+				if (recreateFallback) {
+					await this.recreateResidentSession(sessionFile);
 					return;
 				}
 			} catch (error) {
@@ -2240,6 +2248,58 @@ export class DaemonAgentConnection implements AgentConnection {
 			return;
 		}
 		throw lastError ?? new Error("the restored session did not become available");
+	}
+
+	private async resyncOntoRestoredSession(activeSessionId: string): Promise<void> {
+		if (this.disposed || this.terminalCloseEmitted) {
+			return;
+		}
+		this.sessionRevision++;
+		this.activeSessionId = activeSessionId;
+		this.lastEventSequence = undefined;
+		this.lastEventCursor = undefined;
+		this.retiredEventGenerations.clear();
+		await this.attach({ recoverable: false });
+		if (this.disposed || this.terminalCloseEmitted) {
+			return;
+		}
+		const snapshot = await this.getInitialSnapshot({ recoverable: false });
+		if (this.disposed || this.terminalCloseEmitted) {
+			return;
+		}
+		this.updateRestartPending = false;
+		void this.emit({ type: "session_resynced", snapshot });
+	}
+
+	/**
+	 * Recreate a resident session after a daemon replacement detached it: create
+	 * points the fresh supervisor at the persisted session file, which resumes
+	 * the transcript on a new worker. Retries join the bounded restore deadline.
+	 */
+	private async recreateResidentSession(sessionFile: string): Promise<void> {
+		const response = await this.client.request(
+			{
+				type: "create",
+				config: this.options.sessionRestartConfig,
+				sessionPath: sessionFile,
+				env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
+				launchEnv: collectDaemonLaunchEnv(),
+				lifecycle: "resident",
+			},
+			30000,
+			{ recoverable: false },
+		);
+		if (this.disposed || this.terminalCloseEmitted) {
+			return;
+		}
+		if (!response.success) {
+			throw deserializeDaemonError(response);
+		}
+		if (!isDaemonSessionSummary(response.data)) {
+			throw new Error("Daemon returned an invalid create response during session restore");
+		}
+		const created = response.data;
+		await this.resyncOntoRestoredSession(created.activeSessionId ?? created.id);
 	}
 
 	private getSnapshotAssembly(snapshotId: string): DaemonSnapshotAssembly {
