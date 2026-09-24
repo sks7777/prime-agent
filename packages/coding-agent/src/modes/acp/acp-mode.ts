@@ -688,7 +688,13 @@ function isPromptRecoveryRetryableError(error: unknown): boolean {
 		message.includes("is not connected") ||
 		message.includes("not running") ||
 		message.includes("Daemon reconnection failed") ||
-		message.includes("Connection to the Prime Agent daemon closed")
+		message.includes("Connection to the Prime Agent daemon closed") ||
+		// A worker killed while its prompt was executing (supervisor shutdown or
+		// worker crash) rejects the in-flight request with these supervisor-side
+		// markers; after recovery the worker respawns and the session resumes
+		// from the persisted transcript, so the re-issued prompt continues it.
+		message.includes("Daemon worker client closed") ||
+		message.includes("Session worker is")
 	);
 }
 
@@ -696,15 +702,18 @@ function promptRecoveryMeta(
 	phase: "waiting" | "recovered" | "exhausted",
 	errorMessage: string,
 ): Record<string, unknown> {
-	return primeAgentMeta({
-		autoRetry: {
-			phase,
-			reason: "restart",
-			...(phase === "waiting" ? { delayMs: PROMPT_RECOVERY_PROBE_MS } : {}),
-			...(phase === "exhausted" ? { attempt: 1, maxAttempts: 1 } : {}),
-			errorMessage,
-		},
-	});
+	return {
+		sessionUpdate: "session_info_update" satisfies acp.SessionUpdate["sessionUpdate"],
+		_meta: primeAgentMeta({
+			autoRetry: {
+				phase,
+				reason: "restart",
+				...(phase === "waiting" ? { delayMs: PROMPT_RECOVERY_PROBE_MS } : {}),
+				...(phase === "exhausted" ? { attempt: 1, maxAttempts: 1 } : {}),
+				errorMessage,
+			},
+		}),
+	};
 }
 
 async function runPromptWithRecovery(

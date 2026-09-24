@@ -1335,4 +1335,82 @@ describe("ACP mode end to end", () => {
 		expect(meta.filter((item) => item.phase === "terminalQuiescence")).toEqual([]);
 		close();
 	});
+
+	it("holds the prompt open across a daemon restart and re-issues it once the daemon recovers", async () => {
+		const RESTART_ERROR = "Daemon supervisor generation g1 is shutting down; retry the command";
+		let promptCalls = 0;
+		let daemonDown = true;
+		const connection = fakeAcpConnection({
+			onPromptAndWait: async () => {
+				promptCalls += 1;
+				if (promptCalls === 1) {
+					throw new Error(RESTART_ERROR);
+				}
+			},
+		});
+		// The real connection only recovers when the replacement daemon's
+		// transport comes back; probe calls fail until then.
+		connection.getState = async () => {
+			if (daemonDown) throw new Error("not connected");
+			return { cwd: process.cwd() };
+		};
+		const { client, updates, close } = connectAcpClient(connection);
+		await client.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		const session = await client.request("session/new", { cwd: process.cwd(), mcpServers: [] });
+
+		const pending = client.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "continue across the restart" }],
+		});
+		await vi.waitFor(() => expect(promptCalls).toBe(1));
+		daemonDown = false;
+
+		await expect(pending).resolves.toMatchObject({ stopReason: "end_turn" });
+		expect(promptCalls).toBe(2);
+		const autoRetry = updates
+			.map((item) => item.update?._meta?.[PRIME_AGENT_META_NAMESPACE]?.autoRetry)
+			.filter(Boolean);
+		expect(autoRetry).toEqual([
+			expect.objectContaining({ phase: "waiting", reason: "restart", errorMessage: RESTART_ERROR }),
+		]);
+		close();
+	}, 15_000);
+
+	it("recovers a prompt the worker dropped mid-turn when the daemon restarts", async () => {
+		const WORKER_CLOSED_ERROR = "Supervisor command prompt_and_wait failed: Daemon worker client closed";
+		let promptCalls = 0;
+		let daemonDown = true;
+		const connection = fakeAcpConnection({
+			onPromptAndWait: async () => {
+				promptCalls += 1;
+				if (promptCalls === 1) {
+					throw new Error(WORKER_CLOSED_ERROR);
+				}
+			},
+		});
+		connection.getState = async () => {
+			if (daemonDown) throw new Error("not connected");
+			return { cwd: process.cwd() };
+		};
+		const { client, updates, close } = connectAcpClient(connection);
+		await client.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		const session = await client.request("session/new", { cwd: process.cwd(), mcpServers: [] });
+
+		const pending = client.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "continue after the worker died" }],
+		});
+		await vi.waitFor(() => expect(promptCalls).toBe(1));
+		daemonDown = false;
+
+		await expect(pending).resolves.toMatchObject({ stopReason: "end_turn" });
+		expect(promptCalls).toBe(2);
+		const autoRetry = updates
+			.map((item) => item.update?._meta?.[PRIME_AGENT_META_NAMESPACE]?.autoRetry)
+			.filter(Boolean);
+		expect(autoRetry).toEqual([
+			expect.objectContaining({ phase: "waiting", reason: "restart", errorMessage: WORKER_CLOSED_ERROR }),
+		]);
+		close();
+	}, 15_000);
 });
