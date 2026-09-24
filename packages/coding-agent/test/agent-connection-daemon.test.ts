@@ -79,11 +79,16 @@ class FakeDaemonClient {
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 
+	deadTransportError: Error | undefined;
+
 	async request(
 		command: DaemonCommand,
 		timeoutMs = 30000,
 		options: DaemonClientRequestOptions = {},
 	): Promise<DaemonResponse> {
+		if (this.deadTransportError) {
+			throw this.deadTransportError;
+		}
 		this.requests.push(command);
 		this.requestTimeouts.push(timeoutMs);
 		switch (command.type) {
@@ -163,6 +168,13 @@ class FakeDaemonClient {
 					command: command.type,
 					success: true,
 					data: { messages: [{ role: "user", content: "current prompt", timestamp: 4 }] },
+				};
+			case "get_session_header":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { header: undefined },
 				};
 			case "get_rlm_children":
 				await this.rlmChildrenGate;
@@ -2156,6 +2168,155 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.some((request) => request.type === "create")).toBe(true);
 		expect(events.some((event) => event.type === "closed")).toBe(false);
 		await connection.dispose();
+	});
+
+	it("restores a resident session on demand when a dead-transport request follows a failed bounded restore", async () => {
+		vi.useFakeTimers();
+		try {
+			const fakeClient = new FakeDaemonClient();
+			fakeClient.createdSessionSummary = {
+				id: "active-created",
+				activeSessionId: "active-created",
+				sessionId: "session-current",
+				sessionFile: "/tmp/session-current.jsonl",
+			};
+			let daemonBack = false;
+			const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original", {
+				recoverDaemon: async () => {
+					if (daemonBack) fakeClient.deadTransportError = undefined;
+				},
+				sessionRestartConfig: createRestartConfig(),
+			});
+			const events: AgentConnectionEvent[] = [];
+			connection.subscribe((event) => {
+				events.push(event);
+			});
+			await connection.attach();
+
+			// The bounded update-restart restore gives up: no daemon comes back.
+			fakeClient.reconnectError = new Error("daemon unavailable");
+			fakeClient.emitMessage({
+				type: "session_closed",
+				activeSessionId: "active-original",
+				reason: "shutdown",
+			});
+			await vi.advanceTimersByTimeAsync(120_100);
+			expect(events.some((event) => event.type === "closed")).toBe(true);
+			const requestCountAfterFailure = fakeClient.requests.length;
+
+			// The daemon comes back later; the next prompt is the first request
+			// after the terminal close. The replacement daemon is up once
+			// recoverDaemon returns, so the transport works again.
+			fakeClient.reconnectError = undefined;
+			fakeClient.deadTransportError = new Error(
+				'Cannot send daemon command "get_session_header" because the Prime Agent daemon is not connected. Socket: /tmp/prime-agent.sock.',
+			);
+			daemonBack = true;
+			await connection.getSessionHeader();
+			const retried = fakeClient.requests
+				.slice(requestCountAfterFailure)
+				.filter((request) => request.type === "get_session_header");
+			expect(retried[retried.length - 1]?.activeSessionId).toBe("active-created");
+			expect(fakeClient.requests.slice(requestCountAfterFailure).some((request) => request.type === "create")).toBe(
+				true,
+			);
+			expect(events.some((event) => event.type === "session_resynced")).toBe(true);
+			await connection.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("retries a dead-transport request once after an on-demand recovery", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.createdSessionSummary = {
+			id: "active-created",
+			activeSessionId: "active-created",
+			sessionId: "session-current",
+			sessionFile: "/tmp/session-current.jsonl",
+		};
+		// The replacement daemon is up once recoverDaemon returns.
+		let transportRestored = false;
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original", {
+			recoverDaemon: async () => {
+				if (transportRestored) fakeClient.deadTransportError = undefined;
+			},
+			sessionRestartConfig: createRestartConfig(),
+		});
+		await connection.attach();
+
+		// The transport dies without a session notice: the request itself reports
+		// the dead transport, recovery runs, and the same command is retried.
+		fakeClient.deadTransportError = new Error(
+			'Cannot send daemon command "get_session_header" because the Prime Agent daemon is not connected. Socket: /tmp/prime-agent.sock.',
+		);
+		transportRestored = true;
+		await connection.getSessionHeader();
+		// The first attempt died in the transport, so only the post-recovery
+		// retry reaches the fake, and it targets the re-created session.
+		const retried = fakeClient.requests.filter((request) => request.type === "get_session_header");
+		expect(retried).toHaveLength(1);
+		expect(retried[0]?.activeSessionId).toBe("active-created");
+		expect(fakeClient.requests.some((request) => request.type === "create")).toBe(true);
+		await connection.dispose();
+	});
+
+	it("does not attempt on-demand recovery for connections without daemon recovery", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		await connection.attach();
+
+		fakeClient.deadTransportError = new Error(
+			'Cannot send daemon command "get_session_header" because the Prime Agent daemon is not connected. Socket: /tmp/prime-agent.sock.',
+		);
+		await expect(connection.getSessionHeader()).rejects.toThrow("not connected");
+		expect(fakeClient.requests.filter((request) => request.type === "get_session_header")).toHaveLength(0);
+		expect(fakeClient.reconnectCount).toBe(0);
+		await connection.dispose();
+	});
+
+	it("propagates the on-demand recovery failure and re-arms for the next request", async () => {
+		vi.useFakeTimers();
+		try {
+			const fakeClient = new FakeDaemonClient();
+			fakeClient.reconnectError = new Error("daemon unavailable");
+			const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original", {
+				recoverDaemon: async () => undefined,
+				sessionRestartConfig: createRestartConfig(),
+			});
+			await connection.attach();
+
+			// The transport dies mid-session; the daemon never comes back, so the
+			// recovery fails and the request surfaces its error.
+			fakeClient.deadTransportError = new Error(
+				'Cannot send daemon command "get_session_header" because the Prime Agent daemon is not connected. Socket: /tmp/prime-agent.sock.',
+			);
+			const failing = expect(connection.getSessionHeader()).rejects.toThrow("daemon unavailable");
+			await vi.advanceTimersByTimeAsync(121_000);
+			await failing;
+			expect(fakeClient.reconnectCount).toBeGreaterThan(0);
+
+			// A failed recovery re-arms: a later request retries the restore. The
+			// daemon is up this time; recoverDaemon clears the dead transport.
+			fakeClient.reconnectError = undefined;
+			fakeClient.deadTransportError = new Error(
+				'Cannot send daemon command "get_session_header" because the Prime Agent daemon is not connected. Socket: /tmp/prime-agent.sock.',
+			);
+			let daemonBack = false;
+			const options = connection as unknown as { options: { recoverDaemon: () => Promise<void> } };
+			options.options.recoverDaemon = async () => {
+				if (daemonBack) fakeClient.deadTransportError = undefined;
+			};
+			daemonBack = true;
+			await connection.getSessionHeader();
+			const retried = fakeClient.requests.filter((request) => request.type === "get_session_header");
+			expect(retried).toHaveLength(1);
+			expect(retried[0]?.activeSessionId).toBe("active-created");
+			expect(fakeClient.requests.some((request) => request.type === "create")).toBe(true);
+			await connection.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not emit a restored session after disposal begins", async () => {

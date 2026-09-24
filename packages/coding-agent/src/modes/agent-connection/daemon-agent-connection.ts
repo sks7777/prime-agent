@@ -23,6 +23,7 @@ import type { SessionStats } from "../../core/session-stats.js";
 import { AgentsViewRosterStore, STALE_ROSTER_DAEMON_MESSAGE } from "../agents-view/roster-store.js";
 import {
 	DaemonCapabilityUnavailableError,
+	DaemonSocketClosedError,
 	type DaemonTransportClient,
 	getDaemonSocketCloseReason,
 } from "../daemon/daemon-client.js";
@@ -137,6 +138,30 @@ function formatErrorSentence(error: unknown): string {
 		return "Unknown daemon error.";
 	}
 	return /[.!?]$/.test(message) ? message : `${message}.`;
+}
+
+/**
+ * A request failed because the transport itself is gone (socket destroyed or
+ * a prior bounded restore already gave up), not because the daemon rejected
+ * the command. Recoverable connections treat these as "bring the daemon
+ * back, restore the session, and retry once".
+ */
+function isDeadTransportRequestError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (
+		error instanceof DaemonSocketClosedError ||
+		error instanceof DaemonDirectTransportClosedError ||
+		error instanceof DaemonControlPlaneTransportError
+	) {
+		return true;
+	}
+	const message = error.message ?? "";
+	return (
+		message.includes("because the Prime Agent daemon is not connected") ||
+		message.includes("Daemon reconnection failed") ||
+		message.includes("the updated daemon did not become available") ||
+		message.includes("the restored session did not become available")
+	);
 }
 
 function reconnectDaemonTransportAfterUpdate(client: DaemonTransportClient): Promise<void> {
@@ -277,6 +302,9 @@ export class DaemonAgentConnection implements AgentConnection {
 	private updateReconnectFailed = false;
 	private terminalCloseEmitted = false;
 	private updateReconnectPromise?: Promise<void>;
+	private deadTransportRecoveryPromise?: Promise<void>;
+	private inDeadTransportRecovery = false;
+	private lastUpdateReconnectError: Error | undefined;
 	private readonly activeSideQuestionIds = new Set<string>();
 	private readonly snapshotAssemblies = new Map<string, DaemonSnapshotAssembly>();
 	private readonly completedSnapshots = new Map<string, DaemonSessionSnapshot>();
@@ -1907,20 +1935,90 @@ export class DaemonAgentConnection implements AgentConnection {
 		timeoutMs?: number,
 		options?: Parameters<DaemonTransportClient["request"]>[2],
 	): Promise<T> {
-		const response = await this.client.request(command, timeoutMs, options);
-		if (!response.success) {
-			const error = deserializeDaemonError(response);
-			this.definitiveRequestErrors.add(error);
-			throw error;
+		const attempt = async (remapSessionId: boolean): Promise<T> => {
+			// An on-demand restore can switch the session identity (resident
+			// re-create); the retry must target the recovered session, not the
+			// dead one the command was built with.
+			const effectiveCommand =
+				remapSessionId &&
+				this.activeSessionId !== undefined &&
+				(command as { activeSessionId?: string }).activeSessionId !== undefined
+					? ({ ...command, activeSessionId: this.activeSessionId } as DaemonCommandBody)
+					: command;
+			const response = await this.client.request(effectiveCommand, timeoutMs, options);
+			if (!response.success) {
+				const error = deserializeDaemonError(response);
+				this.definitiveRequestErrors.add(error);
+				throw error;
+			}
+			if (command.type === "get_model_catalog" || command.type === "get_available_models") {
+				// Catalog refresh can change model/auth settings, but does not change the transcript.
+				this.stateFreshnessGeneration++;
+				this.latestSnapshotStateIsFresh = false;
+			} else if (invalidatesCachedSnapshot(command.type)) {
+				this.latestSnapshotIsFresh = false;
+			}
+			return response.data as T;
+		};
+		try {
+			return await attempt(false);
+		} catch (error) {
+			// A connection that owns daemon recovery (ACP) rides out even a
+			// terminal-looking dead transport: the bounded restore may have given
+			// up while the daemon was down (an outage longer than its deadline),
+			// and the next request is the first chance to start a replacement
+			// daemon and restore the resident session. One on-demand recovery,
+			// then a single retry. Recovery's own requests never re-trigger it.
+			if (
+				!this.options.recoverDaemon ||
+				this.disposed ||
+				this.inDeadTransportRecovery ||
+				!isDeadTransportRequestError(error)
+			) {
+				throw error;
+			}
+			await this.recoverAfterDeadTransport();
+			return await attempt(true);
 		}
-		if (command.type === "get_model_catalog" || command.type === "get_available_models") {
-			// Catalog refresh can change model/auth settings, but does not change the transcript.
-			this.stateFreshnessGeneration++;
-			this.latestSnapshotStateIsFresh = false;
-		} else if (invalidatesCachedSnapshot(command.type)) {
-			this.latestSnapshotIsFresh = false;
+	}
+
+	/**
+	 * One on-demand session restore after the bounded update-restart recovery
+	 * gave up (terminal close). Re-arms the connection and runs the same
+	 * restore loop: start the replacement daemon when needed, then re-attach or
+	 * re-create the resident session. Concurrent callers join one attempt; a
+	 * failed attempt re-arms for the next request.
+	 */
+	private recoverAfterDeadTransport(): Promise<void> {
+		this.terminalCloseEmitted = false;
+		this.updateReconnectFailed = false;
+		this.updateRestartPending = true;
+		if (!this.deadTransportRecoveryPromise) {
+			this.inDeadTransportRecovery = true;
+			const run = this.reconnectAfterUpdate()
+				.then(() => {
+					// reconnectAfterUpdate swallows its own failure into a terminal
+					// close; a recovery that ends there did not restore anything.
+					if (this.terminalCloseEmitted) {
+						throw this.lastUpdateReconnectError ?? new Error("the daemon session could not be restored");
+					}
+				})
+				.catch((error: unknown) => {
+					// A failed attempt re-arms: the next request can try again.
+					this.terminalCloseEmitted = false;
+					this.updateReconnectFailed = false;
+					this.updateRestartPending = false;
+					throw error;
+				})
+				.finally(() => {
+					this.inDeadTransportRecovery = false;
+					if (this.deadTransportRecoveryPromise === run) {
+						this.deadTransportRecoveryPromise = undefined;
+					}
+				});
+			this.deadTransportRecoveryPromise = run;
 		}
-		return response.data as T;
+		return this.deadTransportRecoveryPromise;
 	}
 
 	private async handleDaemonMessage(message: DaemonOutbound): Promise<void> {
@@ -2176,6 +2274,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			.catch(async (error: unknown) => {
 				this.updateRestartPending = false;
 				this.updateReconnectFailed = true;
+				this.lastUpdateReconnectError = error instanceof Error ? error : new Error(String(error));
 				if (!this.disposed && !this.terminalCloseEmitted) {
 					this.terminalCloseEmitted = true;
 					await this.emit({

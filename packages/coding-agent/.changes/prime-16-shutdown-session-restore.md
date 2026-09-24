@@ -1,1 +1,2 @@
 - Added recovery of live bb sessions across a graceful Prime Agent daemon restart: ACP connections ride out the shutdown notice and re-create the resident session from its saved transcript on the replacement daemon.
+- Added on-demand session restore for bb ACP turns that arrive after a daemon outage outlasted the reconnect deadline: the next request starts a replacement daemon, re-creates the resident session, and retries once.
