@@ -1103,6 +1103,8 @@ export interface ExtensionAPI {
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
 	/** Register a custom renderer for CustomEntry session entries. Custom entries do not participate in LLM context. */
+	/** Compat-only: accepts upstream pi entry renderers so they load. This fork's UI does not render
+	 * custom session entries through them yet; registered renderers are stored but unused. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
 	/** Send a custom message to the session. */
 	sendMessage<T = unknown>(

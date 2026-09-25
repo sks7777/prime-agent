@@ -64,6 +64,8 @@ export type {
 	ContextUsage,
 	CustomToolCallEvent,
 	EditToolCallEvent,
+	EntryRenderer,
+	EntryRenderOptions,
 	ExecOptions,
 	ExecResult,
 	Extension,

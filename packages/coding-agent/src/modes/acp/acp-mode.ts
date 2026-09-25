@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
@@ -104,7 +113,11 @@ function readAcpSessionRegistry(sessionDir: string): AcpSessionRegistry {
 
 function writeAcpSessionRegistry(sessionDir: string, registry: AcpSessionRegistry): void {
 	mkdirSync(sessionDir, { recursive: true });
-	writeFileSync(acpSessionRegistryPath(sessionDir), `${JSON.stringify(registry, null, "\t")}\n`, "utf8");
+	// Atomic replace: readers never observe a partial file, and concurrent
+	// writers do not interleave half-written JSON.
+	const tempPath = `${acpSessionRegistryPath(sessionDir)}.${process.pid}.${randomUUID()}.tmp`;
+	writeFileSync(tempPath, `${JSON.stringify(registry, null, "\t")}\n`, "utf8");
+	renameSync(tempPath, acpSessionRegistryPath(sessionDir));
 }
 
 function pruneAcpSessionRegistry(registry: AcpSessionRegistry, now = Date.now()): AcpSessionRegistry {
@@ -120,14 +133,22 @@ function registerAcpSession(
 	sessionId: string,
 	entry: { runtimeSessionId: string | null; sessionFile: string | null; cwd: string },
 ): void {
-	const registry = pruneAcpSessionRegistry(readAcpSessionRegistry(sessionDir));
-	registry[sessionId] = { ...entry, createdAt: Date.now() };
-	try {
-		writeAcpSessionRegistry(sessionDir, registry);
-	} catch {
-		// A failed registry write only degrades fork support for this session;
-		// session/new must not fail because of it.
+	// Cross-process writers share this file (bb runs several ACP processes on one
+	// session dir). Re-read immediately before each write and merge so a writer
+	// does not clobber a registration another process just added; a bounded
+	// retry keeps the loop finite under contention.
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const registry = pruneAcpSessionRegistry(readAcpSessionRegistry(sessionDir));
+		registry[sessionId] = { ...entry, createdAt: Date.now() };
+		try {
+			writeAcpSessionRegistry(sessionDir, registry);
+			return;
+		} catch {
+			// Contention or transient fs failure: retry from the fresh file.
+		}
 	}
+	// A failed registry write only degrades fork support for this session;
+	// session/new must not fail because of it.
 }
 
 /**
@@ -1547,6 +1568,13 @@ export async function runAcpModeWithConnection(
 				// id; resolve it to a session file through the cross-process registry.
 				const source = await resolveAcpSessionFile(processState.sessionDir, params.sessionId);
 				if (!source) throw new Error(`Unknown ACP session: ${params.sessionId}`);
+				// Same workspace guard as session/load: a stored session from another
+				// workspace must not be forked into this process.
+				if (typeof params.cwd === "string" && params.cwd.length > 0 && !sameCwd(source.entry.cwd, params.cwd)) {
+					throw acp.RequestError.invalidParams({
+						reason: `ACP session ${params.sessionId} belongs to another working directory`,
+					});
+				}
 				let branchedManager: SessionManager;
 				if (source.sessionFile) {
 					const sourceManager = SessionManager.open(source.sessionFile);

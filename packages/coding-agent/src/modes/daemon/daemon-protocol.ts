@@ -812,7 +812,7 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	agent_messages_resume: LEGACY_DAEMON_COMMAND,
 	agent_messages_clear: LEGACY_DAEMON_COMMAND,
 	abort: LEGACY_DAEMON_COMMAND,
-	abort_and_send_queued: { minProtocol: 7, minSchemaRevision: 32, capability: "abort_and_send_queued" },
+	abort_and_send_queued: { minProtocol: 7, minSchemaRevision: 29, capability: "abort_and_send_queued" },
 	start_side_question: LEGACY_DAEMON_COMMAND,
 	abort_side_question: LEGACY_DAEMON_COMMAND,
 	execute_bash: LEGACY_DAEMON_COMMAND,

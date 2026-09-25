@@ -1,4 +1,4 @@
-import { clearApiProviders, registerApiProvider } from "../api-registry.js";
+import { apiProviderRegistry, clearApiProviders, registerApiProvider } from "../api-registry.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -395,9 +395,28 @@ export function registerBuiltInApiProviders(): void {
 	});
 }
 
+// The transport apis this module provides; a reset restores exactly this set and leaves
+// dynamically registered providers (embedders, extensions, faux test providers) intact.
+const BUILTIN_API_IDS: ReadonlySet<string> = collectBuiltinApiIds();
+
+function collectBuiltinApiIds(): Set<string> {
+	const apis = new Set<string>();
+	registerBuiltInApiProviders();
+	for (const api of apiProviderRegistry.keys()) apis.add(api);
+	return apis;
+}
+
 export function resetApiProviders(): void {
+	// Preserve dynamically registered providers across a reset: ModelRegistry's
+	// refresh calls this to reload built-in transport wiring, and wiping
+	// embedder/extension/faux providers here breaks every later turn in the
+	// process ("No API provider registered for api: ...").
+	const dynamic = Array.from(apiProviderRegistry.entries()).filter(([api]) => !BUILTIN_API_IDS.has(api));
 	clearApiProviders();
 	registerBuiltInApiProviders();
+	for (const [api, entry] of dynamic) {
+		apiProviderRegistry.set(api, entry);
+	}
 }
 
 registerBuiltInApiProviders();

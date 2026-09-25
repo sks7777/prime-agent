@@ -30,6 +30,8 @@ describe("daemon protocol helpers", () => {
 		["replace_acp_mcp_servers", { minProtocol: 7, minSchemaRevision: 22, capability: "acp_mcp_servers" }, true],
 		["get_model_catalog", { minProtocol: 7, capability: "model_catalog" }, true],
 		["mutate_queued_message", { minProtocol: 7, minSchemaRevision: 15, capability: "queue_message_mutation" }, true],
+		// Capability-gated: fork-only daemons (pre-merge) lack the capability, so the
+		// upstream revision gate stays at 29 for cross-daemon compatibility.
 		["abort_and_send_queued", { minProtocol: 7, minSchemaRevision: 29, capability: "abort_and_send_queued" }, true],
 		["get_rlm_max_depth_status", { minProtocol: 7, minSchemaRevision: 11 }, undefined],
 		["set_rlm_max_depth", { minProtocol: 7, minSchemaRevision: 11 }, undefined],

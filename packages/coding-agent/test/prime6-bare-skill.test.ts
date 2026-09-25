@@ -2,15 +2,16 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, getModel } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
+import { getCodingAgentFixtureModel } from "./fixture-models.js";
 import { createTestResourceLoader } from "./utilities.js";
 
-const model = getModel("anthropic", "claude-sonnet-4-5")!;
+const model = getCodingAgentFixtureModel("anthropic", "claude-sonnet-4-5");
 
 function lastUserText(context: any): string {
 	for (let i = context.messages.length - 1; i >= 0; i--) {

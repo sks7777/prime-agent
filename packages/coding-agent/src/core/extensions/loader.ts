@@ -215,6 +215,7 @@ function createExtensionAPI(
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
+		// Compat-only sink for upstream pi entry renderers; the fork's UI has no consumer yet (documented no-op).
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
 			runtime.assertActive();
 			extension.entryRenderers?.set(customType, renderer as EntryRenderer);

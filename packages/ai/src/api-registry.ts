@@ -37,7 +37,7 @@ type RegisteredApiProvider = {
 	sourceId?: string;
 };
 
-const apiProviderRegistry = new Map<string, RegisteredApiProvider>();
+export const apiProviderRegistry = new Map<string, RegisteredApiProvider>();
 
 function wrapStream<TApi extends Api, TOptions extends StreamOptions>(
 	api: TApi,

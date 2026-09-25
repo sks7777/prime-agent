@@ -462,9 +462,11 @@ interface PrewarmPoolEntry {
 }
 
 /**
- * How long an unconsumed pooled worker stays alive before it is stopped (its
- * empty draft is deleted). Long enough to bridge typical relaunch gaps; the
- * daemon-wide idle eviction sweep still reaps workers idle for 90 minutes.
+ * How long an unconsumed pooled worker stays alive before it is stopped. Its
+ * empty draft session file is not deleted on this path (closeKeepsResumeEntry
+ * keeps it for resume); it remains as a draft row until the user deletes it.
+ * Long enough to bridge typical relaunch gaps; the daemon-wide idle eviction
+ * sweep still reaps workers idle for 90 minutes.
  */
 const PREWARM_POOL_EXPIRY_MS = 600_000;
 
@@ -584,6 +586,8 @@ interface ResidentWorker {
 	launchEnv?: Record<string, string>;
 	/** The launchEnv this worker was spawned with; retained after launchWorker clears launchEnv, so sticky spares can key on it. */
 	spawnLaunchEnv?: Record<string, string>;
+	/** The merged create command this worker booted with; sticky spares re-seed from it so the pool key and config comparison match the next launch. */
+	spawnCreateCommand?: DaemonCreateCommand;
 	/** Spawned as a pooled prewarm spare; never seeded a new spare from its own stop (the expiry/consume path owns replacement). */
 	pooledSpare?: boolean;
 	transientCreateCommand?: DaemonCreateCommand;
@@ -3422,7 +3426,8 @@ export class DaemonSupervisor {
 	/**
 	 * Pre-boot an idle worker holding a fresh draft root session for the next
 	 * fresh resident create with the same cwd/env. Fire-and-forget: the pooled
-	 * worker is stopped (and its empty draft deleted) if no create consumes it.
+	 * worker is stopped if no create consumes it; its empty draft file stays
+	 * (kept for resume) and shows up as a draft row.
 	 */
 	private handlePrewarmCommand(command: Extract<DaemonCommand, { type: "prewarm" }>): void {
 		if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
@@ -3951,6 +3956,7 @@ export class DaemonSupervisor {
 				intentionalStop: false,
 				stopRevision: 0,
 				launchEnv,
+				spawnCreateCommand: createCommand,
 				transientCreateCommand: ownerClientId ? createCommand : undefined,
 			};
 			await this.assertRecoveryAllowed();
@@ -7282,7 +7288,7 @@ export class DaemonSupervisor {
 		try {
 			await this.stopWorkerUntracked(worker, removeDescriptor, force, archiveSession, recoveryCleanup, directChild);
 		} finally {
-			for (const [key, entry] of [...this.prewarmPool]) {
+			for (const [key, entry] of [...(this.prewarmPool ?? [])]) {
 				if (entry.worker === worker) this.removePrewarmPoolEntry(key);
 			}
 			this.maybeSpawnStickySpare(worker);
@@ -7315,9 +7321,15 @@ export class DaemonSupervisor {
 			return;
 		}
 		this.log(`Prewarm pool sticky spare requested for ${cwd}`);
+		const spawnConfig = worker.spawnCreateCommand?.config;
 		this.handlePrewarmCommand({
 			type: "prewarm",
-			config: { cwd, executionMode: "interactive", serializedRefine: false },
+			config: {
+				...spawnConfig,
+				// The pooled draft always starts env-less; the consuming create
+				// adopts its own client identity.
+				cwd,
+			},
 			env: undefined,
 			launchEnv: worker.spawnLaunchEnv ?? worker.launchEnv,
 		});
@@ -7828,7 +7840,7 @@ export class DaemonSupervisor {
 		this.clearHeartbeatsChangedBroadcast();
 		this.clearScheduledWakeTimer();
 		this.clearRosterWatchdogTimer();
-		for (const key of [...this.prewarmPool.keys()]) {
+		for (const key of [...(this.prewarmPool?.keys() ?? [])]) {
 			this.removePrewarmPoolEntry(key);
 		}
 		await this.idleEvictionSweep?.catch(() => undefined);

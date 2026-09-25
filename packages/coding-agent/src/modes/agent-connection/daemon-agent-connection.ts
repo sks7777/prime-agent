@@ -2089,14 +2089,19 @@ export class DaemonAgentConnection implements AgentConnection {
 		timeoutMs?: number,
 		options?: Parameters<DaemonTransportClient["request"]>[2],
 	): Promise<T> {
+		// A cross-session command (e.g. the mirror rebind's draft kill) targets a
+		// different session on purpose; the retry must keep its explicit id.
+		const commandSessionId = (command as { activeSessionId?: string }).activeSessionId;
+		const builtForCurrentSession = commandSessionId === this.activeSessionId;
 		const attempt = async (remapSessionId: boolean): Promise<T> => {
 			// An on-demand restore can switch the session identity (resident
 			// re-create); the retry must target the recovered session, not the
 			// dead one the command was built with.
 			const effectiveCommand =
 				remapSessionId &&
+				builtForCurrentSession &&
 				this.activeSessionId !== undefined &&
-				(command as { activeSessionId?: string }).activeSessionId !== undefined
+				commandSessionId !== undefined
 					? ({ ...command, activeSessionId: this.activeSessionId } as DaemonCommandBody)
 					: command;
 			const response = await this.client.request(effectiveCommand, timeoutMs, options);

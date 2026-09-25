@@ -486,11 +486,6 @@ interface PackageJson {
 const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
 
 const piConfigName: string | undefined = pkg.piConfig?.name;
-const envPrefix =
-	(piConfigName || "pi")
-		.toUpperCase()
-		.replace(/[^A-Z0-9]+/g, "_")
-		.replace(/^_+|_+$/g, "") || "PI";
 export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent";
 export const APP_NAME: string = piConfigName || "pi";
 export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
@@ -498,9 +493,9 @@ export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".prime/agent"
 export const VERSION: string = pkg.version || "0.0.0";
 
 // e.g., PI_CODING_AGENT_DIR or PRIME_AGENT_CODING_AGENT_DIR
-export const ENV_AGENT_DIR = `${envPrefix}_CODING_AGENT_DIR`;
-export const ENV_SESSION_DIR = `${envPrefix}_SESSION_DIR`;
-export const ENV_LEGACY_SESSION_DIR = `${envPrefix}_CODING_AGENT_SESSION_DIR`;
+import { ENV_AGENT_DIR, ENV_LEGACY_SESSION_DIR, ENV_SESSION_DIR } from "./core/env-names.js";
+
+export { ENV_AGENT_DIR, ENV_LEGACY_SESSION_DIR, ENV_SESSION_DIR };
 
 export function expandTildePath(path: string, platform: NodeJS.Platform = process.platform): string {
 	if (path === "~") return homedir();

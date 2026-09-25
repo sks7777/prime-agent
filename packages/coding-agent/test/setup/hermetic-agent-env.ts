@@ -13,11 +13,17 @@
  * Sandbox the agent config dir and drop the ambient RLM and daemon-worker
  * variables before any test file runs. Tests that need specific values set
  * them via `vi.stubEnv` (or their own fixtures), which overrides this setup.
+ *
+ * The env names come from a leaf module on purpose: importing src/config.js
+ * here would load its whole module graph (including utils/child-process.ts)
+ * into the module cache before per-test vi.mock("node:child_process")
+ * registration, defeating those mocks for every test file.
  */
+
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ENV_AGENT_DIR, ENV_LEGACY_SESSION_DIR, ENV_SESSION_DIR } from "../../src/config.js";
+import { ENV_AGENT_DIR, ENV_LEGACY_SESSION_DIR, ENV_SESSION_DIR } from "../../src/core/env-names.js";
 
 const sandboxAgentDir = mkdtempSync(join(tmpdir(), "prime-agent-vitest-agent-dir-"));
 process.env[ENV_AGENT_DIR] = sandboxAgentDir;

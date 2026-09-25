@@ -14933,6 +14933,10 @@ export class AgentSession {
 			this._reloadGoalStateFromBranch({ monotonicTokens: Boolean(summaryText) });
 			this._reloadRlmMaxDepthFromBranch();
 			await this._reloadQuotaParkFromBranch();
+			// Branch move = time travel: the previous branch's plan-code entry is
+			// not authoritative on the new branch; rescan (the extension re-appends
+			// on the next mode change, so a rescan without a match publishes none).
+			this._planCodeState = undefined;
 			this._invalidateQueuedPromptPreparation();
 
 			await this._extensionRunner.emit({
