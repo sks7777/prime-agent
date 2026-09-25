@@ -2,7 +2,18 @@
 // (`python -m rlm.repl`) — requests on stdin, events on stdout, stderr kept as
 // a diagnostics tail. The protocol is documented in prime-agent-runtime/src/rlm/repl.md.
 import type { ChildProcess } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	fchmodSync,
+	mkdirSync,
+	openSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { v4 as uuid } from "uuid";
@@ -41,6 +52,7 @@ import {
 	parseAttachmentDisplay,
 	parseDiffDisplay,
 	parseSentAgentMessage,
+	RESTORE_EXECUTION_TIMEOUT_MS,
 	raceStartupWithAbort,
 	SNAPSHOT_EXECUTION_TIMEOUT_MS,
 } from "./shared.js";
@@ -59,10 +71,32 @@ const REPAIR_STEP_TIMEOUT_MS = 30_000;
 const MAX_HANDLED_HOST_REQUEST_IDS = 1024;
 // Cap for unattributed background output buffered between and during cells.
 const MAX_BACKGROUND_OUTPUT_CHARS = 64 * 1024;
+// Largest legit frame is an attachment display event, base64 capped at
+// MAX_ATTACHMENT_DATA_CHARS; a line that cannot complete within this ceiling is
+// corruption the protocol repair owns, not output worth buffering until OOM.
+const MAX_PROTOCOL_LINE_CHARS = 32 * 1024 * 1024;
+// The spawning cell's source rides every host-request round trip and persists per child
+// as runtimeMetadata.spawnCode, so cap it once at this boundary.
+// Keep below SPAWN_CODE_MAX_CHARS in daemon-session-list.ts so its 4000-char display slice stays a no-op.
+const MAX_CELL_SOURCE_CHARS = 2 * 1024;
+const CELL_SOURCE_TRUNCATION_MARKER = ` [... cell source truncated at ${MAX_CELL_SOURCE_CHARS} chars ...]`;
 
 const MAX_KERNEL_STDERR_CHARS = 8 * 1024;
 const MAX_KERNEL_STDERR_LOG_BYTES = 5 * 1024 * 1024;
 const KERNEL_STDERR_LOG_BUDGET_MARKER = "[stderr log budget exhausted]\n";
+// Owner-only directory for the kernel stderr log, matching the other private session artifacts.
+const KERNEL_STDERR_LOG_DIR_MODE = 0o700;
+// Owner-only file bits; kernel stderr can carry exception payloads.
+const KERNEL_STDERR_LOG_MODE = 0o600;
+
+function manifestStatOf(path: string): { mtimeMs: number; size: number } | null {
+	try {
+		const stat = statSync(path);
+		return { mtimeMs: stat.mtimeMs, size: stat.size };
+	} catch {
+		return null;
+	}
+}
 
 /** fs.writeSync may write fewer bytes than asked (partial ENOSPC, signals); loop until done. */
 function writeFullySync(fd: number, data: Buffer): void {
@@ -70,6 +104,11 @@ function writeFullySync(fd: number, data: Buffer): void {
 	while (offset < data.length) {
 		offset += writeSync(fd, data, offset);
 	}
+}
+
+function capCellSourceCode(code: string | undefined): string | undefined {
+	if (code === undefined || code.length <= MAX_CELL_SOURCE_CHARS) return code;
+	return `${code.slice(0, MAX_CELL_SOURCE_CHARS)}${CELL_SOURCE_TRUNCATION_MARKER}`;
 }
 
 /** ExecuteResult plus the raw fields of the request's `done` event (state ops). */
@@ -157,6 +196,7 @@ export class ReplKernelManager {
 		| "env"
 		| "sessionId"
 		| "hostHandlers"
+		| "onBackgroundWorkSettled"
 		| "pythonSkills"
 		| "snapshot"
 		| "bootstrapCode"
@@ -208,6 +248,13 @@ export class ReplKernelManager {
 	private pendingRebootstrap = false;
 	/** Restore the saved namespace on that fresh start too (false when the snapshot itself is the declared culprit). */
 	private pendingRestore = false;
+	private completedExecutions = 0;
+	/** Tri-state: undefined = no non-repair restore attempted yet, null = manifest was missing at that attempt. */
+	private restoredManifestStat?: { mtimeMs: number; size: number } | null;
+	private restoredNamespaceSkip?: {
+		manifestStat: { mtimeMs: number; size: number } | null;
+		completedExecutions: number;
+	};
 	private rebootstrapPromise?: Promise<boolean>;
 	private teardownInFlight = 0;
 
@@ -218,6 +265,7 @@ export class ReplKernelManager {
 			env: options.env,
 			sessionId: options.sessionId,
 			hostHandlers: options.hostHandlers,
+			onBackgroundWorkSettled: options.onBackgroundWorkSettled,
 			pythonSkills: options.pythonSkills,
 			snapshot: options.snapshot,
 			bootstrapCode: options.bootstrapCode,
@@ -260,10 +308,13 @@ export class ReplKernelManager {
 		const path = this.options.stderrLogPath;
 		if (!path) return undefined;
 		try {
-			mkdirSync(dirname(path), { recursive: true });
+			mkdirSync(dirname(path), { recursive: true, mode: KERNEL_STDERR_LOG_DIR_MODE });
 			let size = existsSync(path) ? statSync(path).size : 0;
 			if (size > MAX_KERNEL_STDERR_LOG_BYTES) {
 				try {
+					// Tighten before the move: a renamed log keeps its mode, and the
+					// rotated file holds the exception payloads worth protecting.
+					chmodSync(path, KERNEL_STDERR_LOG_MODE);
 					// Drop any prior .old first: rename fails on Windows if it exists.
 					rmSync(`${path}.old`, { force: true });
 					renameSync(path, `${path}.old`);
@@ -273,7 +324,15 @@ export class ReplKernelManager {
 					this.appendKernelDiagnostic(`cannot rotate kernel stderr log: ${errorMessage(error)}`);
 				}
 			}
-			return { fd: openSync(path, "a"), budget: Math.max(0, MAX_KERNEL_STDERR_LOG_BYTES - size) };
+			const fd = openSync(path, "a", KERNEL_STDERR_LOG_MODE);
+			// Exact bits despite the umask; tightens a pre-existing loose log.
+			try {
+				fchmodSync(fd, KERNEL_STDERR_LOG_MODE);
+			} catch (error) {
+				closeSync(fd);
+				throw error;
+			}
+			return { fd, budget: Math.max(0, MAX_KERNEL_STDERR_LOG_BYTES - size) };
 		} catch (error) {
 			this.appendKernelDiagnostic(`cannot open kernel stderr log: ${errorMessage(error)}`);
 			return undefined;
@@ -376,9 +435,18 @@ export class ReplKernelManager {
 	private wireChild(child: ChildProcess): void {
 		const decoder = new StringDecoder("utf8");
 		let buffered = "";
+		// A poisoned child's residue must not grow the buffer again before the
+		// protocol repair kills it.
+		let poisoned = false;
 		child.stdout?.on("data", (buf: Buffer) => {
-			if (this.child !== child) return;
+			if (this.child !== child || poisoned) return;
 			buffered += decoder.write(buf);
+			if (buffered.length > MAX_PROTOCOL_LINE_CHARS) {
+				poisoned = true;
+				buffered = "";
+				this.failProtocolFrame(child, `oversized protocol line: exceeds ${MAX_PROTOCOL_LINE_CHARS} chars`);
+				return;
+			}
 			let newline = buffered.indexOf("\n");
 			while (newline !== -1) {
 				if (this.child !== child) return;
@@ -449,7 +517,8 @@ export class ReplKernelManager {
 		// stream (write EPIPE); without a listener Node rethrows it and takes
 		// down the whole worker. The pending writeLine rejection and the child
 		// 'exit' handler below own the fallout, so this only records the
-		// diagnosis.
+		// diagnosis. Read-side pipe errors on stdout/stderr land the same way
+		// and need the same guard.
 		child.stdin?.on("error", (error) => {
 			if (this.child !== child) return;
 			this.appendKernelDiagnostic(`kernel stdin error: ${errorMessage(error)}`);
@@ -457,6 +526,10 @@ export class ReplKernelManager {
 		child.stdout?.on("error", (error) => {
 			if (this.child !== child) return;
 			this.appendKernelDiagnostic(`kernel stdout error: ${errorMessage(error)}`);
+		});
+		child.stderr?.on("error", (error) => {
+			if (this.child !== child) return;
+			this.appendKernelDiagnostic(`kernel stderr error: ${errorMessage(error)}`);
 		});
 		child.once("exit", () => {
 			// One turn for the poll phase to deliver the bytes the kernel wrote
@@ -790,6 +863,17 @@ export class ReplKernelManager {
 				} else {
 					if (this.backgroundBashHandles.get(activity.id) === activity.pid) {
 						this.backgroundBashHandles.delete(activity.id);
+						if (this.backgroundBashHandles.size === 0) {
+							// The last live handle settled: the completion notice for it
+							// is already admitted, so owed continuations may resume. A
+							// host callback failure must not break the event path.
+							try {
+								this.options.onBackgroundWorkSettled?.();
+							} catch (error) {
+								// The settlement already happened on the map.
+								this.appendKernelDiagnostic(`background work settled callback failed: ${errorMessage(error)}`);
+							}
+						}
 					}
 					// The flush that removes the handle also retires its notice window.
 					this.settlingBashCompletions.delete(activity.id);
@@ -839,6 +923,9 @@ export class ReplKernelManager {
 						execution.stdout = execution.stdout.slice(0, execution.maxChars);
 						execution.stdoutTruncated = true;
 					}
+				} else if (text.length > 0) {
+					// The buffer filled exactly on an earlier frame; the dropped remainder still counts as truncation.
+					execution.stdoutTruncated = true;
 				}
 			} else {
 				if (execution.stderr.length < execution.maxChars) {
@@ -847,6 +934,8 @@ export class ReplKernelManager {
 						execution.stderr = execution.stderr.slice(0, execution.maxChars);
 						execution.stderrTruncated = true;
 					}
+				} else if (text.length > 0) {
+					execution.stderrTruncated = true;
 				}
 			}
 			execution.opts.onStream?.(text, type);
@@ -1107,6 +1196,7 @@ export class ReplKernelManager {
 		}
 		if (!execution.settled) {
 			execution.settled = true;
+			this.completedExecutions += 1;
 			if (execution.opts.onLateSentAgentMessage) {
 				this.registerLateSentAgentMessageHandler(execution.requestId, execution.opts.onLateSentAgentMessage);
 			}
@@ -1301,7 +1391,7 @@ export class ReplKernelManager {
 		// Tag the request with the cell that triggered it. A blocking call is still
 		// the in-flight execution; detached spawns (asyncio.create_task) fire after
 		// the scheduling cell goes idle, so fall back to that last cell's source.
-		const cellSourceCode = this.activeExecution?.code ?? this.lastCellCode;
+		const cellSourceCode = capCellSourceCode(this.activeExecution?.code ?? this.lastCellCode);
 		return handler({ ...data, cellSourceCode });
 	}
 
@@ -1316,7 +1406,18 @@ export class ReplKernelManager {
 		this.clearSnapshotTimer();
 		this.lateSentAgentMessageHandlers.clear();
 		this.pendingDoneWaiters.clear();
-		this.backgroundBashHandles.clear();
+		// Teardown kills the handles with the kernel, so owed continuations
+		// waiting on them must hear the settlement once before it is lost. A
+		// host callback failure must not abort the kernel teardown.
+		if (this.backgroundBashHandles.size > 0) {
+			this.backgroundBashHandles.clear();
+			try {
+				this.options.onBackgroundWorkSettled?.();
+			} catch (error) {
+				// The settlement already happened on the map; teardown continues.
+				this.appendKernelDiagnostic(`background work settled callback failed: ${errorMessage(error)}`);
+			}
+		}
 		this.settlingBashCompletions.clear();
 		// Stale pre-teardown background output must not surface after a restart.
 		this.pendingBackgroundOutput = "";
@@ -1567,17 +1668,22 @@ export class ReplKernelManager {
 	private async performRestore(protocolRepair: boolean): Promise<RestoreResult | null> {
 		const cfg = this.options.snapshot;
 		if (!cfg) return null;
+		// Before the attempt, so a failed or timed-out restore still arms the skip;
+		// repair retries (reprovision after a failed first restore) keep the non-repair stat.
+		if (!protocolRepair) this.restoredManifestStat = manifestStatOf(cfg.manifestPath);
 		try {
 			const r = await this.enqueueRequest(
 				{ type: "restore", path: cfg.path },
 				"",
 				{ internal: true, protocolRepair },
-				protocolRepair ? REPAIR_STEP_TIMEOUT_MS : undefined,
+				protocolRepair ? REPAIR_STEP_TIMEOUT_MS : RESTORE_EXECUTION_TIMEOUT_MS,
 			);
 			if (r.status !== "ok" || !r.doneFields) {
 				this.appendKernelDiagnostic(
 					`state restore ${r.status === "aborted" ? "timed out" : "failed"}: ${r.error?.evalue ?? r.stderr}`,
 				);
+				// The namespace never got the saved state, so the on-disk payload must stay the fresher copy.
+				if (!protocolRepair) this.pendingRestore = true;
 				return null;
 			}
 			this.pendingRestore = false;
@@ -1588,8 +1694,24 @@ export class ReplKernelManager {
 			};
 		} catch (error) {
 			this.appendKernelDiagnostic(`state restore error: ${errorMessage(error)}`);
+			if (!protocolRepair) this.pendingRestore = true;
 			return null;
 		}
+	}
+
+	/**
+	 * Arm the one-shot post-restore snapshot skip: the bootstrap-scheduled snapshot would
+	 * rewrite identical content, or after a failed restore clobber the healthy on-disk
+	 * copy with a skills-only payload. Call after the bootstrap succeeds — its own
+	 * settled execution must not defeat the arm.
+	 */
+	markRestoredNamespaceFresh(): void {
+		if (this.restoredManifestStat === undefined) return; // no attempted non-repair restore to match
+		this.restoredNamespaceSkip = {
+			manifestStat: this.restoredManifestStat,
+			completedExecutions: this.completedExecutions,
+		};
+		this.restoredManifestStat = undefined;
 	}
 
 	/** Live user-defined top-level names, or null if the kernel isn't running. Never throws. */
@@ -1614,11 +1736,22 @@ export class ReplKernelManager {
 		if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
 		this.snapshotTimer = globalThis.setTimeout(() => {
 			this.snapshotTimer = undefined;
+			if (this.consumeRestoredSnapshotSkip()) return;
 			void this.captureSnapshot({ executionTimeoutMs: SNAPSHOT_EXECUTION_TIMEOUT_MS });
 		}, cfg.debounceMs ?? DEFAULT_SNAPSHOT_DEBOUNCE_MS);
 		if (this.snapshotTimer && typeof this.snapshotTimer === "object" && "unref" in this.snapshotTimer) {
 			this.snapshotTimer.unref();
 		}
+	}
+
+	private consumeRestoredSnapshotSkip(): boolean {
+		const skip = this.restoredNamespaceSkip;
+		this.restoredNamespaceSkip = undefined; // one-shot: consumed whether or not it fires
+		if (!skip || !this.options.snapshot) return false;
+		if (this.completedExecutions !== skip.completedExecutions) return false;
+		const stat = manifestStatOf(this.options.snapshot.manifestPath);
+		if (stat === null || skip.manifestStat === null) return stat === skip.manifestStat;
+		return stat.mtimeMs === skip.manifestStat.mtimeMs && stat.size === skip.manifestStat.size;
 	}
 
 	private clearSnapshotTimer(): void {

@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +10,6 @@ import { createHarness, type Harness } from "../harness.js";
 
 const runtimeDir = resolve(__dirname, "../../../../../prime-agent-runtime");
 const python = resolve(runtimeDir, ".venv/bin/python");
-const describeRuntime = existsSync(python) ? describe : describe.skip;
 
 interface KernelSession {
 	_ipythonKernelProvisioner?: IpythonKernelProvisioner;
@@ -34,7 +32,8 @@ function passivationAllowed(session: AgentSession): boolean {
 	);
 }
 
-describeRuntime("#PRIME-9 ACP quiescence ignores left-running background bash", () => {
+// Boots a real Python kernel: runs in the dedicated kernel-heavy lane, not the default shard.
+describe("#PRIME-9 ACP quiescence ignores left-running background bash", () => {
 	let harness: Harness | undefined;
 	let manager: ReplKernelManager | undefined;
 
@@ -68,7 +67,9 @@ describeRuntime("#PRIME-9 ACP quiescence ignores left-running background bash", 
 		return { session, kernel: manager, deliveryStates };
 	}
 
-	it("lets strong quiescence settle while a left-running background process stays alive", async () => {
+	it("lets strong quiescence settle while a left-running background process stays alive", {
+		tags: ["kernel-heavy"],
+	}, async () => {
 		const { session, kernel, deliveryStates } = await start();
 		const started = await kernel.execute("from rlm import bash\nhandle = bash('sleep 600')\nhandle.pid");
 		expect(started.status).toBe("ok");
@@ -85,8 +86,9 @@ describeRuntime("#PRIME-9 ACP quiescence ignores left-running background bash", 
 
 		harness!.setResponses([fauxAssistantMessage("Inspected the completed command.")]);
 		await kernel.execute("handle.kill()");
-		await vi.waitFor(() => expect(session.getLastAssistantText()).toBe("Inspected the completed command."));
+		// The completed handle's notice queues the follow-up turn; idle implies it ran.
 		await session.waitForIdle();
+		expect(session.getLastAssistantText()).toBe("Inspected the completed command.");
 
 		// The completion notice was delivered through a tracked unsettled window.
 		expect(deliveryStates).toEqual([true]);

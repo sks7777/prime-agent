@@ -1,10 +1,20 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as armNoopExpiryTimer } from "node:timers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor, prewarmPoolKey } from "../src/modes/daemon/daemon-supervisor.js";
+
+/**
+ * Prewarm-pool fixtures carry the entry's expiry handle; production arms a real
+ * TTL timer, but these tests never hold a pooled worker that long. A no-op
+ * armed timer satisfies the entry type without scheduling anything.
+ */
+function makeExpiryTimer(): ReturnType<typeof setTimeout> {
+	return armNoopExpiryTimer(() => {}, 60_000).unref();
+}
 
 const tempDirs: string[] = [];
 
@@ -120,7 +130,7 @@ describe("worker prewarm pool", () => {
 		const entry = {
 			key: prewarmPoolKey({ cwd: "/tmp/project" }),
 			ready: Promise.resolve(makeWorkerFixture("w1", "/tmp/sessions/s1.jsonl")),
-			expiryTimer: setTimeout(() => {}, 1_000),
+			expiryTimer: makeExpiryTimer(),
 		};
 		supervisor.prewarmPool.set(entry.key, {
 			...entry,
@@ -152,7 +162,7 @@ describe("worker prewarm pool", () => {
 		supervisor.prewarmPool.set(key, {
 			key,
 			ready: Promise.resolve(worker),
-			expiryTimer: setTimeout(() => {}, 1_000),
+			expiryTimer: makeExpiryTimer(),
 			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
 		});
 		supervisor.forwardToWorker = vi.fn(async () => success(undefined, "create", summary));
@@ -180,7 +190,7 @@ describe("worker prewarm pool", () => {
 		supervisor.prewarmPool.set(key, {
 			key,
 			ready: Promise.resolve(brokenWorker),
-			expiryTimer: setTimeout(() => {}, 1_000),
+			expiryTimer: makeExpiryTimer(),
 			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
 		});
 		supervisor.stopWorker = vi.fn(async () => undefined);
@@ -200,7 +210,7 @@ describe("worker prewarm pool", () => {
 		supervisor.prewarmPool.set(key, {
 			key,
 			ready: Promise.resolve(worker),
-			expiryTimer: setTimeout(() => {}, 1_000),
+			expiryTimer: makeExpiryTimer(),
 			createCommand: { type: "create", config: { cwd: "/tmp/project" } },
 		});
 		supervisor.forwardToWorker = vi.fn();
@@ -221,7 +231,7 @@ describe("worker prewarm pool", () => {
 		const summary = makeSummary("s1");
 		const worker = makeWorkerFixture("w1", "/tmp/sessions/s1.jsonl");
 		const key = prewarmPoolKey({ cwd: "/tmp/project" });
-		const expiryTimer = setTimeout(() => {}, 1_000);
+		const expiryTimer = makeExpiryTimer();
 		supervisor.prewarmPool.set(key, {
 			key,
 			ready: Promise.resolve(worker),

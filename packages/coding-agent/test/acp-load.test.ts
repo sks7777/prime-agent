@@ -120,7 +120,7 @@ describe("ACP session/load", () => {
 		} finally {
 			await stopMode(mode);
 		}
-	}, 30_000);
+	});
 
 	it("switches the runtime onto the registered source session file and keeps the id", async () => {
 		const { runtimeHost, faux, tempDir, sessionsDir } = await createRuntimeHost({ persistSession: true });
@@ -199,7 +199,7 @@ describe("ACP session/load", () => {
 			await stopMode(resumeMode);
 			await stopMode(sourceMode);
 		}
-	}, 60_000);
+	});
 
 	it("rejects load requests whose cwd differs from the registered session's cwd", async () => {
 		const { runtimeHost, tempDir } = await createRuntimeHost({ persistSession: true });
@@ -236,7 +236,7 @@ describe("ACP session/load", () => {
 		} finally {
 			await stopMode(sourceMode);
 		}
-	}, 30_000);
+	});
 
 	it("rejects load requests for unknown session ids and frees the slot", async () => {
 		const { runtimeHost, tempDir } = await createRuntimeHost({ persistSession: true });
@@ -258,5 +258,5 @@ describe("ACP session/load", () => {
 		} finally {
 			await stopMode(mode);
 		}
-	}, 30_000);
+	});
 });

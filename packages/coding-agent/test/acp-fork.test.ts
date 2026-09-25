@@ -121,7 +121,7 @@ describe("ACP session/fork", () => {
 		} finally {
 			await stopMode(mode);
 		}
-	}, 30_000);
+	});
 
 	it("clones the registered source session into a new branched session file", async () => {
 		const { runtimeHost, faux, tempDir, sessionsDir } = await createRuntimeHost({ persistSession: true });
@@ -183,7 +183,7 @@ describe("ACP session/fork", () => {
 			await stopMode(forkMode);
 			await stopMode(sourceMode);
 		}
-	}, 60_000);
+	});
 
 	it("rejects fork requests for unknown session ids and frees the slot", async () => {
 		const { runtimeHost, tempDir } = await createRuntimeHost({ persistSession: true });
@@ -204,5 +204,5 @@ describe("ACP session/fork", () => {
 		} finally {
 			await stopMode(mode);
 		}
-	}, 30_000);
+	});
 });
