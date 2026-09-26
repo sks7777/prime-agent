@@ -233,6 +233,39 @@ function resolveBundleDir(): string | undefined {
 let cachedBundleDir: string | undefined;
 let cachedBundleBuildId: string | undefined;
 
+export interface WorkerBundleMarker {
+	buildId?: string;
+	sourceTreeId?: string;
+	version?: string;
+}
+
+/**
+ * Decide whether a recorded bundle marker is fresh for this supervisor.
+ *
+ * Freshness is content-addressed: the launcher exports
+ * PRIME_AGENT_SOURCE_TREE_ID (commit sha when the tree is clean, otherwise the
+ * `git stash create` sha of the dirty tree) and bundle.mjs records the same id
+ * it was built from, so a --source supervisor never adopts a bundle built from
+ * different source even when both git describe strings read "vX-dirty".
+ * The string buildId and package version remain as fallbacks for supervisors
+ * launched without a tree id (e.g. installed binaries).
+ */
+export function workerBundleFreshnessDecision(
+	marker: WorkerBundleMarker,
+	environment: { buildId?: string; sourceTreeId?: string; version: string },
+): { fresh: boolean; reason?: "tree-mismatch" | "build-mismatch" | "version-mismatch" | "unknown-tree" } {
+	if (environment.sourceTreeId) {
+		if (marker.sourceTreeId === undefined) return { fresh: false, reason: "unknown-tree" };
+		if (marker.sourceTreeId !== environment.sourceTreeId) return { fresh: false, reason: "tree-mismatch" };
+	}
+	if (environment.buildId) {
+		if (marker.buildId !== environment.buildId) return { fresh: false, reason: "build-mismatch" };
+	} else if (marker.version && marker.version !== environment.version) {
+		return { fresh: false, reason: "version-mismatch" };
+	}
+	return { fresh: true };
+}
+
 function workerBundleLaunchSpec(args: string[]): { command: string; args: string[] } | undefined {
 	const override = process.env.PRIME_AGENT_WORKER_FROM_BUNDLE;
 	if (override !== undefined && override !== "1" && override?.toLowerCase() !== "true") {
@@ -247,21 +280,17 @@ function workerBundleLaunchSpec(args: string[]): { command: string; args: string
 	if (!existsSync(bundlePath)) {
 		return undefined;
 	}
-	// Freshness gate: scripts/bundle.mjs records { buildId, version }. When the
-	// running supervisor carries a build id (PRIME_AGENT_BUILD_ID from the
-	// launcher) or a package version the bundle does not match, the bundle is
-	// stale relative to this process — fall back to the supervisor's own
-	// entrypoint instead of running old worker code.
+	// Freshness gate: scripts/bundle.mjs records { buildId, sourceTreeId, version }.
+	// The tree id binds the bundle to the exact source state it was built from;
+	// buildId and version stay as fallbacks when no tree id is available.
 	try {
-		const marker = JSON.parse(readFileSync(join(bundleDir, "build.json"), "utf8")) as {
-			buildId?: string;
-			version?: string;
-		};
-		const expectedBuildId = process.env.PRIME_AGENT_BUILD_ID;
-		if (expectedBuildId && marker.buildId !== expectedBuildId) {
-			return undefined;
-		}
-		if (!expectedBuildId && marker.version && marker.version !== VERSION) {
+		const marker = JSON.parse(readFileSync(join(bundleDir, "build.json"), "utf8")) as WorkerBundleMarker;
+		const decision = workerBundleFreshnessDecision(marker, {
+			buildId: process.env.PRIME_AGENT_BUILD_ID,
+			sourceTreeId: process.env.PRIME_AGENT_SOURCE_TREE_ID,
+			version: VERSION,
+		});
+		if (!decision.fresh) {
 			return undefined;
 		}
 		cachedBundleBuildId = marker.buildId;

@@ -5,7 +5,11 @@ import { setTimeout as armNoopExpiryTimer } from "node:timers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
-import { DaemonSupervisor, prewarmPoolKey } from "../src/modes/daemon/daemon-supervisor.js";
+import {
+	DaemonSupervisor,
+	prewarmPoolKey,
+	workerBundleFreshnessDecision,
+} from "../src/modes/daemon/daemon-supervisor.js";
 
 /**
  * Prewarm-pool fixtures carry the entry's expiry handle; production arms a real
@@ -86,6 +90,70 @@ function makeSummary(id: string): SessionSummary {
 		sessionActions: { queuedCount: 0, steering: [], followUps: [] },
 	};
 }
+
+describe("worker bundle freshness", () => {
+	it.each<{
+		name: string;
+		envTreeId?: string;
+		markerTreeId?: string;
+		envBuildId?: string;
+		markerBuildId?: string;
+		expected: boolean;
+	}>([
+		{
+			name: "matching tree id",
+			envTreeId: "tree-1",
+			markerTreeId: "tree-1",
+			envBuildId: "v1-dirty",
+			markerBuildId: "v1-dirty",
+			expected: true,
+		},
+		{
+			name: "dirty trees with the same describe string",
+			envTreeId: "tree-1",
+			markerTreeId: "tree-2",
+			envBuildId: "v1-dirty",
+			markerBuildId: "v1-dirty",
+			expected: false,
+		},
+		{
+			name: "missing marker tree id",
+			envTreeId: "tree-1",
+			markerTreeId: undefined,
+			envBuildId: "v1-dirty",
+			markerBuildId: "v1-dirty",
+			expected: false,
+		},
+	])("rejects a stale bundle: $name", ({ envTreeId, markerTreeId, envBuildId, markerBuildId, expected }) => {
+		const decision = workerBundleFreshnessDecision(
+			{ buildId: markerBuildId, sourceTreeId: markerTreeId, version: "1.0.0" },
+			{ buildId: envBuildId, sourceTreeId: envTreeId, version: "1.0.0" },
+		);
+		expect(decision.fresh).toBe(expected);
+	});
+
+	it("falls back to the build id when no tree id is exported", () => {
+		const decision = workerBundleFreshnessDecision(
+			{ buildId: "v1-clean", version: "1.0.0" },
+			{ buildId: "v1-clean", version: "1.0.0" },
+		);
+		expect(decision.fresh).toBe(true);
+		const mismatched = workerBundleFreshnessDecision(
+			{ buildId: "v0-clean", version: "1.0.0" },
+			{ buildId: "v1-clean", version: "1.0.0" },
+		);
+		expect(mismatched.fresh).toBe(false);
+		expect(mismatched.reason).toBe("build-mismatch");
+	});
+
+	it("falls back to the package version when no ids are exported", () => {
+		const decision = workerBundleFreshnessDecision({ version: "1.0.0" }, { version: "1.0.0" });
+		expect(decision.fresh).toBe(true);
+		const mismatched = workerBundleFreshnessDecision({ version: "0.9.0" }, { version: "1.0.0" });
+		expect(mismatched.fresh).toBe(false);
+		expect(mismatched.reason).toBe("version-mismatch");
+	});
+});
 
 describe("worker prewarm pool", () => {
 	it("keys pool entries by cwd and the full launch env minus per-pane shell noise", () => {

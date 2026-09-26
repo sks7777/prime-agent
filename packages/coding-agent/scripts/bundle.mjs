@@ -29,6 +29,31 @@ try {
 	buildId = `release-${JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version}`;
 }
 
+// Content-addressed identity of the tracked working tree: the commit sha when
+// clean, otherwise `git stash create` materializes the dirty tree and its sha
+// changes with every edit. The freshness gate compares tree ids, because git
+// describe strings collide across different dirty trees ("vX-dirty").
+let sourceTreeId;
+try {
+	sourceTreeId = execFileSync("git", ["rev-parse", "HEAD"], {
+		cwd: dirname(packageDir),
+		encoding: "utf8",
+	}).trim();
+	const dirty = execFileSync("git", ["status", "--porcelain"], {
+		cwd: dirname(packageDir),
+		encoding: "utf8",
+	}).trim();
+	if (dirty.length > 0) {
+		const stashSha = execFileSync("git", ["stash", "create"], {
+			cwd: dirname(packageDir),
+			encoding: "utf8",
+		}).trim();
+		if (stashSha.length > 0) sourceTreeId = stashSha;
+	}
+} catch {
+	sourceTreeId = undefined;
+}
+
 rmSync(outdir, { recursive: true, force: true });
 
 const missingCatalogAssets = ["models.bundled.json", "mcp-services.bundled.json"].filter(
@@ -82,6 +107,6 @@ chmodSync(join(outdir, "cli.js"), 0o755);
 const packageJson = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
 writeFileSync(
 	join(outdir, "build.json"),
-	`${JSON.stringify({ buildId, version: packageJson.version })}\n`,
+	`${JSON.stringify({ buildId, sourceTreeId, version: packageJson.version })}\n`,
 );
 console.log("bundled dist/cli.js -> dist/bundle/");
