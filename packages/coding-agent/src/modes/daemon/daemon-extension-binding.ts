@@ -14,6 +14,7 @@ import type { AgentConnectionState } from "../agent-connection/types.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 import { execEnvForSession, withClientEnv } from "./daemon-client-env.js";
+import { daemonClientCapabilitiesForSession } from "./daemon-mode.js";
 import {
 	type DaemonExtensionUIResponse,
 	type DaemonOutbound,
@@ -413,8 +414,12 @@ function hasExtensionUiClientForMethod(state: ActiveSessionState, method: string
 		// Custom widgets need a client that declared custom_widgets (it renders
 		// them and forwards key events); an extension_ui-only client can never
 		// answer a custom widget, and waiting on it would hang the extension.
+		// Negotiated capabilities live per session (attach/worker_subscribe), not
+		// in the never-updated base client set.
 		return [...state.clients].some(
-			(client) => client.supportsExtensionUi && client.capabilities.has("custom_widgets"),
+			(client) =>
+				client.supportsExtensionUi &&
+				daemonClientCapabilitiesForSession(client, state.activeSessionId).has("custom_widgets"),
 		);
 	}
 	return [...state.clients].some((client) => client.supportsExtensionUi);

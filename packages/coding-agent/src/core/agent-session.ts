@@ -2435,7 +2435,13 @@ export class AgentSession {
 					this._harnessDigestPending = true;
 				}
 				if (dispatched) {
-					payload.captureRunMessages = new Set(payload.records.map((record) => record.message));
+					// A resumed turn reuses an already-persisted transcript tail as
+					// its primary; only non-durable records belong to this run's
+					// capture, so a cancel cannot strip the durable tail message.
+					const capturable = payload.resumePrimaryDelivery
+						? payload.records.filter((record) => !record.durable)
+						: payload.records;
+					payload.captureRunMessages = new Set(capturable.map((record) => record.message));
 					this.agent.state.messages = this.agent.state.messages.filter(
 						(message) => !payload.captureRunMessages?.has(message),
 					);
@@ -6231,9 +6237,12 @@ export class AgentSession {
 				if (resumableTail && result.ticket) {
 					// The resumed primary was already delivered by the interrupted
 					// turn: settle the delivery ticket without waiting for a
-					// message_start that this dispatch deliberately never emits.
+					// message_start that this dispatch deliberately never emits, and
+					// mark it durable — the persisted transcript already contains it,
+					// so a cancel must not strip it from the in-memory context.
 					const resumedPrimary = primaryDeliveryRecord(action);
 					resumedPrimary.started = true;
+					resumedPrimary.durable = true;
 					this._actionStore.ticketFor(action).settleDelivered({ status: "delivered" });
 					if (options?.agentMessageId) this._settleAgentMessage(options.agentMessageId, "delivery");
 				}

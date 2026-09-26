@@ -8116,7 +8116,7 @@ function removeDaemonClientSessionCapabilities(client: DaemonSocketClient, activ
 	);
 }
 
-function daemonClientCapabilitiesForSession(
+export function daemonClientCapabilitiesForSession(
 	client: DaemonSocketClient,
 	activeSessionId: string,
 ): ReadonlySet<DaemonClientCapability> {

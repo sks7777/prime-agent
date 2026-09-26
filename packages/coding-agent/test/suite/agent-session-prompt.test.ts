@@ -1154,4 +1154,42 @@ describe("Harness digest at cold boundaries", () => {
 
 		expect(getUserTexts(harness)).toEqual(["unrelated earlier turn", "a different prompt"]);
 	});
+
+	it("keeps the reused transcript tail in the context when a resumed turn is aborted mid-run", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const dangling = {
+			role: "user",
+			content: [{ type: "text", text: "continue after the crash" }],
+			timestamp: Date.now(),
+		} as never;
+		harness.session.sessionManager.appendMessage(dangling);
+		harness.session.agent.state.messages.push(dangling);
+
+		// Gate the model response so the run is streaming when the abort lands;
+		// agent_start is the concrete signal that the dispatch committed.
+		const response = createDeferred();
+		const started = new Promise<void>((resolve) => {
+			harness.session.agent.subscribe(function onEvent(event: { type: string }) {
+				if (event.type !== "agent_start") return;
+				resolve();
+			});
+		});
+		harness.setResponses([
+			async () => {
+				await response.promise;
+				return fauxAssistantMessage("resumed reply");
+			},
+		]);
+		const prompt = harness.session.promptAndWait("continue after the crash", {
+			resumePendingUserMessage: true,
+		} satisfies Parameters<typeof harness.session.promptAndWait>[1]);
+		await started;
+		harness.session.requestAbort();
+		await prompt.catch(() => undefined);
+		response.resolve();
+
+		// The already-durable tail user message survives the cancel in the context.
+		expect(harness.session.messages.includes(dangling)).toBe(true);
+	});
 });

@@ -327,4 +327,42 @@ describe("worker prewarm pool", () => {
 		expect(supervisor.createOrReuseWorker).not.toHaveBeenCalled();
 		expect(supervisor.prewarmPool.size).toBe(0);
 	});
+
+	it("relays custom_widgets to the worker when an attached client declared it", async () => {
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			clients: new Set(),
+		}) as unknown as { clients: Set<any>; subscribeWorker(w: any, id: string): Promise<void> };
+		const workerClient = {
+			requestWorker: vi.fn(async (command: unknown) => {
+				return { success: true, data: undefined, command: (command as { type: string }).type };
+			}),
+		};
+		const worker = { client: workerClient };
+		supervisor.clients.add({
+			id: "relay-client",
+			attachedActiveSessionIds: new Set(["active-1"]),
+			detachInput: () => {},
+			supportsExtensionUi: true,
+			capabilities: new Set(["attach_snapshot", "event_sequence"]),
+			capabilitiesByActiveSessionId: new Map([["active-1", new Set(["custom_widgets"])]]) as Map<
+				string,
+				Set<string>
+			>,
+		} as never);
+
+		await supervisor.subscribeWorker(worker, "active-1");
+
+		const command = workerClient.requestWorker.mock.calls[0]?.[0] as { capabilities: string[] };
+		expect(command.capabilities).toContain("custom_widgets");
+		expect(command.capabilities).toContain("extension_ui");
+
+		// Without a declaring client the capability is not relayed.
+		const bare = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			clients: new Set(),
+		}) as unknown as typeof supervisor;
+		await bare.subscribeWorker({ client: { requestWorker: workerClient.requestWorker } }, "active-2");
+		const bareCommand = workerClient.requestWorker.mock.calls[1]?.[0] as { capabilities: string[] };
+		expect(bareCommand.capabilities).not.toContain("custom_widgets");
+		expect(bareCommand.capabilities).not.toContain("extension_ui");
+	});
 });

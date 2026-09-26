@@ -85,6 +85,7 @@ import {
 	UPDATE_RESTART_PREPARING_ERROR_INFO,
 	UPDATE_RESTART_PREPARING_MESSAGE,
 } from "./daemon-errors.js";
+import { daemonClientCapabilitiesForSession } from "./daemon-mode.js";
 import {
 	collectDaemonClientEnv,
 	createDaemonEventMeta,
@@ -4182,15 +4183,28 @@ export class DaemonSupervisor {
 		if (!worker.client) {
 			throw new Error("Session worker is not connected");
 		}
-		const supportsExtensionUi = [...this.clients].some(
-			(client) => client.attachedActiveSessionIds.has(activeSessionId) && client.supportsExtensionUi,
+		const attachedClients = [...this.clients].filter((client) =>
+			client.attachedActiveSessionIds.has(activeSessionId),
 		);
+		const supportsExtensionUi = attachedClients.some((client) => client.supportsExtensionUi);
+		// Relay the client-negotiated custom_widgets capability: without it the
+		// worker's per-session gate resolves ctx.ui.custom() as undefined even
+		// when a capable interactive client is attached through this relay.
+		const supportsCustomWidgets = attachedClients.some((client) =>
+			daemonClientCapabilitiesForSession(client, activeSessionId).has("custom_widgets"),
+		);
+		const capabilities: DaemonClientCapability[] = [
+			"attach_snapshot",
+			"event_sequence",
+			...(supportsExtensionUi ? (["extension_ui"] as const) : []),
+			"slim_attach",
+			"chunked_snapshot",
+			...(supportsCustomWidgets ? (["custom_widgets"] as const) : []),
+		];
 		const response = await worker.client.requestWorker({
 			type: "worker_subscribe",
 			activeSessionId,
-			capabilities: supportsExtensionUi
-				? ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"]
-				: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+			capabilities,
 			supportsExtensionUi,
 		});
 		if (!response.success) {

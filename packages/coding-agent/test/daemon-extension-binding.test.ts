@@ -177,13 +177,16 @@ describe("daemon extension binding", () => {
 			lastEventSequence: 0,
 		};
 		// A client with extension UI support must be attached for custom() to proceed.
+		// Production wiring: the base client set stays at the connection defaults
+		// and the attach path writes negotiated capabilities per session.
 		state.clients.add({
 			id: "client-custom",
 			socket: null as unknown as import("node:net").Socket,
 			attachedActiveSessionIds: new Set(["active-custom"]),
 			detachInput: () => {},
 			supportsExtensionUi: true,
-			capabilities: new Set(["custom_widgets"]),
+			capabilities: new Set(["attach_snapshot", "event_sequence"]),
+			capabilitiesByActiveSessionId: new Map([["active-custom", new Set(["custom_widgets"])]]),
 		});
 		await bindActiveSessionState(state, {
 			broadcast: (_state, message) => {
@@ -267,7 +270,8 @@ describe("daemon extension binding", () => {
 			attachedActiveSessionIds: new Set(["active-unanswered"]),
 			detachInput: () => {},
 			supportsExtensionUi: true,
-			capabilities: new Set(),
+			capabilities: new Set(["attach_snapshot", "event_sequence"]),
+			capabilitiesByActiveSessionId: new Map(),
 		});
 		await bindActiveSessionState(state, {
 			broadcast: (_state, message) => {
