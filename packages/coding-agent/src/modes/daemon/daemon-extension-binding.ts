@@ -409,5 +409,13 @@ function hasExtensionUiClientForMethod(state: ActiveSessionState, method: string
 	if (!isDaemonDialogExtensionUiRequest(method)) {
 		return state.clients.size > 0;
 	}
+	if (method === "custom") {
+		// Custom widgets need a client that declared custom_widgets (it renders
+		// them and forwards key events); an extension_ui-only client can never
+		// answer a custom widget, and waiting on it would hang the extension.
+		return [...state.clients].some(
+			(client) => client.supportsExtensionUi && client.capabilities.has("custom_widgets"),
+		);
+	}
 	return [...state.clients].some((client) => client.supportsExtensionUi);
 }

@@ -183,7 +183,7 @@ describe("daemon extension binding", () => {
 			attachedActiveSessionIds: new Set(["active-custom"]),
 			detachInput: () => {},
 			supportsExtensionUi: true,
-			capabilities: new Set(),
+			capabilities: new Set(["custom_widgets"]),
 		});
 		await bindActiveSessionState(state, {
 			broadcast: (_state, message) => {
@@ -230,5 +230,57 @@ describe("daemon extension binding", () => {
 		await promptDone;
 		// Closing clears the widget.
 		expect(setWidgetMessages().some((message) => message.payload.widgetLines === undefined)).toBe(true);
+	});
+
+	it("resolves custom() as undefined for a client without the custom_widgets capability", async () => {
+		const outbound: DaemonOutbound[] = [];
+		// An extension_ui-only client cannot answer a custom widget; custom() must
+		// resolve undefined for it instead of pending forever.
+		let customOutcome: "pending" | "undefined" = "pending";
+		const runtime = await createRuntimeForTest(
+			(pi) => {
+				pi.registerCommand("daemon-custom-unanswered", {
+					description: "daemon custom unanswered",
+					handler: async (_args, ctx) => {
+						const result = await ctx.ui.custom<string>(() => ({
+							render: () => ["never rendered"],
+							invalidate: () => {},
+						}));
+						customOutcome = result === undefined ? "undefined" : "pending";
+					},
+				});
+			},
+			["custom undefined reply"],
+		);
+		const state: ActiveSessionState = {
+			activeSessionId: "active-unanswered",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-unanswered",
+			lastEventSequence: 0,
+		};
+		state.clients.add({
+			id: "client-dialogs-only",
+			socket: null as unknown as import("node:net").Socket,
+			attachedActiveSessionIds: new Set(["active-unanswered"]),
+			detachInput: () => {},
+			supportsExtensionUi: true,
+			capabilities: new Set(),
+		});
+		await bindActiveSessionState(state, {
+			broadcast: (_state, message) => {
+				outbound.push(message);
+			},
+			shutdown: () => {},
+		});
+
+		await runtime.session.prompt("/daemon-custom-unanswered");
+
+		// No custom widget request was broadcast, and custom() resolved undefined
+		// (the prompt turn completing proves it did not pend).
+		expect(outbound.some((message) => message.type === "extension_ui_request")).toBe(false);
+		expect(customOutcome).toBe("undefined");
 	});
 });

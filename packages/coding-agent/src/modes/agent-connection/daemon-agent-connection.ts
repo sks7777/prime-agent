@@ -527,6 +527,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (this.disposed || this.terminalCloseEmitted) throw new Error("Daemon session closed during attach");
 		const sessionRevision = this.sessionRevision;
 		const supportsExtensionUi = this.options.supportsExtensionUi !== false;
+		const supportsCustomWidgets = supportsExtensionUi && this.supportsExtensionUiKeyEvents();
 		const result = await this.requestData<SessionSummary | DaemonAttachResult>(
 			{
 				type: "attach",
@@ -541,6 +542,7 @@ export class DaemonAgentConnection implements AgentConnection {
 					"chunked_snapshot",
 					...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
 					...(this.options.tracksHeartbeats ? (["heartbeat_catalog"] as const) : []),
+					...(supportsCustomWidgets ? (["custom_widgets"] as const) : []),
 				],
 				env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
 				launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
@@ -1747,6 +1749,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		let reattached = false;
 		try {
 			const supportsExtensionUi = this.options.supportsExtensionUi !== false;
+			const supportsCustomWidgets = supportsExtensionUi && this.supportsExtensionUiKeyEvents();
 			const result = await this.requestData<DaemonAttachResult>({
 				type: "reattach",
 				activeSessionId: sourceActiveSessionId,
@@ -1761,6 +1764,7 @@ export class DaemonAgentConnection implements AgentConnection {
 					"chunked_snapshot",
 					...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
 					...(this.options.tracksHeartbeats ? (["heartbeat_catalog"] as const) : []),
+					...(supportsCustomWidgets ? (["custom_widgets"] as const) : []),
 				],
 				env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
 				launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,

@@ -1,0 +1,1 @@
+- Added the opt-in `custom_widgets` client capability: daemon `ctx.ui.custom()` now resolves `undefined` immediately when no attached client declared it, instead of waiting on a client that cannot answer custom widgets. The interactive client declares the capability when the daemon supports forwarded key events. Daemon schema revision 33.

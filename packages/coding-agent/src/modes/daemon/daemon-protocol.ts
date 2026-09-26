@@ -83,8 +83,11 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // the capability-gated abort_and_send_queued command, and structured update_restarting
 // failure info for opens fenced by an update restart.
 // Revision 32 merges both histories and advertises the combined feature set.
-export const DAEMON_SCHEMA_REVISION = 32;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-32-e0c5a5c47b1d";
+// Revision 33 adds the opt-in custom_widgets client capability: the daemon gates
+// ctx.ui.custom() broadcasts on it, so clients that cannot answer a custom widget
+// resolve undefined immediately instead of leaving the request pending forever.
+export const DAEMON_SCHEMA_REVISION = 33;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-33-9d0e5b4a7c21";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -104,7 +107,11 @@ export type DaemonClientCapability =
 	| "chunked_snapshot"
 	| "client_owned_sessions"
 	// Client declaration, not a command gate: attach with it opts into heartbeats_changed pushes.
-	| "heartbeat_catalog";
+	| "heartbeat_catalog"
+	// Client declaration: the client renders daemon custom widgets and forwards
+	// their key events. Without it the daemon resolves custom() as undefined
+	// instead of waiting on a client that can never answer.
+	| "custom_widgets";
 export type DaemonPromptAdmissionCancellationStatus = "cancelled" | "owned" | "unknown";
 export interface DaemonPromptAdmissionCancellationResult {
 	status: DaemonPromptAdmissionCancellationStatus;
@@ -168,6 +175,7 @@ export const DAEMON_SUPPORTED_CLIENT_CAPABILITIES: readonly DaemonClientCapabili
 	"chunked_snapshot",
 	"client_owned_sessions",
 	"heartbeat_catalog",
+	"custom_widgets",
 ];
 
 export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability[] = [
