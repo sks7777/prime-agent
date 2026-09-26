@@ -1300,6 +1300,7 @@ export class DaemonAgentConnection implements AgentConnection {
 					streamingBehavior: options?.streamingBehavior,
 					queueIfBusy: options?.queueIfBusy,
 					source: options?.source,
+					...(options?.resumePendingUserMessage ? { resumePendingUserMessage: true } : {}),
 				},
 				DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
 			);
@@ -1326,6 +1327,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			queueIfBusy: options.queueIfBusy,
 			source: options.source,
 			admissionId,
+			...(options.resumePendingUserMessage ? { resumePendingUserMessage: true } : {}),
 		} as Extract<DaemonCommandBody, { type: typeof type }>;
 		let promptError: unknown;
 		const promptRequest = this.requestData<unknown>(command, DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS).catch(

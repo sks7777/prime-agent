@@ -389,6 +389,7 @@ export class InProcessAgentConnection implements AgentConnection {
 			...(options?.queueIfBusy !== undefined ? { queueIfBusy: options.queueIfBusy } : {}),
 			...(options?.source ? { source: options.source } : {}),
 			...(options?.signal ? { signal: options.signal } : {}),
+			...(options?.resumePendingUserMessage ? { resumePendingUserMessage: true } : {}),
 		});
 	}
 

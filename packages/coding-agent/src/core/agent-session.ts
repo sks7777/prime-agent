@@ -645,6 +645,12 @@ export interface PromptOptions {
 	customMessage?: CustomMessage;
 	/** Overrides the queue priority inferred from the source and message. */
 	priority?: SessionActionPriority;
+	/**
+	 * Resume a dangling turn: when the transcript tail is a user message with the
+	 * same single-text-block content, reuse it instead of appending a duplicate.
+	 * Used by prompt recovery after a mid-turn daemon/worker restart.
+	 */
+	resumePendingUserMessage?: boolean;
 }
 
 interface InternalPromptOptions extends PromptOptions {
@@ -731,6 +737,8 @@ interface PreparedTurnPayload extends SessionTurnPayload {
 	acceptedBeforeCompletion: boolean;
 	captureRunMessages?: Set<AgentMessage>;
 	cancelledDispatchEnded?: boolean;
+	/** The primary message was already delivered by the turn this one resumes (recovery re-issue): dispatch reuses the existing transcript tail instead of re-sending it. */
+	resumePrimaryDelivery?: boolean;
 }
 
 interface PreparedCommandPayload extends SessionCommandPayload {
@@ -6157,15 +6165,24 @@ export class AgentSession {
 					? options.content.map((block) => ({ ...block }))
 					: this._buildPromptContent(normalized.text, normalized.images);
 				const suppliedMessage = options?.customMessage;
+				// A recovery re-issue may resume a dangling turn: the previous
+				// attempt already appended this exact user message, and re-appending
+				// it would duplicate the turn in the transcript. Reuse the tail
+				// message so the action runs the turn without a second append.
+				const resumableTail =
+					!visibleQueued && !suppliedMessage && options?.resumePendingUserMessage === true
+						? this._danglingUserMessageTail(normalized.text)
+						: undefined;
 				const primaryMessage = suppliedMessage
 					? visibleQueued
 						? suppliedMessage
 						: cloneCustomMessage(suppliedMessage)
-					: ({
+					: (resumableTail ??
+						({
 							role: "user",
 							content: content.map((block) => ({ ...block })),
 							timestamp: Date.now(),
-						} satisfies UserMessage);
+						} satisfies UserMessage));
 				const acceptedAgentMessage = options?.skipPrePromptWork === true && options.returnAfterAccepted === true;
 				const action = this._createPreparedTurnAction(schedule, normalized.text, normalized.images, {
 					agentMessageId: options?.agentMessageId,
@@ -6173,6 +6190,7 @@ export class AgentSession {
 					content,
 					message: primaryMessage,
 					prefixMessages,
+					...(resumableTail ? { resumePrimaryDelivery: true } : {}),
 					suppressAutonomousContinuation: options?.suppressAutonomousContinuation,
 					resumeIfIdle:
 						!visibleQueued ||
@@ -6209,6 +6227,15 @@ export class AgentSession {
 						() => reportPreflight(true),
 						() => reportPreflight(false),
 					);
+				}
+				if (resumableTail && result.ticket) {
+					// The resumed primary was already delivered by the interrupted
+					// turn: settle the delivery ticket without waiting for a
+					// message_start that this dispatch deliberately never emits.
+					const resumedPrimary = primaryDeliveryRecord(action);
+					resumedPrimary.started = true;
+					this._actionStore.ticketFor(action).settleDelivered({ status: "delivered" });
+					if (options?.agentMessageId) this._settleAgentMessage(options.agentMessageId, "delivery");
 				}
 				const deferralObserver =
 					acceptedAgentMessage &&
@@ -6598,6 +6625,25 @@ export class AgentSession {
 		});
 	}
 
+	/**
+	 * The transcript tail when it is a user message whose single text block equals
+	 * the given text — the shape a recovery re-issue produces when the prior turn
+	 * was admitted but never answered. Returns undefined for anything else.
+	 */
+	private _danglingUserMessageTail(text: string): UserMessage | undefined {
+		if (this.isStreaming) return undefined;
+		const tail = this.agent.state.messages.at(-1);
+		if (!tail || tail.role !== "user") return undefined;
+		if (typeof tail.content === "string") {
+			return tail.content === text ? tail : undefined;
+		}
+		const blocks = tail.content;
+		if (blocks.length !== 1 || blocks[0]?.type !== "text" || blocks[0].text !== text) {
+			return undefined;
+		}
+		return tail;
+	}
+
 	private _buildPromptContent(text: string, images?: ImageContent[]): (TextContent | ImageContent)[] {
 		const content: (TextContent | ImageContent)[] = [];
 		content.push({ type: "text", text });
@@ -6720,6 +6766,7 @@ export class AgentSession {
 			queueVisible?: boolean;
 			acceptedAgentMessage?: boolean;
 			acceptedBeforeCompletion?: boolean;
+			resumePrimaryDelivery?: boolean;
 		},
 	): QueuedSessionAction {
 		const id = randomUUID();
@@ -6748,6 +6795,7 @@ export class AgentSession {
 			queueVisible: options.queueVisible ?? true,
 			acceptedAgentMessage: options.acceptedAgentMessage ?? false,
 			acceptedBeforeCompletion: options.acceptedBeforeCompletion ?? false,
+			...(options.resumePrimaryDelivery ? { resumePrimaryDelivery: true } : {}),
 		};
 		const source = options.source ?? "internal";
 		return {
@@ -7357,7 +7405,14 @@ export class AgentSession {
 						this._refreshGoalContextMessageAtDelivery(primaryDeliveryRecord(action).message);
 					}
 					const preparedMessages: AgentMessage[] = turns.flatMap((action) =>
-						action.payload.records.map((record) => record.message),
+						// A resumed turn reuses the transcript tail as its primary: the
+						// message was already delivered and appended, so the dispatch sends
+						// only the remaining records instead of re-issuing it.
+						action.payload.resumePrimaryDelivery
+							? action.payload.records
+									.filter((record) => record !== primaryDeliveryRecord(action))
+									.map((record) => record.message)
+							: action.payload.records.map((record) => record.message),
 					);
 					for (const action of turns) {
 						if (action.suppressAutonomousContinuation) {

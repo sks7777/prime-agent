@@ -61,7 +61,7 @@ function fakeAcpConnection(
 	options: {
 		initialSnapshot?: () => Promise<any>;
 		finalSnapshot?: () => Promise<any>;
-		onPromptAndWait?: () => void | Promise<void>;
+		onPromptAndWait?: (message: string, options?: { resumePendingUserMessage?: boolean }) => void | Promise<void>;
 		onWaitForHeadlessCompletion?: (options?: { waitForRlmQuiescence?: boolean }) => void | Promise<void>;
 		headlessStatus?: Record<string, unknown>;
 		onFinalSnapshot?: () => void | Promise<void>;
@@ -99,8 +99,8 @@ function fakeAcpConnection(
 			await options.onFinalSnapshot?.();
 			return options.finalSnapshot ? ((await options.finalSnapshot()).children ?? []) : snapshot.children;
 		},
-		promptAndWait: async () => {
-			await options.onPromptAndWait?.();
+		promptAndWait: async (message: string, promptOptions?: { resumePendingUserMessage?: boolean }) => {
+			await options.onPromptAndWait?.(message, promptOptions);
 		},
 		dispose: async () => {},
 		abort: async () => {
@@ -1426,8 +1426,10 @@ describe("ACP mode end to end", () => {
 		const RESTART_ERROR = "Daemon supervisor generation g1 is shutting down; retry the command";
 		let promptCalls = 0;
 		let daemonDown = true;
+		const promptOptionsLog: Array<{ resumePendingUserMessage?: boolean } | undefined> = [];
 		const connection = fakeAcpConnection({
-			onPromptAndWait: async () => {
+			onPromptAndWait: async (_message, promptOptions) => {
+				promptOptionsLog.push(promptOptions);
 				promptCalls += 1;
 				if (promptCalls === 1) {
 					releaseFirstPrompt();
@@ -1460,6 +1462,10 @@ describe("ACP mode end to end", () => {
 
 		await expect(pending).resolves.toMatchObject({ stopReason: "end_turn" });
 		expect(promptCalls).toBe(2);
+		// The re-issue resumes the possibly-dangling same-text user turn instead
+		// of appending a duplicate.
+		expect(promptOptionsLog[0]?.resumePendingUserMessage).toBeUndefined();
+		expect(promptOptionsLog[1]?.resumePendingUserMessage).toBe(true);
 		const autoRetry = updates
 			.map((item) => item.update?._meta?.[PRIME_AGENT_META_NAMESPACE]?.autoRetry)
 			.filter(Boolean);
@@ -1473,8 +1479,10 @@ describe("ACP mode end to end", () => {
 		const WORKER_CLOSED_ERROR = "Supervisor command prompt_and_wait failed: Daemon worker client closed";
 		let promptCalls = 0;
 		let daemonDown = true;
+		const promptOptionsLog: Array<{ resumePendingUserMessage?: boolean } | undefined> = [];
 		const connection = fakeAcpConnection({
-			onPromptAndWait: async () => {
+			onPromptAndWait: async (_message, promptOptions) => {
+				promptOptionsLog.push(promptOptions);
 				promptCalls += 1;
 				if (promptCalls === 1) {
 					releaseFirstPrompt();
@@ -1505,6 +1513,10 @@ describe("ACP mode end to end", () => {
 
 		await expect(pending).resolves.toMatchObject({ stopReason: "end_turn" });
 		expect(promptCalls).toBe(2);
+		// The re-issue resumes the possibly-dangling same-text user turn instead
+		// of appending a duplicate.
+		expect(promptOptionsLog[0]?.resumePendingUserMessage).toBeUndefined();
+		expect(promptOptionsLog[1]?.resumePendingUserMessage).toBe(true);
 		const autoRetry = updates
 			.map((item) => item.update?._meta?.[PRIME_AGENT_META_NAMESPACE]?.autoRetry)
 			.filter(Boolean);

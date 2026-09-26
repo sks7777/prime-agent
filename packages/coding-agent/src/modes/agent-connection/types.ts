@@ -466,6 +466,12 @@ export interface AgentConnectionPromptOptions {
 	source?: InputSource;
 	/** Cancels only while admission waits; accepted prompts remain session-owned. */
 	signal?: AbortSignal;
+	/**
+	 * Resume a dangling turn: when the transcript tail is a user message with the
+	 * same single-text-block content, reuse it instead of appending a duplicate
+	 * (prompt-recovery re-issue after a mid-turn daemon/worker restart).
+	 */
+	resumePendingUserMessage?: boolean;
 }
 
 export interface AgentConnectionSideQuestionEvent {

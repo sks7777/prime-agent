@@ -784,9 +784,18 @@ async function runPromptWithRecovery(
 	publish: (update: Record<string, unknown>) => Promise<void>,
 ): Promise<void> {
 	const startedAt = Date.now();
+	let reissue = false;
 	for (;;) {
 		try {
-			await connection.promptAndWait(message, options);
+			// A re-issue after recovery resumes its possibly-dangling turn: the
+			// worker may already have appended this user message before it died,
+			// and re-sending must not duplicate it in the transcript.
+			await connection.promptAndWait(
+				message,
+				reissue && options.resumePendingUserMessage !== false
+					? { ...options, resumePendingUserMessage: true }
+					: options,
+			);
 			return;
 		} catch (error) {
 			if (options.signal?.aborted || !isPromptRecoveryRetryableError(error)) {
@@ -810,6 +819,7 @@ async function runPromptWithRecovery(
 				throw error;
 			}
 			await publish(promptRecoveryMeta("waiting", errorMessage));
+			reissue = true;
 		}
 	}
 }

@@ -86,8 +86,11 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 33 adds the opt-in custom_widgets client capability: the daemon gates
 // ctx.ui.custom() broadcasts on it, so clients that cannot answer a custom widget
 // resolve undefined immediately instead of leaving the request pending forever.
-export const DAEMON_SCHEMA_REVISION = 33;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-33-9d0e5b4a7c21";
+// Revision 34 adds the optional prompt command field resumePendingUserMessage: a
+// recovery re-issue resumes its dangling same-text user turn instead of
+// appending a duplicate user message to the transcript.
+export const DAEMON_SCHEMA_REVISION = 34;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-34-4b2c8e1f6a3d";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -494,6 +497,8 @@ export type DaemonCommand =
 			customMessage?: CustomMessage;
 			/** Unique only when the caller needs cancellable pre-ownership admission. */
 			admissionId?: string;
+			/** Resume the dangling same-text user turn instead of appending a duplicate. */
+			resumePendingUserMessage?: boolean;
 	  }
 	| {
 			id?: string;
@@ -516,6 +521,8 @@ export type DaemonCommand =
 			source?: InputSource;
 			/** Unique only when the caller needs cancellable pre-ownership admission. */
 			admissionId?: string;
+			/** Resume the dangling same-text user turn instead of appending a duplicate. */
+			resumePendingUserMessage?: boolean;
 	  }
 	| {
 			id?: string;

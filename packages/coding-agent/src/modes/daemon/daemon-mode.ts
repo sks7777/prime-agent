@@ -4634,6 +4634,7 @@ export class AgentDaemon {
 					expandPromptTemplates: command.expandPromptTemplates,
 					skipInputHandlers: command.expandPromptTemplates === false ? true : undefined,
 					source: command.source,
+					...(command.resumePendingUserMessage === true ? { resumePendingUserMessage: true } : {}),
 					...(admission?.controller
 						? {
 								signal: admission.controller.signal,

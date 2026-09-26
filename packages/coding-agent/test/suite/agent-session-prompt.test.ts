@@ -1109,4 +1109,49 @@ describe("Harness digest at cold boundaries", () => {
 		expect(digestMessages(replaced)).toHaveLength(1);
 		expect(replaced.session.messages[0]).toMatchObject({ role: "compactionSummary", harnessDigest: undefined });
 	});
+
+	it("resumes a dangling same-text user turn instead of appending a duplicate", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		// Simulate a recovered-but-interrupted turn: the transcript already ends
+		// with this exact user message and no assistant reply followed it.
+		const dangling = {
+			role: "user",
+			content: [{ type: "text", text: "continue after the crash" }],
+			timestamp: Date.now(),
+		} as never;
+		harness.session.sessionManager.appendMessage(dangling);
+		harness.session.agent.state.messages.push(dangling);
+
+		harness.setResponses([fauxAssistantMessage("resumed reply")]);
+		await harness.session.promptAndWait("continue after the crash", {
+			resumePendingUserMessage: true,
+		} satisfies Parameters<typeof harness.session.promptAndWait>[1]);
+
+		// The dangling message was reused: exactly one user message with that text.
+		expect(getUserTexts(harness)).toEqual(["continue after the crash"]);
+		expect(getAssistantTexts(harness)).toEqual(["resumed reply"]);
+	});
+
+	it("appends a fresh user message when the resume flag does not match the tail", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.session.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "unrelated earlier turn" }],
+			timestamp: Date.now(),
+		} as never);
+		harness.session.agent.state.messages.push({
+			role: "user",
+			content: [{ type: "text", text: "unrelated earlier turn" }],
+			timestamp: Date.now(),
+		} as never);
+
+		harness.setResponses([fauxAssistantMessage("fresh reply")]);
+		await harness.session.promptAndWait("a different prompt", {
+			resumePendingUserMessage: true,
+		} satisfies Parameters<typeof harness.session.promptAndWait>[1]);
+
+		expect(getUserTexts(harness)).toEqual(["unrelated earlier turn", "a different prompt"]);
+	});
 });
