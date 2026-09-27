@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONFIG_DIR_NAME, createBashTool, getAgentDir } from "../src/index.js";
 
@@ -12,7 +13,7 @@ describe("coding-agent entry exports required by upstream example extensions", (
 
 	it("exports getAgentDir returning an absolute path", () => {
 		expect(getAgentDir().length).toBeGreaterThan(0);
-		expect(getAgentDir()).toMatch(/^\//);
+		expect(isAbsolute(getAgentDir())).toBe(true);
 	});
 
 	it("exports createBashTool returning a bash tool", () => {
