@@ -1,0 +1,1 @@
+- Fixed simultaneous subagent crashes after a daemon restart: mirror thread `session/load` falls back to reattach on the parent's session, and the mirror rebind on `session/prompt` now fires regardless of message count (gated by a per-entry flag instead of `getMessages().length === 0`).

@@ -431,4 +431,44 @@ Do the thing`),
 		expect(connection.prompts[0]).toContain("Do the thing");
 		expect(connection.prompts[0]).not.toContain("[rlm-mirror:");
 	});
+	it("rebinds even when the current session has messages (session/load fallback)", async () => {
+		// Simulate the session/load fallback: switchSession fails with
+		// SessionAlreadyActiveError, reattachSession puts the connection on the
+		// parent's session (which has messages). The mirror rebind on
+		// session/prompt should still fire because the per-entry
+		// mirrorRebindAttempted flag (not getMessages().length) gates replay.
+		const connection = new FakeMirrorConnection();
+		// Seed the draft session with messages (as the parent's session would have).
+		connection.sessions.get("draft-1")!.messages = [
+			{ role: "user", content: [{ type: "text", text: "previous work" }] } as AgentMessage,
+		];
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		const first = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]\nDo the thing`),
+		})) as { stopReason?: string };
+		expect(first.stopReason).toBe("end_turn");
+		// The rebind fired despite the draft having messages.
+		expect(connection.attachCalls).toEqual(["child-1"]);
+		expect(connection.killCalls).toEqual(["draft-1"]);
+		expect(connection.prompts).toEqual(["Do the thing"]);
+	});
 });

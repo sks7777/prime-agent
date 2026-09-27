@@ -270,6 +270,8 @@ interface AcpSessionEntry {
 	unsubscribe: (() => void) | undefined;
 	/** True while a mirror rebind holds the slot: event publishes are suppressed. */
 	muted: boolean;
+	/** True once a mirror rebind has been attempted for this session entry. */
+	mirrorRebindAttempted: boolean;
 	producer: AcpUpdateProducer;
 }
 
@@ -1204,6 +1206,7 @@ export async function runAcpModeWithConnection(
 			resolvePromptTask: undefined,
 			unsubscribe: undefined,
 			muted: false,
+			mirrorRebindAttempted: false,
 			producer,
 		};
 		// Subscribe for the session lifetime, not per prompt turn: prime-agent
@@ -1343,7 +1346,7 @@ export async function runAcpModeWithConnection(
 				// connection is back on the draft session and its entry, still
 				// subscribed, keeps serving turns. The claim survives on purpose:
 				// a transient re-admission failure must not burn the nonce while
-				// its TTL holds; getMessages() > 0 blocks same-process replay.
+				// its TTL holds; mirrorRebindAttempted blocks same-process replay.
 				draft.muted = false;
 				session = draft;
 				if (draftSessionId) {
@@ -1691,10 +1694,16 @@ export async function runAcpModeWithConnection(
 		})
 		.onRequest("session/prompt", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string; prompt: readonly unknown[] };
-			// Mirror rebind (PRIME-11): a virgin frontend whose first prompt carries
+			// Mirror rebind (PRIME-11): a frontend whose first prompt carries
 			// a mirror claim nonce rebinds onto the claimed subagent session before
 			// the turn runs. The probe matches the first post-wrapper text block,
 			// so a leading <system_instructions> wrapper cannot hide the marker.
+			// The per-entry mirrorRebindAttempted flag blocks same-process replay
+			// (a rebind fires at most once per admitted entry); the claim's
+			// single-use + TTL properties block cross-process replay. This allows
+			// the rebind to fire even after session/load falls back to reattach
+			// onto the parent's session (which has messages, so the old
+			// getMessages().length === 0 guard would skip it).
 			const probeBlocks = splitAcpPromptBlocks(params.prompt);
 			const probeText = probeBlocks.restTexts[0] ?? "";
 			const mirror = parseRlmAttachMarker(probeText);
@@ -1703,8 +1712,9 @@ export async function runAcpModeWithConnection(
 				mirror.remaining.length > 0 &&
 				session?.id === params.sessionId &&
 				!session.abort &&
-				(await connection.getMessages()).length === 0
+				!session.mirrorRebindAttempted
 			) {
+				session.mirrorRebindAttempted = true;
 				await rebindToRlmMirrorSession(mirror.claimNonce, params.sessionId, ctx.client);
 			}
 			const entry = session?.id === params.sessionId ? session : undefined;
