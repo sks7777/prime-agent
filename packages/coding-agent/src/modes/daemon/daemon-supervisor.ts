@@ -584,6 +584,23 @@ export function prewarmPoolKeyEnv(launchEnv?: Record<string, string>): Record<st
 	return subset;
 }
 
+/**
+ * Runtime-location config keys a sticky-spare draft may keep. Everything else
+ * (model, apiKey, tools, prompts, …) is session-specific: seeding it would
+ * silently apply a stopped session's customization to an unrelated create.
+ */
+const DURABLE_PREWARM_CONFIG_KEYS: ReadonlySet<string> = new Set(["agentDir", "sessionDir", "telemetryDisabled"]);
+
+export function pickDurablePrewarmConfigKeys(config?: AgentSessionRuntimeConfig): Partial<AgentSessionRuntimeConfig> {
+	if (!config) return {};
+	const picked: Record<string, unknown> = {};
+	for (const key of DURABLE_PREWARM_CONFIG_KEYS) {
+		const value = (config as Record<string, unknown>)[key];
+		if (value !== undefined) picked[key] = value;
+	}
+	return picked as Partial<AgentSessionRuntimeConfig>;
+}
+
 export function prewarmPoolKey(options: { cwd: string | undefined; launchEnv?: Record<string, string> }): string {
 	// Client env is session identity beyond this digest: the consuming create
 	// adopts it (allowlisted keys) at consume. The digest only filters per-pane
@@ -5759,16 +5776,19 @@ export class DaemonSupervisor {
 			// RLM child sessions live on the parent's worker, which may be
 			// client-owned by a different client (e.g. a bb mirror thread's
 			// ACP frontend accessing a child spawned by the parent's ACP
-			// session). Skip the client-ownership gate for subagent entries
-			// so any client that can address the child by session id can reach it.
+			// session). Skip the client-ownership gate for subagent entries, but
+			// only for exact session-id matches: session-name and id-suffix
+			// addressing keep the gate (the bypass was wider than the documented
+			// "address by session id" scope).
 			const isRlmChild = entry.summary.runtimeKind === "subagent";
-			if (includeWorker && !isRlmChild && !includeWorker(worker)) {
-				continue;
-			}
 			const summary = sessionSummaryFromRosterEntry(entry);
 			const activeSessionId = summary.activeSessionId ?? summary.id;
+			const exactIdMatch = activeSessionId === selector || summary.sessionId === selector;
+			if (includeWorker && !(isRlmChild && exactIdMatch) && !includeWorker(worker)) {
+				continue;
+			}
 			const match = { worker, summary };
-			if (activeSessionId === selector || summary.sessionId === selector || summary.sessionName === selector) {
+			if (exactIdMatch || summary.sessionName === selector) {
 				exact.push(match);
 			} else if (
 				matchesSessionIdSuffix(activeSessionId, selector) ||
@@ -7388,7 +7408,12 @@ export class DaemonSupervisor {
 		this.handlePrewarmCommand({
 			type: "prewarm",
 			config: {
-				...spawnConfig,
+				// Strip session-specific keys (model, apiKey, tools, …): the draft
+				// must not leak the stopped session's customization into an
+				// unrelated plain create in the same cwd. Only runtime-location
+				// keys survive, so a consuming create adopts the daemon defaults
+				// (or fails the pool comparison and falls back to a cold create).
+				...pickDurablePrewarmConfigKeys(spawnConfig),
 				// The pooled draft always starts env-less; the consuming create
 				// adopts its own client identity.
 				cwd,

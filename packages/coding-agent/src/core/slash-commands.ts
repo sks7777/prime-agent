@@ -266,10 +266,14 @@ export function parseSlashCommand(text: string): ParsedSlashCommand | undefined 
 	return { name: match[1], args: (match[2] ?? "").trim() };
 }
 
-const INSTRUCTIONS_WRAPPER_PREFIX_PATTERN = /^<system_instructions>[\s\S]*?<\/system_instructions>/;
+export const INSTRUCTIONS_WRAPPER_PREFIX_PATTERN = /^<system_instructions>[\s\S]*?<\/system_instructions>/;
 
-/** Cross-thread tell attribution ("[bb message from thread:X]") on its own line. */
-const TELL_ATTRIBUTION_LINE_PATTERN = /^\[bb message from thread:[^\]]*\][ \t]*$/u;
+/**
+ * Cross-thread tell attribution ("[bb message from thread:X]") on its own
+ * line. Test against the line with surrounding whitespace trimmed; a shared
+ * acp-mode copy of this contract must not drift from it.
+ */
+export const TELL_ATTRIBUTION_LINE_PATTERN = /^\[bb message from thread:[^\]]*\]$/u;
 
 export interface SlashSubmissionSplit {
 	/** Leading instructions wrapper or tell attribution, when one prefixes a slash command. */
@@ -296,10 +300,11 @@ export function splitSlashSubmissionPrefix(text: string): SlashSubmissionSplit {
 			rest = rest.slice(wrapper[0].length).trimStart();
 			continue;
 		}
-		const attribution = TELL_ATTRIBUTION_LINE_PATTERN.exec(rest.split("\n", 1)[0] ?? "");
-		if (attribution && rest.includes("\n")) {
-			prefix = prefix ? `${prefix}\n${attribution[0]}` : attribution[0];
-			rest = rest.slice(rest.indexOf("\n") + 1).trimStart();
+		const newlineIndex = rest.indexOf("\n");
+		const firstLine = (newlineIndex === -1 ? rest : rest.slice(0, newlineIndex)).trim();
+		if (TELL_ATTRIBUTION_LINE_PATTERN.test(firstLine) && newlineIndex !== -1) {
+			prefix = prefix ? `${prefix}\n${firstLine}` : firstLine;
+			rest = rest.slice(newlineIndex + 1).trimStart();
 			continue;
 		}
 		break;

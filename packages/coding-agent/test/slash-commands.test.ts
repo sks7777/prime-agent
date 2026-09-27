@@ -197,6 +197,13 @@ describe("splitSlashSubmissionPrefix", () => {
 		expect(split.body).toBe("/session-prune");
 	});
 
+	test("splits a tell attribution line with CRLF and unicode-space padding", () => {
+		// Same wire shape the ACP transport accepts; the core copy must not drift.
+		const split = splitSlashSubmissionPrefix(`${ATTRIBUTION}\u00a0\r\n/session-prune`);
+		expect(split.prefix).toBe(ATTRIBUTION);
+		expect(split.body).toBe("/session-prune");
+	});
+
 	test("splits an attribution followed by a wrapper before a slash command", () => {
 		const split = splitSlashSubmissionPrefix(`${ATTRIBUTION}\n${WRAPPER}\n/session-prune`);
 		expect(split.prefix).toBe(`${ATTRIBUTION}\n${WRAPPER}`);

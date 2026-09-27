@@ -170,7 +170,14 @@ export async function resolveChildActiveSessionId(
 		try {
 			const subagents = (await list()).subagents;
 			const byId = subagents.find((agent) => agent.active_session_id && agent.rlm_child_id === childId);
-			const byName = subagents.find((agent) => agent.active_session_id && agent.session_name === sessionName);
+			// The same-name fallback must not bind to a stale row: a same-named
+			// respawn is legal while the old child's delete-unwind entry still
+			// carries a live-looking active_session_id, and re-binding the claim
+			// to the dying session parks the new child until its mirror timeout.
+			// Only a still-running same-named row is acceptable.
+			const byName = subagents.find(
+				(agent) => agent.active_session_id && agent.session_name === sessionName && agent.status === "running",
+			);
 			const match = byId ?? byName;
 			if (match?.active_session_id) return match.active_session_id;
 			lastError = `child ${sessionName} (${childId}) has no active session yet`;

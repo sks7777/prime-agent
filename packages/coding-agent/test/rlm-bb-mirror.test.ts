@@ -173,9 +173,24 @@ describe("resolveChildActiveSessionId", () => {
 		);
 	});
 
-	it("fails after the timeout when the child never appears", async () => {
+	it("does not bind by name to a stale completed same-named row (PRIME-26 review)", async () => {
+		// A same-named respawn is legal while the old child's delete-unwind row
+		// still lists a live-looking active_session_id; the claim must keep
+		// polling for the new child instead of binding to the dying session.
+		const result: RlmListSubagentsResult = {
+			subagents: [
+				{
+					rlm_child_id: "sub-old",
+					active_session_id: "active-stale",
+					session_id: "session-stale",
+					session_name: "worker",
+					session_dir: "/tmp/stale",
+					status: "completed",
+				},
+			],
+		};
 		await expect(
-			resolveChildActiveSessionId(() => Promise.resolve(rosterEntry()), "sub-1", "worker", 250),
+			resolveChildActiveSessionId(() => Promise.resolve(result), "sub-new", "worker", 250),
 		).rejects.toThrow(/no active session yet/);
 	});
 });

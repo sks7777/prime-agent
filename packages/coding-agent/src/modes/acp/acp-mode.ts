@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
@@ -11,7 +11,12 @@ import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { consumeRlmMirrorClaim, RLM_MIRROR_MARKER_PATTERN, readRlmMirrorClaim } from "../../core/rlm-bb-mirror.js";
 import { SessionManager } from "../../core/session-manager.js";
-import { parseSlashCommand } from "../../core/slash-commands.js";
+import {
+	INSTRUCTIONS_WRAPPER_PREFIX_PATTERN,
+	parseSlashCommand,
+	TELL_ATTRIBUTION_LINE_PATTERN,
+} from "../../core/slash-commands.js";
+import { writeFileAtomicSync } from "../../utils/atomic-file.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
 import type {
 	AgentConnection,
@@ -105,11 +110,10 @@ function readAcpSessionRegistry(sessionDir: string): AcpSessionRegistry {
 
 function writeAcpSessionRegistry(sessionDir: string, registry: AcpSessionRegistry): void {
 	mkdirSync(sessionDir, { recursive: true });
-	// Atomic replace: readers never observe a partial file, and concurrent
-	// writers do not interleave half-written JSON.
-	const tempPath = `${acpSessionRegistryPath(sessionDir)}.${process.pid}.${randomUUID()}.tmp`;
-	writeFileSync(tempPath, `${JSON.stringify(registry, null, "\t")}\n`, "utf8");
-	renameSync(tempPath, acpSessionRegistryPath(sessionDir));
+	// Atomic replace (shared util: temp cleanup on failure, Windows rename
+	// retry): readers never observe a partial file, and concurrent writers do
+	// not interleave half-written JSON.
+	writeFileAtomicSync(acpSessionRegistryPath(sessionDir), `${JSON.stringify(registry, null, "\t")}\n`);
 }
 
 function pruneAcpSessionRegistry(registry: AcpSessionRegistry, now = Date.now()): AcpSessionRegistry {
@@ -134,7 +138,10 @@ function registerAcpSession(
 		registry[sessionId] = { ...entry, createdAt: Date.now() };
 		try {
 			writeAcpSessionRegistry(sessionDir, registry);
-			return;
+			// A concurrent writer that read the same pre-write state can rename
+			// over our file: renameSync succeeds, so only a re-read detects the
+			// lost update. Retry from the fresh file when our entry vanished.
+			if (readAcpSessionRegistry(sessionDir)[sessionId]) return;
 		} catch {
 			// Contention or transient fs failure: retry from the fresh file.
 		}
@@ -529,13 +536,9 @@ function promptContent(blocks: readonly unknown[]): { text: string; images: Imag
  */
 const ACP_INSTRUCTIONS_PATTERN = /^<system_instructions>[\s\S]*<\/system_instructions>$/;
 
-/**
- * The same wrapper, but with the user's text concatenated after the closing tag
- * in one block. Some clients (bb's remote-view and skill-injection prompts) send
- * a single merged block, and then the whole-wrapper pattern above no longer
- * matches, so the trailing slash command never reaches command handling.
- */
-const ACP_INSTRUCTIONS_PREFIX_PATTERN = /^<system_instructions>[\s\S]*?<\/system_instructions>/;
+// The merged wrapper+text prefix shares the core slash-submission contract, so
+// the two transports cannot drift (PRIME-26 review).
+const ACP_INSTRUCTIONS_PREFIX_PATTERN = INSTRUCTIONS_WRAPPER_PREFIX_PATTERN;
 
 /** Split a merged wrapper+text block into its wrapper and its trailing text. */
 function splitAcpInstructionPrefix(text: string): { instructions: string; rest: string } | undefined {
@@ -604,7 +607,7 @@ export function splitAcpPromptBlocks(blocks: readonly unknown[]): AcpPromptSplit
  * Strip that leading attribution line so the command detection below still
  * sees the slash command.
  */
-const ACP_TELL_ATTRIBUTION_PATTERN = /^\[bb message from thread:[^\]]*\]\s*$/u;
+const ACP_TELL_ATTRIBUTION_PATTERN = TELL_ATTRIBUTION_LINE_PATTERN;
 
 export function headWithoutTellAttribution(head: string): string {
 	const lines = head.split("\n");
@@ -1616,7 +1619,12 @@ export async function runAcpModeWithConnection(
 				}
 				// Replace this process's boot session with the branched copy. The source
 				// file itself is never reopened, so the original session stays intact.
-				const switched = await connection.switchSession(branchedSessionFile);
+				// The branched file's header carries the source cwd (foreign for the
+				// allowForeignCwd opt-in), so override it with this process's cwd —
+				// the documented "adopts this process's cwd" premise (PRIME-25).
+				const switched = await connection.switchSession(branchedSessionFile, {
+					cwdOverride: processState.cwd,
+				});
 				if (switched.cancelled) {
 					throw new Error("ACP fork was cancelled by a session hook");
 				}

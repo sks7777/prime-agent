@@ -750,6 +750,12 @@ const PROMPT_ADMISSION_CANCELLATION_COMMAND = {
 	minSchemaRevision: 8,
 	capability: "prompt_admission_cancellation",
 } as const;
+const RESUME_PENDING_USER_MESSAGE_COMMAND = {
+	minProtocol: 7,
+	// Revision 34 introduced resumePendingUserMessage; an older daemon would
+	// silently ignore the field and append a duplicate user turn.
+	minSchemaRevision: 34,
+} as const;
 const OWNED_PROMPT_CANCELLATION_COMMAND = {
 	minProtocol: 7,
 	minSchemaRevision: 20,
@@ -1043,6 +1049,9 @@ export function getDaemonCommandCompatibilities(command: DaemonCommand): readonl
 	if (carriesTelemetryPolicy) requirements.push(TELEMETRY_POLICY_COMMAND);
 	if ((command.type === "prompt" || command.type === "prompt_and_wait") && command.admissionId !== undefined) {
 		requirements.push(PROMPT_ADMISSION_CANCELLATION_COMMAND);
+	}
+	if ((command.type === "prompt" || command.type === "prompt_and_wait") && command.resumePendingUserMessage === true) {
+		requirements.push(RESUME_PENDING_USER_MESSAGE_COMMAND);
 	}
 	if (command.type === "wait_for_headless_completion" && command.waitForRlmQuiescence === true) {
 		requirements.push(RLM_QUIESCENCE_BARRIER_COMMAND);

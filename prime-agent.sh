@@ -13,14 +13,17 @@ if BUILD_ID="$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null
   export PRIME_AGENT_BUILD_ID="$BUILD_ID"
 fi
 # Content-addressed source tree identity for the worker-bundle freshness gate:
-# commit sha when clean, else the `git stash create` sha of the dirty tree.
-if TREE_ID="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null)"; then
+# the TREE sha (a stash commit's own sha embeds the committer timestamp and
+# differs on every `stash create` call; the tree object is the stable identity).
+if TREE_ID="$(git -C "$SCRIPT_DIR" rev-parse HEAD^{tree} 2>/dev/null)"; then
   if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]; then
     if STASH_SHA="$(git -C "$SCRIPT_DIR" stash create 2>/dev/null)" && [ -n "$STASH_SHA" ]; then
-      TREE_ID="$STASH_SHA"
+      TREE_ID="$(git -C "$SCRIPT_DIR" rev-parse "$STASH_SHA^{tree}" 2>/dev/null)" || true
     fi
   fi
-  export PRIME_AGENT_SOURCE_TREE_ID="$TREE_ID"
+  if [ -n "${TREE_ID:-}" ]; then
+    export PRIME_AGENT_SOURCE_TREE_ID="$TREE_ID"
+  fi
 fi
 # pi-ecosystem extensions (e.g. pi-web-access) read PI_CODING_AGENT_DIR for
 # their config dir; point them at the prime-agent config directory.

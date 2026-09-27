@@ -1,0 +1,8 @@
+- Fixed the worker-bundle freshness gate comparing stash-commit shas (timestamp-derived) instead of tree shas, which always rejected the bundle on dirty trees (PRIME-23).
+- Fixed foreign-cwd ACP forks keeping the source session's working directory instead of adopting the process cwd (PRIME-25).
+- Fixed sticky-spare prewarm drafts leaking the stopped session's model, apiKey, and other session-specific config into unrelated creates.
+- Restricted the subagent roster ownership bypass to exact session-id matches; name and suffix addressing keep the client gate.
+- Gated the resumePendingUserMessage prompt field on daemon schema revision 34 to prevent duplicate user turns on older daemons.
+- Replaced the hand-rolled ACP session registry write with the shared atomic-file helper and detected lost updates from concurrent writers.
+- Aligned prompt-prefix and tell-attribution splitting regexes between the ACP transport and the session core; attribution lines now accept CRLF and unicode padding.
+- Stopped the bb mirror same-name roster fallback from binding claims to stale delete-unwind rows.

@@ -116,6 +116,14 @@ describe("daemon protocol helpers", () => {
 				{ minProtocol: 7, minSchemaRevision: 8, capability: "prompt_admission_cancellation" },
 			],
 		],
+		[
+			"a prompt re-issue resuming the dangling user turn (PRIME-22/26 review)",
+			{ type: "prompt_and_wait", activeSessionId: "active-1", message: "m", resumePendingUserMessage: true },
+			[
+				{ minProtocol: 7, minSchemaRevision: 34 },
+				{ minProtocol: 7, capability: "session_input_admission" },
+			],
+		],
 	])("gates %s", (_name, command, expected) => {
 		expect(getDaemonCommandCompatibilities(command as DaemonCommand)).toEqual(expected);
 	});

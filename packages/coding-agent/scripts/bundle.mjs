@@ -29,16 +29,19 @@ try {
 	buildId = `release-${JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version}`;
 }
 
-// Content-addressed identity of the tracked working tree: the commit sha when
-// clean, otherwise `git stash create` materializes the dirty tree and its sha
-// changes with every edit. The freshness gate compares tree ids, because git
-// describe strings collide across different dirty trees ("vX-dirty").
+// Content-addressed identity of the tracked working tree: the TREE sha. A
+// stash commit's own sha embeds the committer timestamp and differs on every
+// `stash create` call, so compare the stash's tree object (or HEAD's tree)
+// instead — stable for identical tree content. The freshness gate compares
+// tree ids, because git describe strings collide across dirty trees
+// ("vX-dirty").
 let sourceTreeId;
 try {
-	sourceTreeId = execFileSync("git", ["rev-parse", "HEAD"], {
-		cwd: dirname(packageDir),
-		encoding: "utf8",
-	}).trim();
+	const gitTree = (ref) =>
+		execFileSync("git", ["rev-parse", `${ref}^{tree}`], {
+			cwd: dirname(packageDir),
+			encoding: "utf8",
+		}).trim();
 	const dirty = execFileSync("git", ["status", "--porcelain"], {
 		cwd: dirname(packageDir),
 		encoding: "utf8",
@@ -48,8 +51,9 @@ try {
 			cwd: dirname(packageDir),
 			encoding: "utf8",
 		}).trim();
-		if (stashSha.length > 0) sourceTreeId = stashSha;
+		if (stashSha.length > 0) sourceTreeId = gitTree(stashSha);
 	}
+	if (!sourceTreeId) sourceTreeId = gitTree("HEAD");
 } catch {
 	sourceTreeId = undefined;
 }
