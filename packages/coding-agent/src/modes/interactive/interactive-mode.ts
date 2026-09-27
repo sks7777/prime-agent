@@ -1428,7 +1428,7 @@ export class InteractiveMode {
 	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
 	/** Input-listener cleanup per live custom widget, keyed by `custom:<requestId>`. */
-	private customWidgetCleanups = new Map<string, () => void>();
+	private customWidgetCleanups = new Map<string, (cancelled?: boolean) => void>();
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
 
@@ -4119,7 +4119,9 @@ export class InteractiveMode {
 		// without running the constructor (e.g. prototype-call tests); real
 		// instances always have the field (fork 90e30d797).
 		for (const cleanup of this.customWidgetCleanups?.values() ?? []) {
-			cleanup();
+			// cancelled=true: the daemon must stop treating the custom() as live,
+			// or a late setWidget would render a widget with no key listener.
+			cleanup(true);
 		}
 		this.setExtensionFooter(undefined);
 		this.setExtensionHeader(undefined);
@@ -6039,8 +6041,14 @@ export class InteractiveMode {
 					return { consume: true };
 				});
 
-				// Store cleanup - called when setWidget receives undefined for this widgetKey
-				this.customWidgetCleanups.set(widgetKey, () => {
+				// Store cleanup - called when setWidget receives undefined for this widgetKey.
+				// cancelled=true tells the daemon the widget is gone client-side, so a
+				// reset while the daemon still holds the pending custom() cannot leave
+				// a rendered widget with no key listener attached.
+				this.customWidgetCleanups.set(widgetKey, (cancelled = false) => {
+					if (cancelled) {
+						void this.agentConnection.respondToExtensionUiRequest(customId, { cancelled: true }).catch(() => {});
+					}
 					keyUnsubscribe();
 					this.customWidgetCleanups.delete(widgetKey);
 				});

@@ -94,7 +94,7 @@ class DaemonSupervisorAlreadyRunningError extends Error {
 	}
 }
 
-class DaemonSupervisorOwnershipLostError extends Error {
+export class DaemonSupervisorOwnershipLostError extends Error {
 	readonly code = "supervisor_generation_stale" as const;
 
 	constructor(generation: string, details: { socketPath?: string; registryDir?: string } = {}) {

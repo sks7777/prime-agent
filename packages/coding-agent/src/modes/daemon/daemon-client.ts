@@ -538,6 +538,7 @@ export class DaemonClient {
 							),
 						);
 					}, DAEMON_STALE_PARK_TIMEOUT_MS);
+					pending.staleParkTimeout.unref();
 					return;
 				}
 				if (pending.timeout) {

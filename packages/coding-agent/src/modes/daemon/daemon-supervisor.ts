@@ -2356,7 +2356,7 @@ export class DaemonSupervisor {
 			await waitForPromptAdmission(this.assertServingCurrentOwnership(), parsedAdmission?.controller.signal);
 		} catch (error) {
 			if (parsedAdmission) this.deletePromptAdmission(parsedAdmission);
-			this.write(client, failure(command.id, command.type, error));
+			this.write(client, failure(command.id, command.type, error, serializeDaemonError(error)));
 			return;
 		}
 
@@ -3478,11 +3478,17 @@ export class DaemonSupervisor {
 			launchEnv: command.launchEnv,
 			lifecycle: "resident",
 		};
-		const opening = this.launchWorker(createCommand, undefined, undefined).catch((error) => {
-			this.log(`Prewarm worker launch failed for ${key}: ${String(error)}`);
-			this.removePrewarmPoolEntry(key);
-			throw error;
-		});
+		// The dispatch drain ends when this handler returns, but the mutation's
+		// real work is the spawn itself: hold the drain until the opening settles,
+		// so an update-restart drain cannot race an in-flight prewarm spawn.
+		this.mutationDrain.begin();
+		const opening = this.launchWorker(createCommand, undefined, undefined)
+			.catch((error) => {
+				this.log(`Prewarm worker launch failed for ${key}: ${String(error)}`);
+				this.removePrewarmPoolEntry(key);
+				throw error;
+			})
+			.finally(() => this.mutationDrain.end());
 		opening.catch(() => {});
 		const entry: PrewarmPoolEntry = {
 			key,
@@ -5742,7 +5748,14 @@ export class DaemonSupervisor {
 		for (const entry of this.roster().values()) {
 			if (entry.queuedChild) continue;
 			const worker = entry.workerId !== undefined ? this.workers.get(entry.workerId) : undefined;
-			if (!worker || (includeWorker && !includeWorker(worker))) {
+			if (!worker) continue;
+			// RLM child sessions live on the parent's worker, which may be
+			// client-owned by a different client (e.g. a bb mirror thread's
+			// ACP frontend accessing a child spawned by the parent's ACP
+			// session). Skip the client-ownership gate for subagent entries
+			// so any client that can address the child by session id can reach it.
+			const isRlmChild = entry.summary.runtimeKind === "subagent";
+			if (includeWorker && !isRlmChild && !includeWorker(worker)) {
 				continue;
 			}
 			const summary = sessionSummaryFromRosterEntry(entry);

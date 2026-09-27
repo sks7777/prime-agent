@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -156,7 +156,11 @@ async function resolveAcpSessionFile(
 ): Promise<{ entry: AcpSessionRegistryEntry; sessionFile: string | undefined } | undefined> {
 	const entry = readAcpSessionRegistry(sessionDir)[sessionId];
 	if (!entry) return undefined;
-	if (entry.sessionFile && existsSync(entry.sessionFile)) return { entry, sessionFile: entry.sessionFile };
+	// Registry files are written by other processes; a tampered sessionFile must
+	// not make this process open a transcript outside the sessions directory.
+	if (entry.sessionFile && existsSync(entry.sessionFile) && isPathInsideDir(entry.sessionFile, sessionDir)) {
+		return { entry, sessionFile: entry.sessionFile };
+	}
 	if (entry.runtimeSessionId) {
 		try {
 			const sessions = await SessionManager.list(entry.cwd, sessionDir);
@@ -178,6 +182,18 @@ function isJsonRpcResponse(message: unknown, requestId: unknown): boolean {
 		!Object.hasOwn(record, "method") &&
 		Object.hasOwn(record, "result") !== Object.hasOwn(record, "error")
 	);
+}
+
+/** True when filePath sits inside dir (after canonicalization). */
+function isPathInsideDir(filePath: string, dir: string): boolean {
+	try {
+		const fileDir = dirname(realpathSync(filePath));
+		const root = realpathSync(dir);
+		if (fileDir === root) return true;
+		return fileDir.startsWith(root + sep);
+	} catch {
+		return false;
+	}
 }
 
 function sameCwd(left: string, right: string): boolean {
@@ -245,6 +261,8 @@ interface AcpSessionEntry {
 	promptTask: Promise<void> | undefined;
 	resolvePromptTask: (() => void) | undefined;
 	unsubscribe: (() => void) | undefined;
+	/** True while a mirror rebind holds the slot: event publishes are suppressed. */
+	muted: boolean;
 	producer: AcpUpdateProducer;
 }
 
@@ -760,7 +778,11 @@ async function runPromptWithRecovery(
 			const deadline = startedAt + PROMPT_RECOVERY_MAX_WAIT_MS;
 			let recovered = false;
 			while (Date.now() < deadline && !options.signal?.aborted) {
-				await new Promise((resolveWait) => setTimeout(resolveWait, PROMPT_RECOVERY_PROBE_MS));
+				// The probe timer must not hold the event loop for up to 2s after abort.
+				await new Promise((resolveWait) => {
+					const timer = setTimeout(resolveWait, PROMPT_RECOVERY_PROBE_MS);
+					options.signal?.addEventListener("abort", () => clearTimeout(timer), { once: true });
+				});
 				try {
 					await connection.getState();
 					recovered = true;
@@ -1178,6 +1200,7 @@ export async function runAcpModeWithConnection(
 			promptTask: undefined,
 			resolvePromptTask: undefined,
 			unsubscribe: undefined,
+			muted: false,
 			producer,
 		};
 		// Subscribe for the session lifetime, not per prompt turn: prime-agent
@@ -1186,6 +1209,9 @@ export async function runAcpModeWithConnection(
 		// mapping state per session keeps streaming bash output correlated with
 		// the run that produced it.
 		const unsubscribe = connection.subscribe((event) => {
+			// A mirror rebind holds this slot while re-admitting the target: both
+			// subscriptions would publish the same events under one session id.
+			if (entry.muted) return;
 			if (
 				event.type === "session_replaced" ||
 				event.type === "session_resynced" ||
@@ -1301,6 +1327,10 @@ export async function runAcpModeWithConnection(
 		sessionNewInFlight = true;
 		try {
 			await connection.attachActiveSession(claim.target);
+			// The connection now delivers the target's events; the still-active
+			// draft subscription would republish them under the same session id.
+			// Mute it for the switch; the rollback path un-mutes it.
+			draft.muted = true;
 			let fresh: Awaited<ReturnType<typeof admitAcpSession>>;
 			try {
 				session = undefined;
@@ -1311,6 +1341,7 @@ export async function runAcpModeWithConnection(
 				// subscribed, keeps serving turns. The claim survives on purpose:
 				// a transient re-admission failure must not burn the nonce while
 				// its TTL holds; getMessages() > 0 blocks same-process replay.
+				draft.muted = false;
 				session = draft;
 				if (draftSessionId) {
 					try {

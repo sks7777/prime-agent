@@ -2,6 +2,7 @@ import { MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
 import type { DaemonErrorInfo, DaemonResponse } from "./daemon-protocol.js";
+import { DaemonSupervisorOwnershipLostError } from "./daemon-supervisor-ownership.js";
 
 /**
  * The supervisor is no longer serving commands (shutting down, or it lost its
@@ -80,6 +81,9 @@ export function serializeDaemonError(error: unknown): DaemonErrorInfo | undefine
 		return { code: "session_recovering", activeSessionId: error.activeSessionId };
 	}
 	if (error instanceof DaemonSupervisorStaleError) {
+		return { code: "supervisor_generation_stale" };
+	}
+	if (error instanceof DaemonSupervisorOwnershipLostError) {
 		return { code: "supervisor_generation_stale" };
 	}
 	if (error instanceof DaemonUpdateRestartingError) {

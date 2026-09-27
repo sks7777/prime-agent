@@ -419,4 +419,5 @@ export function resetApiProviders(): void {
 	}
 }
 
-registerBuiltInApiProviders();
+// Registration happens once, inside collectBuiltinApiIds() while BUILTIN_API_IDS
+// is computed at module load; a second call here would only rewrite identical entries.

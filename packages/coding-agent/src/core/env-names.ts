@@ -21,13 +21,19 @@ function getPackageJsonPath(): string {
 	}
 }
 
-const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as {
-	name?: string;
-	version?: string;
-	piConfig?: { name?: string; configDir?: string };
-};
+let piConfigName: string | undefined;
+try {
+	const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as {
+		name?: string;
+		version?: string;
+		piConfig?: { name?: string; configDir?: string };
+	};
+	piConfigName = pkg.piConfig?.name;
+} catch {
+	// Bundle layouts or unusual environments may defeat the walk-up; the default
+	// "pi" prefix keeps the names identical to a standard install.
+}
 
-const piConfigName: string | undefined = pkg.piConfig?.name;
 const envPrefix =
 	(piConfigName || "pi")
 		.toUpperCase()

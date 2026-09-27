@@ -11036,6 +11036,11 @@ export class AgentSession {
 				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
 				onUnavailableSkills: (errors) => this._onPythonSkillsUnavailable(errors),
 				onBackgroundWorkSettled: () => {
+					// The last completion notice just retired its settling entry:
+					// wake the strong-quiescence barrier even if the pump dispatch
+					// that delivered it already finished (narrow race, otherwise
+					// the barrier waits for an unrelated session event).
+					this._notifySessionInputCheckpointChange();
 					this._maybeResumeGoalContinuationAfterRlmWork();
 					this._maybeResumeAutonomousContinuationAfterRlmWork();
 				},

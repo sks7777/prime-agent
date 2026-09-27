@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type Component, isKeyRelease } from "@earendil-works/pi-tui";
+import { type Component, isKeyRelease, type OverlayOptions, type TUI } from "@earendil-works/pi-tui";
 import type {
 	ExtensionCommandContextActions,
 	ExtensionUIContext,
@@ -28,6 +28,20 @@ import {
  * widget display at that many lines, so components must window themselves
  * to the same budget or their lower rows render invisibly off the cap.
  */
+/**
+ * The render surface the daemon-mode custom() hands to an extension factory. It
+ * is not a full TUI instance: components receive a widget-sized viewport, a
+ * render coalescer, and no-op focus control. The public
+ * ExtensionUIContext.custom() contract types the parameter as TUI; interactive
+ * mode passes the real one, and daemon mode passes this structural subset.
+ */
+export interface DaemonCustomWidgetTui {
+	height: number;
+	terminal: { columns: number; rows: number };
+	requestRender(): void;
+	setFocus(focused: boolean): void;
+}
+
 const DEFAULT_CUSTOM_WIDGET_WIDTH = 120;
 const DEFAULT_CUSTOM_WIDGET_HEIGHT = 10;
 
@@ -256,8 +270,13 @@ function createExtensionUIContext(
 		setHeader: () => {},
 		setTitle: (title) => emitUiRequest("setTitle", { title }),
 		async custom<T>(
-			factory: (tui: any, theme: any, keybindings: any, done: (result: T) => void) => any,
-			options?: { overlay?: boolean; overlayOptions?: any },
+			factory: (
+				tui: TUI,
+				theme: Theme,
+				keybindings: KeybindingsManager,
+				done: (result: T) => void,
+			) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
+			options?: { overlay?: boolean; overlayOptions?: OverlayOptions | (() => OverlayOptions) },
 		): Promise<T> {
 			if (!hasExtensionUiClientForMethod(state, "custom")) {
 				return undefined as T;
@@ -303,7 +322,7 @@ function createExtensionUIContext(
 
 			// Proxy TUI: requestRender → re-render component → send via setWidget.
 			// The client reports its terminal width with every forwarded key event.
-			const proxyTui = {
+			const proxyTui: DaemonCustomWidgetTui = {
 				height: DEFAULT_CUSTOM_WIDGET_HEIGHT,
 				// Headless components (pi-tui Editor, extension widgets) read
 				// terminal.rows/columns off the TUI object; expose the widget-sized
@@ -366,8 +385,11 @@ function createExtensionUIContext(
 					},
 				});
 
-				// Create the component by calling the factory
-				Promise.resolve(factory(proxyTui, theme, keybindings, finish))
+				// Create the component by calling the factory. The public contract
+				// types tui as the concrete TUI class; daemon mode provides the
+				// structural DaemonCustomWidgetTui subset, cast at this one boundary.
+				const tui = proxyTui as unknown as TUI;
+				Promise.resolve(factory(tui, theme, keybindings, finish))
 					.then((c) => {
 						if (closed) return;
 						component = c;

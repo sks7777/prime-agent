@@ -935,6 +935,14 @@ export function stripTerminalSequences(str: string): string {
 			i += ansi.length;
 			continue;
 		}
+		if (str.charCodeAt(i) === 0x1b) {
+			// Malformed or truncated sequence: swallow the ESC (plus the byte it
+			// would have introduced, unless that byte is a line break), matching
+			// stripAnsi, so no stray ESC reaches downstream width calculations.
+			const next = str.charCodeAt(i + 1);
+			i += i + 1 < str.length && next !== 0x0a && next !== 0x0d && next !== 0x2028 && next !== 0x2029 ? 2 : 1;
+			continue;
+		}
 		result += str[i];
 		i++;
 	}

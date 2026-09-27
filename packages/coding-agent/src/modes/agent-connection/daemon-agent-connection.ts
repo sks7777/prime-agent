@@ -2155,10 +2155,12 @@ export class DaemonAgentConnection implements AgentConnection {
 	 * failed attempt re-arms for the next request.
 	 */
 	private recoverAfterDeadTransport(): Promise<void> {
-		this.terminalCloseEmitted = false;
-		this.updateReconnectFailed = false;
-		this.updateRestartPending = true;
 		if (!this.deadTransportRecoveryPromise) {
+			// Only the caller that starts a new recovery re-arms the flags; a
+			// joiner must not clear them for an in-flight recovery.
+			this.terminalCloseEmitted = false;
+			this.updateReconnectFailed = false;
+			this.updateRestartPending = true;
 			this.inDeadTransportRecovery = true;
 			const run = this.reconnectAfterUpdate()
 				.then(() => {

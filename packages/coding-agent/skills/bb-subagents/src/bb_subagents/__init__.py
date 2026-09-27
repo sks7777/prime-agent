@@ -100,8 +100,10 @@ class BbSpawnFailed(RuntimeError):
 
 
 async def _run_bb(args: list[str], stdin_text: str | None = None) -> dict[str, Any]:
+    # Match the TS mirror spawn: BB_CLI pins the official bb entrypoint on PATH.
+    bb_command = os.environ.get("BB_CLI", "").strip() or "bb"
     proc = await asyncio.create_subprocess_exec(
-        "bb",
+        bb_command,
         *args,
         stdin=asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
