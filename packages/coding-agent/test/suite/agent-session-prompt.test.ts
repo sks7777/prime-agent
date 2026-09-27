@@ -282,6 +282,38 @@ describe("AgentSession prompt characterization", () => {
 		expect(expandedPrompts[2]).toBe(`${wrapper}\nplain question`);
 	});
 
+	it("expands a prompt template submitted with bb tell attribution before it (PRIME-26)", async () => {
+		const template: PromptTemplate = {
+			name: "session-prune",
+			description: "Prune sessions",
+			content: "Prune sessions: $ARGUMENTS",
+			filePath: "/virtual/session-prune.md",
+			sourceInfo: createSyntheticSourceInfo("/virtual/session-prune.md", {
+				source: "local",
+				scope: "user",
+				origin: "top-level",
+			}),
+		};
+		const resourceLoader = {
+			...createTestResourceLoader(),
+			getPrompts: () => ({ prompts: [template], diagnostics: [] }),
+		};
+		const harness = await createHarness({ resourceLoader });
+		harnesses.push(harness);
+		const expandedPrompts: string[] = [];
+		const capture = (context: { messages: { role: string }[] }) => {
+			const user = context.messages.filter((message) => message.role === "user").at(-1);
+			expandedPrompts.push(user ? getMessageText(user) : "");
+			return fauxAssistantMessage("ok");
+		};
+		harness.setResponses([capture]);
+
+		const attribution = "[bb message from thread:thr_sender]";
+		await harness.session.prompt(`${attribution}\n\n/session-prune keep 2`);
+
+		expect(expandedPrompts[0]).toBe(`${attribution}\nPrune sessions: keep 2`);
+	});
+
 	it("rejects a typo'd prompt-template name after an instructions wrapper", async () => {
 		const template: PromptTemplate = {
 			name: "session-prune",

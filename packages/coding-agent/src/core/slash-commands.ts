@@ -268,26 +268,44 @@ export function parseSlashCommand(text: string): ParsedSlashCommand | undefined 
 
 const INSTRUCTIONS_WRAPPER_PREFIX_PATTERN = /^<system_instructions>[\s\S]*?<\/system_instructions>/;
 
+/** Cross-thread tell attribution ("[bb message from thread:X]") on its own line. */
+const TELL_ATTRIBUTION_LINE_PATTERN = /^\[bb message from thread:[^\]]*\][ \t]*$/u;
+
 export interface SlashSubmissionSplit {
-	/** Leading `<system_instructions>` wrapper, when one prefixes a slash command. */
-	wrapper: string | undefined;
-	/** Submission with the wrapper stripped; equals `text` when no wrapper precedes a command. */
+	/** Leading instructions wrapper or tell attribution, when one prefixes a slash command. */
+	prefix: string | undefined;
+	/** Submission with the prefix stripped; equals `text` when no prefix precedes a command. */
 	body: string;
 }
 
 /**
- * Split a leading `<system_instructions>` wrapper (ACP clients prepend it to a
- * spawned thread's first prompt) from a following slash command. The wrapper
- * would otherwise block every slash-command parser, which requires the text to
- * start with "/". Only a wrapper directly followed by a command splits; other
- * submissions pass through untouched.
+ * Split a leading ACP instructions wrapper (clients prepend it to a spawned
+ * thread's first prompt) or bb tell attribution line (steered cross-thread
+ * messages) from a following slash command. The prefix would otherwise block
+ * every slash-command parser, which requires the text to start with "/". Only
+ * a prefix directly followed by a command splits; other submissions pass
+ * through untouched.
  */
-export function splitInstructionsWrapperPrefix(text: string): SlashSubmissionSplit {
-	const match = INSTRUCTIONS_WRAPPER_PREFIX_PATTERN.exec(text);
-	if (!match) return { wrapper: undefined, body: text };
-	const body = text.slice(match[0].length).trimStart();
-	if (!body.startsWith("/")) return { wrapper: undefined, body: text };
-	return { wrapper: match[0], body };
+export function splitSlashSubmissionPrefix(text: string): SlashSubmissionSplit {
+	let prefix = "";
+	let rest = text;
+	for (;;) {
+		const wrapper = INSTRUCTIONS_WRAPPER_PREFIX_PATTERN.exec(rest);
+		if (wrapper) {
+			prefix = prefix ? `${prefix}\n${wrapper[0]}` : wrapper[0];
+			rest = rest.slice(wrapper[0].length).trimStart();
+			continue;
+		}
+		const attribution = TELL_ATTRIBUTION_LINE_PATTERN.exec(rest.split("\n", 1)[0] ?? "");
+		if (attribution && rest.includes("\n")) {
+			prefix = prefix ? `${prefix}\n${attribution[0]}` : attribution[0];
+			rest = rest.slice(rest.indexOf("\n") + 1).trimStart();
+			continue;
+		}
+		break;
+	}
+	if (!prefix || !rest.startsWith("/")) return { prefix: undefined, body: text };
+	return { prefix, body: rest };
 }
 
 export function resolveBuiltinSlashCommandName(name: string): string {

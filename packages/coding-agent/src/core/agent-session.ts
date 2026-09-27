@@ -363,7 +363,7 @@ import {
 	SESSION_SLASH_COMMAND_NAMES,
 	type SessionSlashCommand,
 	type SlashCommandInfo,
-	splitInstructionsWrapperPrefix,
+	splitSlashSubmissionPrefix,
 } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
@@ -5575,17 +5575,18 @@ export class AgentSession {
 		images: ImageContent[] | undefined,
 		policy: SubmissionNormalizationPolicy,
 	): NormalizedSubmission {
-		// The ACP instructions wrapper (split in _normalizeSubmission) must not
-		// block slash-command parsing; normalize the command body and re-attach
-		// the wrapper so the persisted user message keeps the original context.
-		const { wrapper, body } = splitInstructionsWrapperPrefix(text);
+		// The ACP instructions wrapper or bb tell attribution (split in
+		// _normalizeSubmission) must not block slash-command parsing; normalize
+		// the command body and re-attach the prefix so the persisted user
+		// message keeps the original context.
+		const { prefix, body } = splitSlashSubmissionPrefix(text);
 		if (policy.expandPromptTemplates) this._throwIfUnknownSlashCommand(body);
 		let expandedText = body;
 		if (policy.expandSkills) expandedText = this._expandSkillCommand(expandedText);
 		if (policy.expandPromptTemplates) {
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
-		if (wrapper) expandedText = `${wrapper}\n${expandedText}`;
+		if (prefix) expandedText = `${prefix}\n${expandedText}`;
 		return { kind: "prompt", text: expandedText, images };
 	}
 
@@ -5633,10 +5634,11 @@ export class AgentSession {
 		policy: SubmissionNormalizationPolicy,
 	): NormalizedSubmission | Promise<NormalizedSubmission> {
 		// ACP clients prepend a `<system_instructions>` wrapper to a spawned
-		// thread's first prompt; split it so slash commands still parse. The
-		// wrapper is re-attached to the final prompt text (see
+		// thread's first prompt, and bb tell attribution prefixes steered
+		// cross-thread commands; split them so slash commands still parse. The
+		// prefix is re-attached to the final prompt text (see
 		// _finishSubmissionNormalization), so the persisted user message keeps it.
-		const { body } = splitInstructionsWrapperPrefix(text);
+		const { body } = splitSlashSubmissionPrefix(text);
 		if (policy.parseSessionCommands) {
 			const command = parseSessionSlashCommand(body);
 			if (command) return { kind: "sessionCommand", text, images, command };
