@@ -203,6 +203,9 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 			reason,
 			targetSessionFile,
 		});
+		// Bare dispose() emits session_shutdown("dispose") only for teardown paths
+		// that bypass this runtime teardown.
+		this.session.markSessionShutdownEmitted?.();
 		this.beforeSessionInvalidate?.();
 		// Await the kernel's final snapshot flush before invalidating the session.
 		await this.session.disposeAsync();
@@ -697,6 +700,9 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		} catch (error) {
 			disposeError ??= error;
 		}
+		// Bare dispose() emits session_shutdown("dispose") only for teardown paths
+		// that bypass this runtime teardown.
+		this.session.markSessionShutdownEmitted?.();
 		try {
 			this.beforeSessionInvalidate?.();
 		} catch (error) {

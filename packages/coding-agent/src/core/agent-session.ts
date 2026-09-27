@@ -1761,6 +1761,9 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _disposed = false;
+	// Set when a session_shutdown event has been emitted for this session (runtime
+	// teardown emits it with a specific reason; bare dispose() emits "dispose").
+	private _sessionShutdownEmitted = false;
 	private readonly _disposeCallbacks = new Set<() => void | Promise<void>>();
 	private _disposeCallbacksPromise?: Promise<void>;
 	// Set at the start of async teardown so a child finishing mid-disposeAsync doesn't
@@ -5218,11 +5221,31 @@ export class AgentSession {
 		return this._disposeCallbacksPromise;
 	}
 
+	/** Runtime teardown calls this after emitting session_shutdown with a specific reason. */
+	markSessionShutdownEmitted(): void {
+		this._sessionShutdownEmitted = true;
+	}
+
 	dispose(): void {
 		if (this._disposed) {
 			return;
 		}
 		this._disposed = true;
+		// Fire-and-forget: dispose() is synchronous, but extensions must still get a
+		// chance to release resources they hold outside the host timer registry
+		// (e.g. their own intervals). Runtime teardown paths emit this event with a
+		// specific reason first and mark it via markSessionShutdownEmitted(); the
+		// emit here only covers dispose paths that bypass that teardown. The ctx
+		// passed to late-running handlers is guarded, so a handler touching it
+		// after retirement lands in the extension error boundary instead of
+		// crashing the worker.
+		if (!this._sessionShutdownEmitted) {
+			this._sessionShutdownEmitted = true;
+			void emitSessionShutdownEvent(this._extensionRunner, {
+				type: "session_shutdown",
+				reason: "dispose",
+			}).catch(() => undefined);
+		}
 		for (const run of this._unsettledRlmChildRuns) run.suppressTerminalNotice = true;
 		for (const controller of this._rlmQuiescenceWaitAborts) controller.abort();
 		this._sessionActionCommitDisposeAbortController.abort();

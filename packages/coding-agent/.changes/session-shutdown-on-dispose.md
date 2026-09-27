@@ -1,0 +1,1 @@
+- Fixed extension timer leaks crashing the whole session worker: `session_shutdown` now fires on `dispose()` (new `dispose` reason), so extensions can release their own timers when a session is torn down.
