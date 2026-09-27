@@ -264,6 +264,21 @@ import {
 import { resolveConfigValue } from "./resolve-config-value.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import {
+	BbSpawnFailed,
+	bbMirrorEnvFromProcess,
+	buildRlmMirrorPrompt,
+	isInsideBbThreadSession,
+	mirrorThreadTitle,
+	newMirrorClaimNonce,
+	RLM_MIRROR_ROSTER_TIMEOUT_MS,
+	RLM_MIRROR_TASK_FRAME,
+	removeRlmMirrorClaimFile,
+	resolveChildActiveSessionId,
+	shouldAutoMirrorRlmChild,
+	spawnBbMirrorThread,
+	writeRlmMirrorClaimFile,
+} from "./rlm-bb-mirror.js";
+import {
 	type CreateRlmSubagentRuntimeOptions,
 	createAsyncBashCompletionHostHandler,
 	createAsyncBashConsumedHostHandler,
@@ -1091,6 +1106,10 @@ interface RlmChildRun {
 	resolveWaitingMirrorRun?: (reason: string) => void;
 	/** True while a bb-mirror run is parked waiting for its mirror thread's admission turn. */
 	waitingMirrorAdmission?: boolean;
+	/** Runtime-owned mirror thread (PRIME-24): a plain spawn auto-mirrored inside bb. */
+	autoMirrorThread?: boolean;
+	/** Nonce of the runtime-written mirror claim, removed when the mirror wait settles. */
+	mirrorClaimNonce?: string;
 	publication: AgentMessageDeferred;
 	/** Resolves after terminal result publication and detached-run cleanup finish. */
 	settlement: AgentMessageDeferred;
@@ -5532,6 +5551,7 @@ export class AgentSession {
 			allowRecursion: this._rlmDepth < this._rlmMaxDepth,
 			rlmDepth: this._rlmDepth,
 			rlmParentAgent: this._rlmParentAgent,
+			insideBb: this._rlmDepth === 0 && isInsideBbThreadSession(),
 			genericMcpServers: this._mcpManager?.getEnabledPersistentGenericServers(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
@@ -12824,7 +12844,13 @@ export class AgentSession {
 		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel);
 		const requestedThinkingLevel = normalizeRequestedRlmSubagentThinkingLevel(rawThinking);
 		const requestedTemperature = normalizeRequestedRlmSubagentTemperature(rawTemperature);
-		const bbMirror = rawBbMirror === true;
+		// PRIME-24 auto-mirror: a plain spawn (no bb_mirror kwarg) in a depth-0 bb
+		// session is mirrored into the thread list by the runtime itself. An
+		// explicit `bb_mirror=true` keeps the PRIME-11 defer-only semantics (the
+		// caller brings its own mirror thread); `bb_mirror=false` forces plain.
+		const requestedBbMirror = rawBbMirror === true ? true : rawBbMirror === false ? false : undefined;
+		const autoMirrorRequested = requestedBbMirror === undefined && shouldAutoMirrorRlmChild(this._rlmDepth);
+		const bbMirror = requestedBbMirror === true || autoMirrorRequested;
 		if (requestedSessionName) assertDirectAgentMessageTarget(requestedSessionName);
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
@@ -12966,6 +12992,7 @@ export class AgentSession {
 			deletionReservation: createAgentMessageDeferred(),
 		};
 		if (bbMirror) run.waitingMirrorAdmission = true;
+		if (autoMirrorRequested) run.autoMirrorThread = true;
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
 		};
@@ -13098,6 +13125,10 @@ export class AgentSession {
 					if (mirrorWaitSettled) return;
 					mirrorWaitSettled = true;
 					run.waitingMirrorAdmission = false;
+					// The mirror thread can no longer drive this child: drop the claim
+					// so a late-booting thread degrades to a standalone run instead of
+					// rebinding onto a parked/-cancelled child.
+					if (run.mirrorClaimNonce) removeRlmMirrorClaimFile(run.mirrorClaimNonce);
 					rejectFirstTurnStarted?.(new Error(reason));
 				};
 				if (firstTurnStarted) {
@@ -13203,15 +13234,34 @@ export class AgentSession {
 					}
 				});
 				run.unsubscribe = unsubscribeChildEvents;
+				// PRIME-24 auto-mirror: spawn the mirror thread right after admission.
+				// A definitive bb failure (proven no thread exists) degrades to a plain
+				// headless child instead of failing the parent's spawn call. An
+				// ambiguous failure (timeout/late nonzero exit: thread existence
+				// unknown) keeps the claim and parks on the deadline, because a local
+				// fallback would double-run the task when the late thread rebinds.
+				let runtimeMirrorFailed: string | undefined;
+				if (run.autoMirrorThread) {
+					try {
+						await this._spawnChildMirrorThread(run, prompt);
+					} catch (error) {
+						const ambiguous = error instanceof BbSpawnFailed && !error.definitive;
+						if (!ambiguous) {
+							runtimeMirrorFailed = error instanceof Error ? error.message : "bb mirror spawn failed";
+							run.progressNotes.push(`auto-mirror degraded to plain child: ${runtimeMirrorFailed}`);
+							emitChildUpdate();
+						}
+					}
+				}
 				const parentReplyCountBeforeRun = child._parentReplyCount;
-				if (firstTurnStarted) {
+				if (firstTurnStarted && runtimeMirrorFailed === undefined) {
 					// bb mirror: the task turn arrives from the mirror thread's ACP
 					// frontend; wait for it, then settle as usual.
 					throwIfCancelled();
 					await firstTurnStarted;
 					throwIfCancelled();
 				} else {
-					const content = `[task from parent]\n\n${prompt}`;
+					const content = `${RLM_MIRROR_TASK_FRAME}\n\n${prompt}`;
 					const spawnMessage: AgentSessionMessage = {
 						role: "custom",
 						customType: AGENT_MESSAGE_CUSTOM_TYPE,
@@ -13394,6 +13444,42 @@ export class AgentSession {
 			session_dir: childSessionDir,
 			model: `${modelSelection.model.provider}/${modelSelection.model.id}`,
 		};
+	}
+
+	/**
+	 * Spawn the mirror bb thread for a runtime-mirrored child (PRIME-24). The
+	 * run carries the claim nonce so a settled mirror wait (timeout, cancel,
+	 * delete) drops the claim. Throws when the spawn failed; the run body falls
+	 * back to a plain headless admission turn only for definitive failures
+	 * (proven no thread exists) and parks for ambiguous ones.
+	 */
+	private async _spawnChildMirrorThread(run: RlmChildRun, prompt: string): Promise<void> {
+		const bbEnv = bbMirrorEnvFromProcess();
+		if (!bbEnv) throw new Error("bb mirror spawn requires BB_THREAD_ID/BB_PROJECT_ID");
+		const activeSessionId = await resolveChildActiveSessionId(
+			() => this.listRlmSubagents(),
+			run.id,
+			run.sessionName,
+			RLM_MIRROR_ROSTER_TIMEOUT_MS,
+		);
+		if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
+		const nonce = newMirrorClaimNonce();
+		run.mirrorClaimNonce = nonce;
+		writeRlmMirrorClaimFile(nonce, activeSessionId);
+		try {
+			await spawnBbMirrorThread({
+				projectId: bbEnv.projectId,
+				environmentId: bbEnv.environmentId,
+				title: mirrorThreadTitle(run.sessionName, prompt),
+				prompt: buildRlmMirrorPrompt(nonce, prompt),
+				bbCommand: bbEnv.bbCli,
+			});
+		} catch (error) {
+			// Drop the claim only when bb proved no thread exists; an ambiguous
+			// failure keeps it so a late-created thread can still rebind.
+			if (error instanceof BbSpawnFailed && error.definitive) removeRlmMirrorClaimFile(nonce);
+			throw error;
+		}
 	}
 
 	async createRlmSession(prompt: string, kwargs: Record<string, unknown> = {}): Promise<RlmCreateSessionResult> {

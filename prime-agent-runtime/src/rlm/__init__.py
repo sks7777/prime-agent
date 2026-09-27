@@ -164,7 +164,7 @@ async def spawn(
     name: str,
     model: str | None = None,
     thinking: str | None = None,
-    bb_mirror: bool = False,
+    bb_mirror: bool | None = None,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -172,9 +172,13 @@ async def spawn(
     ``model`` selects a child with an exact ``provider/model`` selector.
     ``thinking`` sets the child reasoning level (e.g. 'off', 'low', 'medium', 'high');
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
-    ``bb_mirror`` defers the admission prompt: the child waits for its task from a
-    bb mirror thread (the orchestrator spawns that thread with the task as its
-    prompt and a leading ``[rlm-mirror:<claim-nonce>]`` marker line).
+    ``bb_mirror`` controls bb mirror threads (PRIME-11/PRIME-24). ``None`` (the
+    default) lets the host decide: inside a bb depth-0 session the runtime
+    mirrors the child into the bb thread list automatically and degrades to a
+    plain child when bb is unavailable. ``False`` forces a plain, invisible
+    child. ``True`` defers the admission prompt: the child waits for its task
+    from a bb mirror thread the caller brings itself (the thread's prompt is the
+    task with a leading ``[rlm-mirror:<claim-nonce>]`` marker line).
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -183,8 +187,8 @@ async def spawn(
         kwargs["model"] = model
     if thinking is not None:
         kwargs["thinking"] = thinking
-    if bb_mirror:
-        kwargs["bb_mirror"] = True
+    if bb_mirror is not None:
+        kwargs["bb_mirror"] = bool(bb_mirror)
     # Wire type stays "rlm.run" so kernels and hosts of different versions stay compatible.
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
@@ -544,7 +548,7 @@ class _RLMNamespace:
         name: str,
         model: str | None = None,
         thinking: str | None = None,
-        bb_mirror: bool = False,
+        bb_mirror: bool | None = None,
     ) -> RLMSpawnHandle:
         return await spawn(prompt, name=name, model=model, thinking=thinking, bb_mirror=bb_mirror)
 

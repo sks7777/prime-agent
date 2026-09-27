@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -208,6 +208,7 @@ describe("AgentSession rlm recursion", () => {
 		else process.env.RLM_DEPTH = originalRlmDepth;
 		if (originalRlmMaxDepth === undefined) delete process.env.RLM_MAX_DEPTH;
 		else process.env.RLM_MAX_DEPTH = originalRlmMaxDepth;
+		vi.unstubAllEnvs();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -750,6 +751,145 @@ describe("AgentSession rlm recursion", () => {
 		await root.waitForRlmQuiescence();
 		const cancelled = childUpdates.reverse().find((update) => update.id === result.rlm_child_id);
 		expect(cancelled?.status).toBe("cancelled");
+	});
+
+	function stubBbMirrorEnv(
+		output: string,
+		exit = 0,
+	): { argsPath: string; stdinPath: string; agentDir: string; claimsDir: string } {
+		const binDir = join(tempDir, "bb-bin");
+		const recordDir = join(tempDir, "bb-record");
+		const agentDir = join(tempDir, "agent");
+		const claimsDir = join(agentDir, "acp-mirror-claims");
+		mkdirSync(binDir, { recursive: true });
+		mkdirSync(recordDir, { recursive: true });
+		mkdirSync(claimsDir, { recursive: true });
+		const script = join(binDir, "bb");
+		writeFileSync(
+			script,
+			`#!/bin/sh\nprintf '%s\\n' "$@" > "${recordDir}/args"\ncat > "${recordDir}/stdin"\nprintf '%s' "${output}"\nexit ${exit}\n`,
+		);
+		chmodSync(script, 0o755);
+		vi.stubEnv("BB_THREAD_ID", "thr_parent");
+		vi.stubEnv("BB_PROJECT_ID", "proj_test");
+		vi.stubEnv("BB_CLI", script);
+		vi.stubEnv("PRIME_AGENT_CODING_AGENT_DIR", agentDir);
+		vi.stubEnv("PRIME_AGENT_AUTO_MIRROR", "");
+		return { argsPath: join(recordDir, "args"), stdinPath: join(recordDir, "stdin"), agentDir, claimsDir };
+	}
+
+	function bbCalled(argsPath: string): boolean {
+		return existsSync(argsPath);
+	}
+
+	it("auto-mirrors a plain rlm.spawn inside a depth-0 bb session", async () => {
+		const env = stubBbMirrorEnv('{"id":"thr_mirror123"}');
+		const rosterChildId: { value?: string } = {};
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({
+					current: { activeSessionId: "root-active", sessionId: "root-session" },
+					agents: rosterChildId.value
+						? [
+								{
+									activeSessionId: "child-active",
+									sessionId: "child-session",
+									cwd: tempDir,
+									isStreaming: false,
+									unfinishedActionCount: 0,
+									runtimeKind: "subagent" as const,
+									parentActiveSessionId: "root-active",
+									rlmChildId: rosterChildId.value,
+								},
+							]
+						: [],
+				}),
+				sendAgentMessage: vi.fn(),
+			},
+		});
+		const childUpdates: Array<{ id: string; status: string; answerPreview?: string }> = [];
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") {
+				rosterChildId.value ??= event.child.id;
+				childUpdates.push({
+					id: event.child.id,
+					status: event.child.status,
+					answerPreview: event.child.answerPreview,
+				});
+			}
+		});
+
+		const result = await root.runRlmChild("mirror task");
+		await waitFor(() => bbCalled(env.argsPath));
+		// The child is parked on the deferred mirror admission.
+		// The fake bb writes stdin last; wait for the full handoff before asserting.
+		await waitFor(() => existsSync(env.stdinPath) && readFileSync(env.stdinPath, "utf8").length > 0);
+		expect(root.getRlmChildSession(result.rlm_child_id)?.messages.length).toBe(0);
+		// The runtime wrote a claim naming the child's daemon session.
+		const claims = readdirSync(env.claimsDir).filter((name) => name.endsWith(".json"));
+		expect(claims).toHaveLength(1);
+		const claim = JSON.parse(readFileSync(join(env.claimsDir, claims[0]!), "utf8")) as { target: string };
+		expect(claim.target).toBe("child-active");
+		// The mirror prompt carries the marker and the task.
+		const stdin = readFileSync(env.stdinPath, "utf8");
+		expect(stdin).toMatch(/^\[rlm-mirror:[a-f0-9]{32}\]\n\[task from parent\]\n\nmirror task$/u);
+
+		// The mirror thread's ACP frontend prompts the child (simulated here).
+		const child = root.getRlmChildSession(result.rlm_child_id);
+		await child!.promptAndWait("[task from parent]\n\nmirror task");
+		await waitFor(() => childUpdates.some((update) => update.id === result.rlm_child_id && update.status === "done"));
+		expect(child?.getLastAssistantText()).toBe("child answer: mirror task");
+	});
+
+	it("degrades to a plain headless child when the bb binary is missing", async () => {
+		const env = stubBbMirrorEnv('{"id":"thr_mirror123"}');
+		// A missing binary is a definitive spawn failure (no thread exists).
+		vi.stubEnv("BB_CLI", join(tempDir, "bb-bin", "missing-bb"));
+		const rosterChildId: { value?: string } = {};
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({
+					current: { activeSessionId: "root-active", sessionId: "root-session" },
+					agents: rosterChildId.value
+						? [
+								{
+									activeSessionId: "child-active",
+									sessionId: "child-session",
+									cwd: tempDir,
+									isStreaming: false,
+									unfinishedActionCount: 0,
+									runtimeKind: "subagent" as const,
+									parentActiveSessionId: "root-active",
+									rlmChildId: rosterChildId.value,
+								},
+							]
+						: [],
+				}),
+				sendAgentMessage: vi.fn(),
+			},
+		});
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") rosterChildId.value ??= event.child.id;
+		});
+
+		const result = await root.runRlmChild("mirror task");
+		// The failed mirror falls back to a local admission turn; the task still runs.
+		const child = root.getRlmChildSession(result.rlm_child_id);
+		await waitFor(() => child?.getLastAssistantText() !== undefined);
+		expect(child?.getLastAssistantText()).toBe("child answer: mirror task");
+		// No thread was created, so no claim survives.
+		expect(readdirSync(env.claimsDir).filter((name) => name.endsWith(".json"))).toHaveLength(0);
+	});
+
+	it("keeps bb_mirror=false children invisible even inside bb", async () => {
+		const env = stubBbMirrorEnv('{"id":"thr_mirror123"}');
+		const root = createSession({});
+
+		const result = await root.runRlmChild("plain task", { bb_mirror: false });
+		const child = root.getRlmChildSession(result.rlm_child_id);
+		await waitFor(() => child?.getLastAssistantText() !== undefined);
+		expect(child?.getLastAssistantText()).toBe("child answer: plain task");
+		expect(bbCalled(env.argsPath)).toBe(false);
 	});
 
 	it("wakes the agent with a follow-up when a detached bash handle completes", async () => {

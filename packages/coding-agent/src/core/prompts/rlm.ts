@@ -9,6 +9,8 @@ export interface RlmPromptOptions {
 	depth?: number;
 	parentAgent?: string;
 	activeTools?: string[];
+	/** True inside a bb thread (BB_THREAD_ID set): plain spawns auto-mirror (PRIME-24). */
+	insideBb?: boolean;
 }
 
 const LONG_RUNNING_WORK_PROMPT = [
@@ -186,6 +188,11 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		parts.push(
 			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed.",
 		);
+		if (options.insideBb && depth === 0) {
+			parts.push(
+				"Inside bb, spawned children appear automatically as mirror child threads in the bb thread list; pass `bb_mirror=False` to `rlm.spawn` to keep a child invisible.",
+			);
+		}
 	}
 
 	if (hasIpython) {

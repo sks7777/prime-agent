@@ -1,0 +1,1 @@
+- Added automatic bb mirror threads for plain `rlm.spawn` subagents inside bb (PRIME-24): depth-0 bb sessions now surface every spawned child as a visible child thread; `bb_mirror=False` keeps a child invisible, and a failed mirror spawn degrades to a plain headless child.

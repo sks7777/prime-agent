@@ -39,6 +39,13 @@ for (const key of [
 	"RLM_SESSION_DIR",
 	"RLM_HARNESS_STATE_DIR",
 	"RLM_GLOBAL_HARNESS_STATE_DIR",
+	// bb thread context (PRIME-24 auto-mirror): inherited bb ids would make every
+	// depth-0 child spawn mirror itself into the developer's real thread list.
+	"BB_THREAD_ID",
+	"BB_PROJECT_ID",
+	"BB_ENVIRONMENT_ID",
+	"BB_CLI",
+	"PRIME_AGENT_AUTO_MIRROR",
 ] as const) {
 	delete process.env[key];
 }

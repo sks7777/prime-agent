@@ -133,6 +133,10 @@ async def spawn_mirror(
 ) -> dict[str, Any]:
     """Spawn an RLM subagent and a visible bb mirror thread that drives it.
 
+    On PRIME-24+ hosts a plain `rlm.spawn` inside bb already mirrors the child
+    automatically, so this call is only needed for a custom thread title or
+    against a pre-PRIME-24 host.
+
     The child is admitted with its admission prompt deferred (`rlm.spawn`
     `bb_mirror=True`); the mirror thread's first prompt — the task, prefixed
     with an `[rlm-mirror:<nonce>]` marker resolving a single-use claim file —

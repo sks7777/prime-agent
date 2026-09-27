@@ -1,9 +1,13 @@
 ---
 name: bb-subagents
-description: Spawn RLM subagents that surface as real bb child threads ("mirror threads") in the general thread list. Use from a daemon-backed orchestrator session inside bb when subagents should be visible, openable, and steerable in bb. Outside bb use plain rlm.spawn.
+description: Explicit control (custom title / pre-PRIME-24 hosts) for RLM subagents surfaced as real bb child threads ("mirror threads"). Since PRIME-24 plain rlm.spawn inside bb mirrors automatically; use this skill for a custom thread title or against a pre-PRIME-24 host.
 ---
 
 # BB Subagents (mirror threads)
+
+Since PRIME-24 a plain `await rlm.spawn(task, name=...)` inside a bb thread mirrors the child
+into the thread list automatically (invisible with `bb_mirror=False`), so this skill is only
+needed for a custom thread title or against a pre-PRIME-24 host.
 
 `spawn_mirror(task, name)` spawns an RLM subagent **and** a real bb child thread in one call.
 The subagent keeps the full RLM runtime (kernel, `agent_message`, `rlm.collect`, family

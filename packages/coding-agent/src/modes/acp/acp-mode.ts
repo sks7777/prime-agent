@@ -1,23 +1,15 @@
 import { randomUUID } from "node:crypto";
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { getAgentDir, VERSION } from "../../config.js";
+import { VERSION } from "../../config.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
+import { consumeRlmMirrorClaim, RLM_MIRROR_MARKER_PATTERN, readRlmMirrorClaim } from "../../core/rlm-bb-mirror.js";
 import { SessionManager } from "../../core/session-manager.js";
 import { parseSlashCommand } from "../../core/slash-commands.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
@@ -604,10 +596,7 @@ export function headWithoutTellAttribution(head: string): string {
 	return lines.join("\n").trim();
 }
 
-const RLM_ATTACH_MARKER_PATTERN = /^\[rlm-mirror:([a-f0-9]{32})\][ \t]*$/u;
-const RLM_MIRROR_CLAIMS_DIR = "acp-mirror-claims";
-/** A stale claim must not rebind; the parent re-spawns instead. */
-const RLM_MIRROR_CLAIM_TTL_MS = 10 * 60_000;
+const RLM_ATTACH_MARKER_PATTERN = RLM_MIRROR_MARKER_PATTERN;
 
 export interface RlmAttachMarker {
 	claimNonce: string;
@@ -638,40 +627,6 @@ function stripRlmMirrorMarkerLine(text: string, claimNonce: string): string {
 	if (index === -1) return text.trim();
 	lines.splice(index, 1);
 	return lines.join("\n").trim();
-}
-
-interface RlmMirrorClaim {
-	target: string;
-	createdAtMs: number;
-}
-
-/**
- * Resolve the claim a mirror marker points at, then consume it (single use).
- * Claims live in the agent dir: only a claim written by the spawning parent on
- * this machine can name a rebind target, so a leaked marker cannot rebind onto
- * an arbitrary session by name.
- */
-function readRlmMirrorClaim(nonce: string): RlmMirrorClaim | undefined {
-	try {
-		const parsed = JSON.parse(
-			readFileSync(join(getAgentDir(), RLM_MIRROR_CLAIMS_DIR, `${nonce}.json`), "utf8"),
-		) as Partial<RlmMirrorClaim>;
-		if (typeof parsed.target !== "string" || parsed.target.length === 0) return undefined;
-		const createdAtMs = typeof parsed.createdAtMs === "number" ? parsed.createdAtMs : 0;
-		if (Date.now() - createdAtMs > RLM_MIRROR_CLAIM_TTL_MS) return undefined;
-		return { target: parsed.target, createdAtMs: createdAtMs };
-	} catch {
-		return undefined;
-	}
-}
-
-/** Consume a claim after a successful rebind so its nonce cannot be replayed. */
-function consumeRlmMirrorClaim(nonce: string): void {
-	try {
-		rmSync(join(getAgentDir(), RLM_MIRROR_CLAIMS_DIR, `${nonce}.json`));
-	} catch {
-		// A leftover claim only stays valid until its TTL expires.
-	}
 }
 
 /**
