@@ -12,6 +12,7 @@ import {
 	resolveBuiltinSlashCommandName,
 	resolveSlashCommand,
 	SESSION_SLASH_COMMAND_NAMES,
+	splitInstructionsWrapperPrefix,
 } from "../src/core/slash-commands.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 
@@ -171,5 +172,47 @@ describe("ENG-6014 literal prompt arguments", () => {
 		{ input: "ordinary text", expected: "Explain: ordinary text" },
 	])("preserves $input through an expanded prompt template", ({ input, expected }) => {
 		expect(expandPromptTemplate(`/explain ${input}`, [explainTemplate])).toBe(expected);
+	});
+});
+
+describe("splitInstructionsWrapperPrefix", () => {
+	const WRAPPER = "<system_instructions>\nContext from the client.\n</system_instructions>";
+
+	test("splits a merged wrapper and slash command", () => {
+		const split = splitInstructionsWrapperPrefix(`${WRAPPER}\n/session-prune`);
+		expect(split.wrapper).toBe(WRAPPER);
+		expect(split.body).toBe("/session-prune");
+	});
+
+	test("splits a wrapper followed by a command with arguments", () => {
+		const split = splitInstructionsWrapperPrefix(`${WRAPPER}\n/review src/index.ts`);
+		expect(split.wrapper).toBe(WRAPPER);
+		expect(split.body).toBe("/review src/index.ts");
+	});
+
+	test("keeps a wrapper without a following command intact", () => {
+		const text = `${WRAPPER}\nplain question about the code`;
+		const split = splitInstructionsWrapperPrefix(text);
+		expect(split.wrapper).toBeUndefined();
+		expect(split.body).toBe(text);
+	});
+
+	test("keeps a wrapper-only submission intact", () => {
+		const split = splitInstructionsWrapperPrefix(WRAPPER);
+		expect(split.wrapper).toBeUndefined();
+		expect(split.body).toBe(WRAPPER);
+	});
+
+	test("keeps plain text intact", () => {
+		const split = splitInstructionsWrapperPrefix("/session-prune");
+		expect(split.wrapper).toBeUndefined();
+		expect(split.body).toBe("/session-prune");
+	});
+
+	test("does not treat a non-leading wrapper as instructions", () => {
+		const text = `first block\n${WRAPPER}\n/session-prune`;
+		const split = splitInstructionsWrapperPrefix(text);
+		expect(split.wrapper).toBeUndefined();
+		expect(split.body).toBe(text);
 	});
 });

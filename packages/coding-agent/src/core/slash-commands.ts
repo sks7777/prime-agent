@@ -266,6 +266,30 @@ export function parseSlashCommand(text: string): ParsedSlashCommand | undefined 
 	return { name: match[1], args: (match[2] ?? "").trim() };
 }
 
+const INSTRUCTIONS_WRAPPER_PREFIX_PATTERN = /^<system_instructions>[\s\S]*?<\/system_instructions>/;
+
+export interface SlashSubmissionSplit {
+	/** Leading `<system_instructions>` wrapper, when one prefixes a slash command. */
+	wrapper: string | undefined;
+	/** Submission with the wrapper stripped; equals `text` when no wrapper precedes a command. */
+	body: string;
+}
+
+/**
+ * Split a leading `<system_instructions>` wrapper (ACP clients prepend it to a
+ * spawned thread's first prompt) from a following slash command. The wrapper
+ * would otherwise block every slash-command parser, which requires the text to
+ * start with "/". Only a wrapper directly followed by a command splits; other
+ * submissions pass through untouched.
+ */
+export function splitInstructionsWrapperPrefix(text: string): SlashSubmissionSplit {
+	const match = INSTRUCTIONS_WRAPPER_PREFIX_PATTERN.exec(text);
+	if (!match) return { wrapper: undefined, body: text };
+	const body = text.slice(match[0].length).trimStart();
+	if (!body.startsWith("/")) return { wrapper: undefined, body: text };
+	return { wrapper: match[0], body };
+}
+
 export function resolveBuiltinSlashCommandName(name: string): string {
 	return BUILTIN_SLASH_COMMAND_ALIAS_TO_NAME.get(name) ?? name;
 }

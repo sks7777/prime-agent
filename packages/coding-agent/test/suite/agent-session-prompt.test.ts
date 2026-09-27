@@ -244,6 +244,69 @@ describe("AgentSession prompt characterization", () => {
 		expect(expandedPrompts[1]).toBe("Review this code: src/index.ts");
 	});
 
+	it("expands a prompt template submitted after an ACP instructions wrapper (PRIME-26)", async () => {
+		const template: PromptTemplate = {
+			name: "session-prune",
+			description: "Prune sessions",
+			content: "Prune sessions: $ARGUMENTS",
+			filePath: "/virtual/session-prune.md",
+			sourceInfo: createSyntheticSourceInfo("/virtual/session-prune.md", {
+				source: "local",
+				scope: "user",
+				origin: "top-level",
+			}),
+		};
+		const resourceLoader = {
+			...createTestResourceLoader(),
+			getPrompts: () => ({ prompts: [template], diagnostics: [] }),
+		};
+		const harness = await createHarness({ resourceLoader });
+		harnesses.push(harness);
+		const expandedPrompts: string[] = [];
+		const capture = (context: { messages: { role: string }[] }) => {
+			const user = context.messages.filter((message) => message.role === "user").at(-1);
+			expandedPrompts.push(user ? getMessageText(user) : "");
+			return fauxAssistantMessage("ok");
+		};
+		harness.setResponses([capture, capture, capture]);
+
+		const wrapper = "<system_instructions>\nClient context.\n</system_instructions>";
+		await harness.session.prompt(`${wrapper}\n/session-prune keep 3`);
+		// No wrapper: unchanged behavior.
+		await harness.session.prompt("/session-prune keep 5");
+		// Wrapper without a slash command must pass through untouched.
+		await harness.session.prompt(`${wrapper}\nplain question`);
+
+		expect(expandedPrompts[0]).toBe(`${wrapper}\nPrune sessions: keep 3`);
+		expect(expandedPrompts[1]).toBe("Prune sessions: keep 5");
+		expect(expandedPrompts[2]).toBe(`${wrapper}\nplain question`);
+	});
+
+	it("rejects a typo'd prompt-template name after an instructions wrapper", async () => {
+		const template: PromptTemplate = {
+			name: "session-prune",
+			description: "Prune sessions",
+			content: "Prune sessions: $ARGUMENTS",
+			filePath: "/virtual/session-prune.md",
+			sourceInfo: createSyntheticSourceInfo("/virtual/session-prune.md", {
+				source: "local",
+				scope: "user",
+				origin: "top-level",
+			}),
+		};
+		const resourceLoader = {
+			...createTestResourceLoader(),
+			getPrompts: () => ({ prompts: [template], diagnostics: [] }),
+		};
+		const harness = await createHarness({ resourceLoader });
+		harnesses.push(harness);
+
+		const wrapper = "<system_instructions>\nClient context.\n</system_instructions>";
+		await expect(harness.session.prompt(`${wrapper}\n/session-prun keep 3`)).rejects.toThrow(
+			"Did you mean /session-prune",
+		);
+	});
+
 	it.each([
 		{
 			label: "an aborted prompt",

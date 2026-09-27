@@ -1,0 +1,2 @@
+- Fixed prompt-template slash commands (for example `/session-prune`) not expanding when an ACP client prefixes the first prompt of a spawned thread with an instructions wrapper.
+- Added the list of user-defined prompt templates to the system prompt so the model knows the available slash commands.

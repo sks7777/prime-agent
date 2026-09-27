@@ -363,6 +363,7 @@ import {
 	SESSION_SLASH_COMMAND_NAMES,
 	type SessionSlashCommand,
 	type SlashCommandInfo,
+	splitInstructionsWrapperPrefix,
 } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
@@ -5537,10 +5538,12 @@ export class AgentSession {
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._modelVisibleSkills();
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		const loadedPromptTemplates = [...this.promptTemplates];
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: loadedSkills,
+			promptTemplates: loadedPromptTemplates,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
@@ -5572,12 +5575,17 @@ export class AgentSession {
 		images: ImageContent[] | undefined,
 		policy: SubmissionNormalizationPolicy,
 	): NormalizedSubmission {
-		if (policy.expandPromptTemplates) this._throwIfUnknownSlashCommand(text);
-		let expandedText = text;
+		// The ACP instructions wrapper (split in _normalizeSubmission) must not
+		// block slash-command parsing; normalize the command body and re-attach
+		// the wrapper so the persisted user message keeps the original context.
+		const { wrapper, body } = splitInstructionsWrapperPrefix(text);
+		if (policy.expandPromptTemplates) this._throwIfUnknownSlashCommand(body);
+		let expandedText = body;
 		if (policy.expandSkills) expandedText = this._expandSkillCommand(expandedText);
 		if (policy.expandPromptTemplates) {
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
+		if (wrapper) expandedText = `${wrapper}\n${expandedText}`;
 		return { kind: "prompt", text: expandedText, images };
 	}
 
@@ -5624,17 +5632,22 @@ export class AgentSession {
 		images: ImageContent[] | undefined,
 		policy: SubmissionNormalizationPolicy,
 	): NormalizedSubmission | Promise<NormalizedSubmission> {
+		// ACP clients prepend a `<system_instructions>` wrapper to a spawned
+		// thread's first prompt; split it so slash commands still parse. The
+		// wrapper is re-attached to the final prompt text (see
+		// _finishSubmissionNormalization), so the persisted user message keeps it.
+		const { body } = splitInstructionsWrapperPrefix(text);
 		if (policy.parseSessionCommands) {
-			const command = parseSessionSlashCommand(text);
+			const command = parseSessionSlashCommand(body);
 			if (command) return { kind: "sessionCommand", text, images, command };
 		}
 
-		if (text.startsWith("/")) {
+		if (body.startsWith("/")) {
 			if (policy.extensionCommands === "execute") {
-				const completion = this._executeExtensionCommand(text);
+				const completion = this._executeExtensionCommand(body);
 				if (completion) return { kind: "extensionCommand", completion };
 			} else if (policy.extensionCommands === "reject") {
-				this._throwIfExtensionCommand(text);
+				this._throwIfExtensionCommand(body);
 			}
 		}
 

@@ -2,6 +2,7 @@
  * System prompt construction and project context loading
  */
 
+import type { PromptTemplate } from "./prompt-templates.js";
 import { buildChildAgentDoctrine, buildRlmPrompt, buildSubagentGuidance } from "./prompts/index.js";
 import { REFINE_SKILL_NAME } from "./refinement/index.js";
 import { formatSkillsForPrompt, getPythonSkillRuntimeInfo, type Skill } from "./skills.js";
@@ -25,6 +26,8 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** User-defined prompt templates invocable as slash commands. */
+	promptTemplates?: PromptTemplate[];
 	/** Whether to include the model-facing rlm recursion guidance. */
 	allowRecursion?: boolean;
 	/** Fixed recursive-agent depth for this session. */
@@ -48,6 +51,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		messagesPath,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		promptTemplates: providedPromptTemplates,
 		allowRecursion,
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
@@ -63,6 +67,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+	const promptTemplatesSection = formatPromptTemplatesForPrompt(providedPromptTemplates ?? []);
 	const tools = selectedTools ?? ["ipython"];
 	const hasIpython = tools.includes("ipython");
 	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
@@ -87,6 +92,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			!selectedTools || selectedTools.includes("ipython") || selectedTools.includes("bash");
 		if (customPromptHasFileAccess && skills.length > 0) {
 			prompt += formatSkillsForPrompt(skills);
+		}
+
+		if (promptTemplatesSection) {
+			prompt += promptTemplatesSection;
 		}
 
 		// Add date and working directory last
@@ -161,11 +170,38 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		prompt += formatSkillsForPrompt(skills);
 	}
 
+	if (promptTemplatesSection) {
+		prompt += promptTemplatesSection;
+	}
+
 	if (appendSection) {
 		prompt += appendSection;
 	}
 
 	return prompt;
+}
+
+function formatPromptTemplatesForPrompt(templates: PromptTemplate[]): string {
+	if (templates.length === 0) {
+		return "";
+	}
+
+	const lines = [
+		'\n\nThe following user-defined prompt templates expand as slash commands; a message starting with "/<name>" is replaced by the template\'s content before the model sees it.',
+		"",
+		"<available_prompt_templates>",
+	];
+
+	for (const template of templates) {
+		const hint = template.argumentHint ? ` ${template.argumentHint}` : "";
+		const description = template.description.trim();
+		const summary = description.length > 0 ? ` — ${description}` : "";
+		lines.push(`  /${template.name}${hint}${summary}`);
+	}
+
+	lines.push("</available_prompt_templates>");
+
+	return lines.join("\n");
 }
 
 function formatGenericMcpGuidance(servers: string[] | undefined): string {
