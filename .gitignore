@@ -48,3 +48,6 @@ collect.sh
 __pycache__/
 *.pyc
 .rpiv/
+
+# Local secrets (bb secret request output)
+.env.local
