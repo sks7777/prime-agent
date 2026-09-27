@@ -1,0 +1,1 @@
+- Fixed the global heartbeat catalog failing with "Cannot list heartbeats while session worker is starting" while a fresh session's worker was still launching: the catalog now skips starting workers (they cannot have armed heartbeats yet) and serves the healthy heartbeats.

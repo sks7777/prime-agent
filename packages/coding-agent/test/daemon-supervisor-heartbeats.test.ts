@@ -182,30 +182,60 @@ describe("daemon supervisor heartbeat aggregation", () => {
 		}
 	});
 
-	it("reports a still-starting worker after the launch wait instead of omitting it", async () => {
+	it("serves the catalog when a fresh-create worker is still starting after the launch wait", async () => {
 		vi.useFakeTimers();
 		try {
 			const supervisor = createSupervisorHarness();
 			supervisor.workers.set("public", worker("ready"));
+			supervisor.workers.set("public2", worker("ready"));
 			supervisor.openingWorkers.set("slow", new Promise<unknown>(() => {}));
 			supervisor.catalogOpeningWorkers.set("slow", new Promise<unknown>(() => {}));
-			supervisor.forwardToWorker = vi.fn(async (_worker, command) =>
-				success(command.id, command.type, { heartbeats: [{ job: { id: "heartbeat-1" } }] }),
-			);
+			supervisor.forwardToWorker = vi.fn(async (worker, command) => {
+				if (worker.descriptor.lifecycle === "starting") {
+					return failure(command.id, command.type, new Error("worker is starting"));
+				}
+				return success(command.id, command.type, { heartbeats: [{ job: { id: "heartbeat-1" } }] });
+			});
 
 			const pending = supervisor.handleCommand({} as DaemonSocketClient, {
 				id: "list-1",
 				type: "heartbeats_list",
 			});
 			await vi.advanceTimersByTimeAsync(0);
-			// The slow launch registers mid-wait but never becomes ready.
+			// A fresh create registers mid-wait but never becomes ready: the catalog
+			// skips it (a starting worker cannot have armed heartbeats yet) and still
+			// serves the healthy workers' heartbeats.
 			supervisor.workers.set("slow", worker("starting"));
 
 			await vi.advanceTimersByTimeAsync(HEARTBEAT_LIST_LAUNCH_WAIT_MS);
 			await expect(pending).resolves.toMatchObject({
-				success: false,
-				error: "Cannot list heartbeats while session worker is starting",
+				success: true,
+				data: { heartbeats: [{ job: { id: "heartbeat-1" } }] },
 			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("serves the session-scoped list directly while the target worker is starting", async () => {
+		vi.useFakeTimers();
+		try {
+			const supervisor = createSupervisorHarness();
+			supervisor.findWorkerForClient = vi.fn(async () => ({ worker: worker("starting") }));
+			supervisor.forwardToWorker = vi.fn(async (_worker, command) =>
+				success(command.id, command.type, { heartbeats: [{ job: { id: "heartbeat-1" } }] }),
+			);
+
+			const pending = supervisor.handleCommand({} as DaemonSocketClient, {
+				id: "list-session",
+				type: "heartbeats_list",
+				activeSessionId: "session-1",
+			});
+			await expect(pending).resolves.toMatchObject({
+				success: true,
+				data: { heartbeats: [{ job: { id: "heartbeat-1" } }] },
+			});
+			expect(supervisor.forwardToWorker).toHaveBeenCalledOnce();
 		} finally {
 			vi.useRealTimers();
 		}

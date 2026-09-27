@@ -1333,6 +1333,13 @@ export class DaemonSupervisor {
 		worker: ResidentWorker,
 		command: Extract<DaemonCommand, { type: "heartbeats_list" }>,
 	): Promise<{ heartbeats?: AgentConnectionHeartbeat[]; response?: DaemonResponse }> {
+		// A fresh create's worker stays "starting" until its first session admits, so
+		// the global catalog (no activeSessionId) races it on every new-session
+		// heartbeat poll. A starting worker cannot have armed heartbeats yet; skip it
+		// instead of failing the whole catalog while the launch settles.
+		if (command.activeSessionId === undefined && worker.descriptor.lifecycle === "starting") {
+			return { heartbeats: [] };
+		}
 		if (worker.client && worker.descriptor.lifecycle === "ready") {
 			if (worker.heartbeatSnapshot !== undefined && worker.heartbeatSnapshotStale !== true) {
 				this.maybeRefreshAgedWorkerHeartbeatSnapshot(worker);
