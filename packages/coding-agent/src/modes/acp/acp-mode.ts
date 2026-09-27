@@ -1565,8 +1565,25 @@ export async function runAcpModeWithConnection(
 				const source = await resolveAcpSessionFile(processState.sessionDir, params.sessionId);
 				if (!source) throw new Error(`Unknown ACP session: ${params.sessionId}`);
 				// Same workspace guard as session/load: a stored session from another
-				// workspace must not be forked into this process.
-				if (typeof params.cwd === "string" && params.cwd.length > 0 && !sameCwd(source.entry.cwd, params.cwd)) {
+				// workspace must not be forked into this process. A trusted client may
+				// opt out explicitly: forking copies the history path and adopts this
+				// process's cwd, so crossing workspaces is safe when requested via
+				// _meta (PRIME-25 bb attach).
+				const forkRawMeta = (params as { _meta?: unknown })._meta;
+				const forkMetaPayload =
+					typeof forkRawMeta === "object" && forkRawMeta !== null
+						? (forkRawMeta as Record<string, unknown>)[PRIME_AGENT_META_NAMESPACE]
+						: undefined;
+				const allowForeignCwd =
+					typeof forkMetaPayload === "object" &&
+					forkMetaPayload !== null &&
+					(forkMetaPayload as Record<string, unknown>)["allowForeignCwd"] === true;
+				if (
+					!allowForeignCwd &&
+					typeof params.cwd === "string" &&
+					params.cwd.length > 0 &&
+					!sameCwd(source.entry.cwd, params.cwd)
+				) {
 					throw acp.RequestError.invalidParams({
 						reason: `ACP session ${params.sessionId} belongs to another working directory`,
 					});
