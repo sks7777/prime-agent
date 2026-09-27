@@ -1,0 +1,1 @@
+- Added `CONFIG_DIR_NAME` to the package entry exports so upstream pi example extensions like the sandbox extension load unchanged.
