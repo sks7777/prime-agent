@@ -10,6 +10,8 @@
 
 import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
 import * as _bundledPiAi from "@earendil-works/pi-ai";
+import * as _bundledPiAiCompat from "@earendil-works/pi-ai/compat";
+import * as _bundledPiAiMcp from "@earendil-works/pi-ai/mcp";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
 import * as _bundledPiTui from "@earendil-works/pi-tui";
 import * as _bundledTypebox from "typebox";
@@ -32,6 +34,8 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@earendil-works/pi-agent-core": _bundledPiAgentCore,
 	"@earendil-works/pi-tui": _bundledPiTui,
 	"@earendil-works/pi-ai": _bundledPiAi,
+	"@earendil-works/pi-ai/compat": _bundledPiAiCompat,
+	"@earendil-works/pi-ai/mcp": _bundledPiAiMcp,
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
 	"@earendil-works/pi-coding-agent": _bundledPiCodingAgent,
 	"@mariozechner/pi-agent-core": _bundledPiAgentCore,

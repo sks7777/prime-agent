@@ -1,0 +1,1 @@
+- Fixed pi extensions importing `@earendil-works/pi-ai/compat` or `/mcp` failing to load in dist/bundle mode by adding those subpaths to the bundled virtual modules.
