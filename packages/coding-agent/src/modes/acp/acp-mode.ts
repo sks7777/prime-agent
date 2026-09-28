@@ -487,6 +487,28 @@ class AcpUpdateProducer {
 		return published;
 	}
 
+	/**
+	 * Send an acp/warning notification directly to the client (bypassing the
+	 * session/update channel). bb renders acp/warning as a transient banner,
+	 * not as assistant output — so the notification text never enters the
+	 * transcript and the agent does not "process" it as a model turn.
+	 */
+	notifyWarning(summary: string, details?: string): void {
+		this.tail = this.tail.then(async () => {
+			try {
+				await this.admissionReady;
+				if (!this.admissionOpen) return;
+				await this.client.notify("acp/warning", {
+					threadId: this.sessionId,
+					summary,
+					...(details !== undefined ? { details } : {}),
+				});
+			} catch {
+				// Drop only this warning; a rejected queue tail would strand later updates.
+			}
+		});
+	}
+
 	drain(): Promise<void> {
 		return this.tail;
 	}
@@ -1293,11 +1315,8 @@ export async function runAcpModeWithConnection(
 				if (message) {
 					const notifyType =
 						payload.notifyType === "error" ? "error" : payload.notifyType === "warning" ? "warning" : "info";
-					// session_info_update with _meta is the correct ACP channel for
-					// extension notifications, but bb 0.44 classifies it as "noise" and
-					// drops it. Also publish as agent_message_chunk so the text is
-					// visible in bb today; a future bb that renders session_info_update
-					// will show the structured _meta instead.
+					// session_info_update with _meta is the structured ACP channel
+					// for extension notifications (future clients that render _meta).
 					void producer.publish(
 						{
 							sessionUpdate: "session_info_update",
@@ -1306,15 +1325,10 @@ export async function runAcpModeWithConnection(
 						producer.currentTurnId,
 						"event",
 					);
-					void producer.publish(
-						{
-							sessionUpdate: "agent_message_chunk",
-							messageId: `extension-notify-${randomUUID()}`,
-							content: { type: "text", text: message },
-						},
-						producer.currentTurnId,
-						"event",
-					);
+					// acp/warning renders as a transient banner in bb, not as
+					// assistant output — the text never enters the transcript and
+					// the agent does not process it as a model turn.
+					producer.notifyWarning(message, notifyType !== "info" ? `type: ${notifyType}` : undefined);
 				}
 				return;
 			}
