@@ -8474,7 +8474,9 @@ export class AgentSession {
 		const compactionOperation = this._compactionOperation;
 		const branchSummaryOperation = this._branchSummaryOperation;
 		this.requestAbort();
-		this._cancelActiveRlmChildRuns("Parent session aborted");
+		this._cancelActiveRlmChildRuns("Parent session aborted", {
+			skipMirrorChildren: true,
+		});
 		this._goalAbortInProgress = this._goalState.status === "active";
 		try {
 			await Promise.allSettled([
@@ -8542,7 +8544,9 @@ export class AgentSession {
 		this._cancelPostCompactionContinue();
 		this.abortRetry();
 		for (const controller of this._rlmQuiescenceWaitAborts) controller.abort();
-		this._cancelActiveRlmChildRuns("Parent session aborted for update restart");
+		this._cancelActiveRlmChildRuns("Parent session aborted for update restart", {
+			skipMirrorChildren: true,
+		});
 		this._goalAbortInProgress = this._goalState.status === "active";
 		this.agent.abort();
 		if (this._goalAbortInProgress) {
@@ -11614,8 +11618,20 @@ export class AgentSession {
 		this._maybeResumeAutonomousContinuationAfterRlmWork();
 	}
 
-	private _cancelActiveRlmChildRuns(reason: string): void {
+	private _cancelActiveRlmChildRuns(reason: string, options?: { skipMirrorChildren?: boolean }): void {
 		for (const run of this._activeRlmChildRuns.values()) {
+			// A bb-mirror child is an independent bb thread whose lifecycle the
+			// parent turn does not own: its mirror thread drives the child session
+			// through an attached ACP connection. Cancelling it on a parent-side
+			// abort settles the run body, which releases/disposes the child
+			// session and makes every attached mirror thread's settlement fail
+			// with "Unknown active session" — an entire parallel batch dies from
+			// one steered parent turn (observed 2026-09-28: one bb system steer
+			// aborted the parent run and all 5 running reviewers failed). Parked
+			// and admitted mirror children must survive a parent abort; the
+			// parent can re-collect them, and bb or an explicit delete still
+			// owns real cancellation.
+			if (options?.skipMirrorChildren && run.autoMirrorThread) continue;
 			this._cancelRlmChildRun(run, reason);
 		}
 	}

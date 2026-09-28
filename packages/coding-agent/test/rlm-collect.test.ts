@@ -269,4 +269,33 @@ describe("rlm.collect typed fan-in", () => {
 		});
 		for (const hosted of hostedChildren) hosted.dispose();
 	});
+
+	it("keeps an auto-mirrored child running when the parent session aborts", async () => {
+		// Simulate a depth-0 bb session: a plain rlm.spawn auto-mirrors into a bb
+		// thread, so the mirror child is owned by that thread, not the parent turn.
+		const bbEnv = {
+			BB_THREAD_ID: "thr_test",
+			BB_PROJECT_ID: "proj_test",
+			// A nonexistent bb binary fails the mirror spawn definitively, so the
+			// child degrades to a plain headless run instead of parking on the
+			// bb CLI timeout — keeping the test deterministic and bb-free.
+			BB_CLI: join(tempDir, "no-such-bb"),
+		};
+		const savedEnv = { ...process.env, ...Object.fromEntries(Object.keys(bbEnv).map((k) => [k, undefined])) };
+		Object.assign(process.env, bbEnv);
+		try {
+			session = makeSession();
+			const mirror = await session.runRlmChild("mirror task", { name: "mirror-a" });
+
+			await session.abort();
+
+			// The auto-mirrored child is owned by its bb thread, not the parent
+			// turn: a parent abort must leave it running (re-collectable later)
+			// instead of settling it cancelled and disposing its session.
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
+		} finally {
+			for (const key of Object.keys(bbEnv)) delete process.env[key];
+			void savedEnv;
+		}
+	});
 });

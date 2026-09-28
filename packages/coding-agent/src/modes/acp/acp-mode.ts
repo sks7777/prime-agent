@@ -718,6 +718,16 @@ async function acpLeadingCommandTurn(
 const PROMPT_RECOVERY_MAX_WAIT_MS = 180_000;
 const PROMPT_RECOVERY_PROBE_MS = 2_000;
 
+/**
+ * True when a settlement RPC failed because the settled session no longer
+ * exists in its worker (released by a parent-side abort, evicted, or killed).
+ * Such an error is terminal for the vanished session, not a settlement failure
+ * to poison the entry with.
+ */
+function isSessionGoneError(message: string): boolean {
+	return message.startsWith("Unknown active session:");
+}
+
 function isPromptRecoveryRetryableError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	const message = error.message ?? "";
@@ -1113,12 +1123,34 @@ export async function runAcpModeWithConnection(
 	const finalizePendingTerminal = (entry: AcpSessionEntry, pending: AcpPendingTerminal): void => {
 		pending.task = (async () => {
 			while (true) {
-				const status = await connection.waitForHeadlessCompletion({ waitForRlmQuiescence: true });
-				if (pending.abort.signal.aborted || session !== entry || entry.pendingTerminal !== pending) return;
-				const finalFailure = await turnFailure(connection, pending.boundary);
-				if (pending.abort.signal.aborted || session !== entry || entry.pendingTerminal !== pending) return;
-				const liveChildren = await connection.getRlmChildSnapshots();
-				if (pending.abort.signal.aborted || session !== entry || entry.pendingTerminal !== pending) return;
+				let status: AgentAutonomousStatus;
+				let finalFailure: string | undefined;
+				let liveChildren: AgentConnectionRlmChildAgentSnapshot[];
+				try {
+					status = await connection.waitForHeadlessCompletion({ waitForRlmQuiescence: true });
+					if (pending.abort.signal.aborted || session !== entry || entry.pendingTerminal !== pending) return;
+					finalFailure = await turnFailure(connection, pending.boundary);
+					if (pending.abort.signal.aborted || session !== entry || entry.pendingTerminal !== pending) return;
+					liveChildren = await connection.getRlmChildSnapshots();
+				} catch (error) {
+					if (pending.abort.signal.aborted || session !== entry || entry.pendingTerminal !== pending) return;
+					const message = error instanceof Error ? error.message : String(error);
+					// The settled session can vanish mid-settlement (a parent-side
+					// abort releases an attached mirror child, a worker eviction).
+					// Degrade to a clean terminal release instead of poisoning the
+					// entry: pendingTerminal.failure makes the NEXT prompt throw
+					// "ACP lifecycle reconciliation failed", which bb surfaces as a
+					// permanent thread failure for a session that no longer exists
+					// (observed 2026-09-28 PRIME-28 reviewer batch).
+					if (!isSessionGoneError(message)) {
+						pending.failure = message;
+						return;
+					}
+					entry.producer.finishTerminalLifecycle(pending.promptTurnId);
+					if (entry.pendingTerminal === pending) entry.pendingTerminal = undefined;
+					if (entry.abort === pending.abort) entry.abort = undefined;
+					return;
+				}
 				const terminalQuiescence = quiescenceMeta(status, liveChildren);
 				if (terminalQuiescence.outstandingSubagents !== 0) continue;
 				pending.status = status;

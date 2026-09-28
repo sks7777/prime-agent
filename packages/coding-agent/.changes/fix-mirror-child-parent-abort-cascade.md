@@ -1,0 +1,1 @@
+- Fixed parallel subagent batches dying from one steered parent turn: a parent-session abort no longer cancels bb-mirror children, and mirror-thread terminal settlement degrades cleanly when the settled session vanishes instead of failing the next turn.
