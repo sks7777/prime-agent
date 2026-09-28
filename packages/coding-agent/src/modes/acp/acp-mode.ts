@@ -729,7 +729,11 @@ function isSessionGoneError(message: string): boolean {
 		message.startsWith("Unknown active session:") ||
 		message.startsWith("Session is already active") ||
 		message.startsWith("Daemon connection is closed") ||
-		message.startsWith("Failed to recover from a")
+		message.startsWith("Failed to recover from a") ||
+		message.includes("Session worker returned an invalid") ||
+		message.includes("Timed out connecting to daemon session worker") ||
+		message.includes("Worker connection deadline elapsed") ||
+		message.includes("Timed out waiting for daemon worker")
 	);
 }
 
@@ -1150,7 +1154,14 @@ export async function runAcpModeWithConnection(
 					// permanent thread failure for a session that no longer exists
 					// (observed 2026-09-28 PRIME-28 reviewer batch).
 					if (!isSessionGoneError(message)) {
-						pending.failure = message;
+						// A turn whose abort signal fired was externally cancelled (e.g. a
+						// bb-steered child-completion message aborted the parent run). A
+						// transient error from that cancellation must not poison the entry
+						// for the next prompt — only a genuine failure (abort signal not
+						// fired) sets pending.failure.
+						if (!pending.abort.signal.aborted) {
+							pending.failure = message;
+						}
 						return;
 					}
 					entry.producer.finishTerminalLifecycle(pending.promptTurnId);

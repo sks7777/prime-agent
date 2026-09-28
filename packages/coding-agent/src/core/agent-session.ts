@@ -13320,6 +13320,10 @@ export class AgentSession {
 						if (!ambiguous) {
 							runtimeMirrorFailed = error instanceof Error ? error.message : "bb mirror spawn failed";
 							run.progressNotes.push(`auto-mirror degraded to plain child: ${runtimeMirrorFailed}`);
+							// A degraded child has no bb thread owning its lifecycle: clear the
+							// flag so skipMirrorChildren paths (abort, dispose, turn-boundary
+							// cancel) treat it as a plain headless run and cancel it normally.
+							run.autoMirrorThread = false;
 							emitChildUpdate();
 						}
 					}

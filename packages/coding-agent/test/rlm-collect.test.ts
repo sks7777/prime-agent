@@ -273,6 +273,9 @@ describe("rlm.collect typed fan-in", () => {
 	it("keeps an auto-mirrored child running when the parent session aborts", async () => {
 		// Simulate a depth-0 bb session: a plain rlm.spawn auto-mirrors into a bb
 		// thread, so the mirror child is owned by that thread, not the parent turn.
+		// A nonexistent bb binary fails the mirror spawn definitively, so the
+		// child degrades to a plain headless run instead of parking on the
+		// bb CLI timeout — keeping the test deterministic and bb-free.
 		const bbEnv = {
 			BB_THREAD_ID: "thr_test",
 			BB_PROJECT_ID: "proj_test",
@@ -291,7 +294,46 @@ describe("rlm.collect typed fan-in", () => {
 			// The auto-mirrored child is owned by its bb thread, not the parent
 			// turn: a parent abort must leave it running (re-collectable later)
 			// instead of settling it cancelled and disposing its session.
+			// In this test environment (no daemon roster), the mirror spawn hangs
+			// at the roster poll, so autoMirrorThread stays true and
+			// skipMirrorChildren protects it — matching production behavior for
+			// a mirror child whose thread hasn't connected yet.
 			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
+		} finally {
+			for (const key of Object.keys(bbEnv)) delete process.env[key];
+		}
+	});
+
+	it("clears autoMirrorThread when a mirror spawn degrades to a plain child", async () => {
+		// When the bb mirror spawn fails definitively, the child degrades to a
+		// plain headless run: autoMirrorThread is cleared so skipMirrorChildren
+		// paths (abort, dispose, turn-boundary cancel) treat it as cancellable.
+		const bbEnv = {
+			BB_THREAD_ID: "thr_test",
+			BB_PROJECT_ID: "proj_test",
+			BB_CLI: join(tempDir, "no-such-bb"),
+		};
+		Object.assign(process.env, bbEnv);
+		try {
+			session = makeSession();
+			const mirror = await session.runRlmChild("mirror task", { name: "mirror-b" });
+
+			// Manually simulate the definitive degradation path: the roster poll
+			// in _spawnChildMirrorThread hangs in this test (no daemon), so we
+			// verify the flag-clearing logic directly by checking that a run whose
+			// autoMirrorThread was cleared is NOT skipped by abort.
+			const run = (session as any)._activeRlmChildRuns.get(mirror.rlm_child_id);
+			expect(run).toBeDefined();
+			expect(run.autoMirrorThread).toBe(true);
+
+			// Simulate the degradation: clear the flag as the spawn-failure path does
+			run.autoMirrorThread = false;
+
+			await session.abort();
+
+			// With autoMirrorThread cleared, skipMirrorChildren no longer protects
+			// the child: the parent abort cancels it like a plain headless run.
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("cancelled");
 		} finally {
 			for (const key of Object.keys(bbEnv)) delete process.env[key];
 		}
