@@ -47,6 +47,10 @@ class FakeMirrorConnection {
 	rlmChildren: { id: string; waitingMirrorAdmission?: boolean; autoMirrorThread?: boolean }[] = [];
 	readonly withAttach: boolean;
 	failInitialSnapshotFor?: string;
+	/** When set, waitForHeadlessCompletion throws this error to test settlement degradation. */
+	failSettlementError?: string;
+	/** When true, only the settlement-phase waitForHeadlessCompletion call (with waitForRlmQuiescence) throws. */
+	failSettlementOnly = false;
 	claimSummaries = new Map<string, { cwd?: string; rlmDepth?: number }>();
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 
@@ -105,7 +109,10 @@ class FakeMirrorConnection {
 		this.prompts.push(text);
 	}
 
-	async waitForHeadlessCompletion() {
+	async waitForHeadlessCompletion(options?: { waitForRlmQuiescence?: boolean }) {
+		if (this.failSettlementError && (!this.failSettlementOnly || options?.waitForRlmQuiescence)) {
+			throw new Error(this.failSettlementError);
+		}
 		return usagelessAutonomousStatus();
 	}
 
@@ -555,5 +562,111 @@ Do the thing`),
 		expect(connection.attachCalls).toEqual(["child-1"]);
 		expect(connection.killCalls).toEqual(["draft-1"]);
 		expect(connection.prompts).toEqual(["Do the thing"]);
+	});
+
+	it("degrades terminal settlement cleanly when the session is gone (Unknown active session)", async () => {
+		// finalizePendingTerminal must not poison pendingTerminal.failure when
+		// the settled session vanished (isSessionGoneError match): it finishes
+		// the terminal lifecycle cleanly instead.
+		const connection = new FakeMirrorConnection();
+		connection.failSettlementError = "Unknown active session: dead-session";
+		connection.failSettlementOnly = true;
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{ stream: acp.ndJsonStream(toClient.writable, toAgent.readable) } as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+		await handle.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		// The prompt completes despite the settlement error — isSessionGoneError
+		// catches it and degrades cleanly (no "ACP lifecycle reconciliation failed").
+		const result = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt("Do the thing"),
+		})) as { stopReason?: string };
+		expect(result.stopReason).toBe("end_turn");
+	});
+
+	it("degrades terminal settlement cleanly on SessionAlreadyActive error", async () => {
+		const connection = new FakeMirrorConnection();
+		connection.failSettlementError = "Session is already active in another-process";
+		connection.failSettlementOnly = true;
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{ stream: acp.ndJsonStream(toClient.writable, toAgent.readable) } as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+		await handle.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		const result = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt("Do the thing"),
+		})) as { stopReason?: string };
+		expect(result.stopReason).toBe("end_turn");
+	});
+
+	it("degrades terminal settlement cleanly on worker timeout error", async () => {
+		const connection = new FakeMirrorConnection();
+		connection.failSettlementError = "Timed out connecting to daemon session worker: connection refused";
+		connection.failSettlementOnly = true;
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{ stream: acp.ndJsonStream(toClient.writable, toAgent.readable) } as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+		await handle.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		const result = (await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt("Do the thing"),
+		})) as { stopReason?: string };
+		expect(result.stopReason).toBe("end_turn");
+	});
+
+	it("reports a genuine settlement error (not session-gone) as a turn failure", async () => {
+		// A non-session-gone error must set pendingTerminal.failure and surface
+		// as "ACP lifecycle reconciliation failed" on the next prompt — this is
+		// correct behavior for genuine failures (not session vanished).
+		const connection = new FakeMirrorConnection();
+		connection.failSettlementError = "Unexpected internal error in settlement";
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{ stream: acp.ndJsonStream(toClient.writable, toAgent.readable) } as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+		await handle.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		// The first prompt's settlement fails with a genuine error. The prompt
+		// itself completes (the turn ran), but the settlement error propagates.
+		await expect(
+			handle.agent.request("session/prompt", {
+				sessionId: session.sessionId,
+				prompt: textPrompt("Do the thing"),
+			}),
+		).rejects.toThrow();
 	});
 });

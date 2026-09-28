@@ -387,4 +387,118 @@ describe("rlm.collect typed fan-in", () => {
 			for (const key of Object.keys(bbEnv)) delete process.env[key];
 		}
 	});
+
+	it("keeps an auto-mirrored child running when the parent aborts for update restart", async () => {
+		// abortForUpdateRestart must also skip mirror children: a daemon update
+		// restart aborts the parent, but the mirror thread's child lives on.
+		const bbEnv = {
+			BB_THREAD_ID: "thr_test",
+			BB_PROJECT_ID: "proj_test",
+			BB_CLI: join(tempDir, "no-such-bb"),
+		};
+		Object.assign(process.env, bbEnv);
+		try {
+			session = makeSession();
+			(session as any)._spawnChildMirrorThread = async () => {};
+
+			const mirror = await session.runRlmChild("mirror task", { name: "mirror-d" });
+
+			session.abortForUpdateRestart();
+
+			// autoMirrorThread stays true → skipMirrorChildren protects the child.
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
+		} finally {
+			for (const key of Object.keys(bbEnv)) delete process.env[key];
+		}
+	});
+
+	it("keeps an auto-mirrored child running when the parent disposes", async () => {
+		// dispose() must skip mirror children: the parent session is torn down,
+		// but the mirror thread's child session is owned by its bb thread.
+		const bbEnv = {
+			BB_THREAD_ID: "thr_test",
+			BB_PROJECT_ID: "proj_test",
+			BB_CLI: join(tempDir, "no-such-bb"),
+		};
+		Object.assign(process.env, bbEnv);
+		try {
+			session = makeSession();
+			(session as any)._spawnChildMirrorThread = async () => {};
+
+			const mirror = await session.runRlmChild("mirror task", { name: "mirror-e" });
+
+			session.dispose();
+
+			// autoMirrorThread stays true → skipMirrorChildren on dispose does
+			// not cancel the run. The child session may be disposed (unavoidable:
+			// dispose tears down child sessions), but the run status reflects
+			// that skipMirrorChildren prevented cancellation.
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
+		} finally {
+			for (const key of Object.keys(bbEnv)) delete process.env[key];
+		}
+	});
+
+	it("skips an auto-mirrored child in cancelRlmChildRun with skipMirrorChildren", async () => {
+		// cancelRlmChildRun(childId, reason, { skipMirrorChildren: true }) must
+		// return false for an auto-mirrored child — the run is not cancelled.
+		const bbEnv = {
+			BB_THREAD_ID: "thr_test",
+			BB_PROJECT_ID: "proj_test",
+			BB_CLI: join(tempDir, "no-such-bb"),
+		};
+		Object.assign(process.env, bbEnv);
+		try {
+			session = makeSession();
+			(session as any)._spawnChildMirrorThread = async () => {};
+
+			const mirror = await session.runRlmChild("mirror task", { name: "mirror-f" });
+
+			// Direct cancel with skipMirrorChildren: returns false (not cancelled).
+			const cancelled = session.cancelRlmChildRun(mirror.rlm_child_id, "test cancel", {
+				skipMirrorChildren: true,
+			});
+			expect(cancelled).toBe(false);
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
+
+			// Without skipMirrorChildren: returns true (cancelled) — an explicit
+			// delete must still be able to cancel a mirror child.
+			const cancelledDirect = session.cancelRlmChildRun(mirror.rlm_child_id, "explicit delete");
+			expect(cancelledDirect).toBe(true);
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("cancelled");
+		} finally {
+			for (const key of Object.keys(bbEnv)) delete process.env[key];
+		}
+	});
+
+	it("skips auto-mirrored children in cancelRunningRlmDescendants with skipMirrorChildren", async () => {
+		// cancelRunningRlmDescendants(reason, { skipMirrorChildren: true }) must
+		// not cancel auto-mirrored children.
+		const bbEnv = {
+			BB_THREAD_ID: "thr_test",
+			BB_PROJECT_ID: "proj_test",
+			BB_CLI: join(tempDir, "no-such-bb"),
+		};
+		Object.assign(process.env, bbEnv);
+		try {
+			session = makeSession();
+			(session as any)._spawnChildMirrorThread = async () => {};
+
+			const mirror = await session.runRlmChild("mirror task", { name: "mirror-g" });
+
+			// With skipMirrorChildren: no descendants cancelled.
+			const cancelled = session.cancelRunningRlmDescendants("test", {
+				skipMirrorChildren: true,
+			});
+			expect(cancelled).toBe(false);
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
+
+			// Without skipMirrorChildren: the child is cancelled.
+			const cancelledDirect = session.cancelRunningRlmDescendants("force");
+			expect(cancelledDirect).toBe(true);
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("cancelled");
+		} finally {
+			for (const key of Object.keys(bbEnv)) delete process.env[key];
+		}
+	});
 });
