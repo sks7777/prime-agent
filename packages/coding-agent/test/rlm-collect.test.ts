@@ -281,7 +281,6 @@ describe("rlm.collect typed fan-in", () => {
 			// bb CLI timeout — keeping the test deterministic and bb-free.
 			BB_CLI: join(tempDir, "no-such-bb"),
 		};
-		const savedEnv = { ...process.env, ...Object.fromEntries(Object.keys(bbEnv).map((k) => [k, undefined])) };
 		Object.assign(process.env, bbEnv);
 		try {
 			session = makeSession();
@@ -295,7 +294,6 @@ describe("rlm.collect typed fan-in", () => {
 			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
 		} finally {
 			for (const key of Object.keys(bbEnv)) delete process.env[key];
-			void savedEnv;
 		}
 	});
 });
