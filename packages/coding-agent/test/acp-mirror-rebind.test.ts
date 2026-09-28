@@ -44,7 +44,7 @@ class FakeMirrorConnection {
 	readonly killCalls: string[] = [];
 	readonly prompts: string[];
 	readonly cancelCalls: string[] = [];
-	rlmChildren: { id: string; waitingMirrorAdmission?: boolean }[] = [];
+	rlmChildren: { id: string; waitingMirrorAdmission?: boolean; autoMirrorThread?: boolean }[] = [];
 	readonly withAttach: boolean;
 	failInitialSnapshotFor?: string;
 	claimSummaries = new Map<string, { cwd?: string; rlmDepth?: number }>();
@@ -306,6 +306,91 @@ Do the thing`),
 		// child parked on its deferred admission turn; a normal child still goes.
 		await handle.agent.request("session/close", { sessionId: session.sessionId });
 		expect(connection.cancelCalls).toEqual(["running-child"]);
+	});
+
+	it("keeps auto-mirrored children across a stop/close cycle", async () => {
+		// A running auto-mirror child (autoMirrorThread=true, not parked) must
+		// survive session/close: its lifecycle is owned by its bb thread.
+		// Only non-mirrored children are cancelled.
+		const connection = new FakeMirrorConnection();
+		connection.rlmChildren = [{ id: "mirror-child", autoMirrorThread: true }, { id: "plain-child" }];
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		await handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt(`[rlm-mirror:${CLAIM_NONCE}]
+Do the thing`),
+		});
+
+		// Closing the session must cancel the plain child but NOT the
+		// auto-mirrored child (owned by its bb thread, not this session).
+		await handle.agent.request("session/close", { sessionId: session.sessionId });
+		expect(connection.cancelCalls).toEqual(["plain-child"]);
+	});
+
+	it("does not cancel auto-mirrored children when session/close aborts a running prompt", async () => {
+		// session/close aborts the current prompt and cancels outstanding
+		// children, but auto-mirrored children (owned by bb threads) must
+		// survive — only non-mirrored children are cancelled.
+		const connection = new FakeMirrorConnection();
+		connection.rlmChildren = [
+			{ id: "mirror-child-a", autoMirrorThread: true },
+			{ id: "mirror-child-b", autoMirrorThread: true, waitingMirrorAdmission: true },
+			{ id: "plain-child" },
+		];
+		writeClaim(CLAIM_NONCE, "child-1");
+		void runAcpModeWithConnection(
+			connection as unknown as AgentConnection,
+			{
+				stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+			} as any,
+		);
+		const handle = acp
+			.client({ name: "mirror-client" })
+			.onNotification("session/update", () => {})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+
+		await handle.agent.request("initialize", {
+			protocolVersion: acp.PROTOCOL_VERSION,
+			clientCapabilities: {},
+		});
+		const session = (await handle.agent.request("session/new", { cwd: "/tmp/mirror", mcpServers: [] })) as {
+			sessionId: string;
+		};
+		// Fire the prompt (non-blocking: the fake connection resolves it later)
+		const promptPromise = handle.agent.request("session/prompt", {
+			sessionId: session.sessionId,
+			prompt: textPrompt("Working on a task"),
+		});
+
+		// Close the session while the prompt is in-flight (simulates /new in bb
+		// closing the old thread's session).
+		await handle.agent.request("session/close", { sessionId: session.sessionId });
+
+		// Only the plain child is cancelled; both auto-mirrored children
+		// (running and parked) survive — their bb threads own their lifecycle.
+		expect(connection.cancelCalls).toEqual(["plain-child"]);
+
+		// The prompt was aborted by the close; settle the promise to avoid
+		// an unhandled rejection from the test's fake transport.
+		void promptPromise.catch(() => undefined);
 	});
 
 	it("degrades to a normal turn when the adapter cannot rebind", async () => {

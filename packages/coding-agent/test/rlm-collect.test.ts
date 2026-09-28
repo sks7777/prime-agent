@@ -354,4 +354,37 @@ describe("rlm.collect typed fan-in", () => {
 			for (const key of Object.keys(bbEnv)) delete process.env[key];
 		}
 	});
+
+	it("keeps a completed-spawn auto-mirrored child running when the parent aborts", async () => {
+		// When the bb mirror spawn succeeds (the mirror thread is connected and
+		// driving the child), autoMirrorThread stays true: skipMirrorChildren
+		// must protect the child from parent-side abort. This tests the primary
+		// production scenario — a running mirror thread whose parent gets aborted
+		// by a bb-steered turn.
+		const bbEnv = {
+			BB_THREAD_ID: "thr_test",
+			BB_PROJECT_ID: "proj_test",
+			BB_CLI: join(tempDir, "no-such-bb"),
+		};
+		Object.assign(process.env, bbEnv);
+		try {
+			session = makeSession();
+			// Mock a successful mirror spawn: the thread is "connected", so
+			// autoMirrorThread stays true and the child parks on firstTurnStarted.
+			(session as any)._spawnChildMirrorThread = async () => {
+				// Successful spawn — no throw, autoMirrorThread stays true.
+			};
+
+			const mirror = await session.runRlmChild("mirror task", { name: "mirror-c" });
+
+			await session.abort();
+
+			// autoMirrorThread is still true (spawn succeeded, no degradation):
+			// skipMirrorChildren protects the child — it stays running for the
+			// mirror thread to drive, exactly as in production.
+			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("running");
+		} finally {
+			for (const key of Object.keys(bbEnv)) delete process.env[key];
+		}
+	});
 });
