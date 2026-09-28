@@ -1,0 +1,1 @@
+- Updated the sandbox runtime to @anthropic-ai/sandbox-runtime 0.0.77 with per-call violation attribution and stderr violation annotation.
