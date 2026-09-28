@@ -423,6 +423,8 @@ export interface RlmChildAgentSnapshot {
 	activityStaleMs?: number;
 	/** True while a bb-mirror child is parked waiting for its mirror thread's first prompt. */
 	waitingMirrorAdmission?: boolean;
+	/** True when this child was auto-mirrored into a bb thread (PRIME-24). */
+	autoMirrorThread?: boolean;
 	error?: string;
 }
 
@@ -1454,6 +1456,7 @@ const RLM_CHILD_STABLE_SNAPSHOT_KEYS = Object.keys({
 	progressNote: true,
 	error: true,
 	waitingMirrorAdmission: true,
+	autoMirrorThread: true,
 } satisfies Record<keyof RlmChildStableSnapshot, true>) as (keyof RlmChildStableSnapshot)[];
 
 /** Fields are primitives except activity, compared by value because each delta assigns a fresh activity object. */
@@ -5270,7 +5273,9 @@ export class AgentSession {
 			this._pendingRequestedRefine = undefined;
 			this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 			this._autoRefineBranchVersion++;
-			this._cancelActiveRlmChildRuns("Parent session disposed");
+			this._cancelActiveRlmChildRuns("Parent session disposed", {
+				skipMirrorChildren: true,
+			});
 			for (const unsubscribe of this._rlmChildUnsubscribes.values()) {
 				unsubscribe();
 			}
@@ -12496,6 +12501,7 @@ export class AgentSession {
 			progressNote: run.progressNotes.at(-1),
 			error: run.error,
 			waitingMirrorAdmission: run.waitingMirrorAdmission === true || undefined,
+			autoMirrorThread: run.autoMirrorThread === true || undefined,
 		};
 	}
 
@@ -12687,10 +12693,15 @@ export class AgentSession {
 	 * @returns true when a live run was cancelled or its unsettled terminal notice
 	 * was suppressed; false when the id is unknown or the run already settled.
 	 */
-	cancelRlmChildRun(childId: string, reason = "Cancelled by user"): boolean {
+	cancelRlmChildRun(
+		childId: string,
+		reason = "Cancelled by user",
+		options?: { skipMirrorChildren?: boolean },
+	): boolean {
 		for (const session of this._rlmSubtreeSessions()) {
 			const run = session._activeRlmChildRuns.get(childId);
 			if (run) {
+				if (options?.skipMirrorChildren && run.autoMirrorThread) return false;
 				if (run.status !== "running" && run.status !== "queued" && !run.settled) {
 					if (session._sessionInputPumpSuspended) session._abandonRlmRunForQuiescence(run);
 					else run.suppressTerminalNotice = true;
@@ -12698,14 +12709,14 @@ export class AgentSession {
 				}
 				// The abort cascade never reaches running work retained under a settled descendant.
 				const cancelled = session._cancelRlmChildRun(run, reason);
-				const descendantsCancelled = run.session?.cancelRunningRlmDescendants(reason) ?? false;
+				const descendantsCancelled = run.session?.cancelRunningRlmDescendants(reason, options) ?? false;
 				if (cancelled || descendantsCancelled) {
 					return true;
 				}
 			}
 			// A fruitless match keeps walking: child ids are only mkdir-unique among
 			// siblings, so a colliding live run elsewhere must stay reachable.
-			if (session._rlmChildSessions.get(childId)?.session.cancelRunningRlmDescendants(reason)) {
+			if (session._rlmChildSessions.get(childId)?.session.cancelRunningRlmDescendants(reason, options)) {
 				return true;
 			}
 		}
@@ -12735,10 +12746,11 @@ export class AgentSession {
 	}
 
 	/** Cancel every running or queued run in this session's subtree. */
-	cancelRunningRlmDescendants(reason = "Cancelled by user"): boolean {
+	cancelRunningRlmDescendants(reason = "Cancelled by user", options?: { skipMirrorChildren?: boolean }): boolean {
 		let cancelled = false;
 		for (const session of this._rlmSubtreeSessions()) {
 			for (const run of session._activeRlmChildRuns.values()) {
+				if (options?.skipMirrorChildren && run.autoMirrorThread) continue;
 				if (session._cancelRlmChildRun(run, reason)) cancelled = true;
 			}
 		}

@@ -725,7 +725,12 @@ const PROMPT_RECOVERY_PROBE_MS = 2_000;
  * to poison the entry with.
  */
 function isSessionGoneError(message: string): boolean {
-	return message.startsWith("Unknown active session:");
+	return (
+		message.startsWith("Unknown active session:") ||
+		message.startsWith("Session is already active") ||
+		message.startsWith("Daemon connection is closed") ||
+		message.startsWith("Failed to recover from a")
+	);
 }
 
 function isPromptRecoveryRetryableError(error: unknown): boolean {
@@ -1090,8 +1095,10 @@ export async function runAcpModeWithConnection(
 				// A bb-mirror child parked on its deferred admission turn waits across
 				// parent turns; a turn-boundary stop or close must not kill it. The
 				// mirror thread's first prompt or an explicit subagent delete still
-				// settles it.
-				.filter((child) => child.waitingMirrorAdmission !== true)
+				// settles it. A running auto-mirror child (PRIME-24) is owned by
+				// its bb thread, not the parent turn — cancelling it disposes the
+				// child session and breaks every attached mirror thread's settlement.
+				.filter((child) => child.waitingMirrorAdmission !== true && child.autoMirrorThread !== true)
 				.map((child) => connection.cancelRlmChild(child.id)),
 		);
 		const failed = cancellations.find((result) => result.status === "rejected");

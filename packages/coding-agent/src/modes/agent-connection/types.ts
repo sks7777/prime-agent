@@ -603,6 +603,8 @@ export interface AgentConnectionRlmChildAgentSnapshot {
 	activityStaleMs?: number;
 	/** True while a bb-mirror child is parked waiting for its mirror thread's first prompt. */
 	waitingMirrorAdmission?: boolean;
+	/** True when this child was auto-mirrored into a bb thread (PRIME-24). */
+	autoMirrorThread?: boolean;
 	error?: string;
 }
 
