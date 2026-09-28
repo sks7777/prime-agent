@@ -155,6 +155,8 @@ export interface PrimeAgentSessionMeta {
 	/** Observed subagent and autonomous-continuation counts at completion. */
 	quiescence?: PrimeAgentQuiescenceMeta;
 	ipython?: PrimeAgentIpythonMeta;
+	/** Extension notification (ctx.ui.notify) relayed in headless/ACP mode. */
+	extensionNotify?: { message: string; type: "info" | "warning" | "error" };
 }
 
 /** Wrap a prime-agent payload in its reverse-domain `_meta` envelope. */

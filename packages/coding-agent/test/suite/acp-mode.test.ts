@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.js";
 import type { AgentSessionRuntime } from "../../src/core/agent-session-runtime.js";
 import { PRIME_AGENT_META_NAMESPACE } from "../../src/modes/acp/acp-meta.js";
-import { runAcpModeWithConnection } from "../../src/modes/acp/index.js";
+import { acpLeadingCommandTurn, runAcpModeWithConnection, splitAcpPromptBlocks } from "../../src/modes/acp/index.js";
 import { InProcessAgentConnection } from "../../src/modes/agent-connection/in-process-agent-connection.js";
+import type { AgentConnection } from "../../src/modes/agent-connection/types.js";
 import { createHarness } from "./harness.js";
 
 /** Minimal AgentSessionRuntime host over a real faux-backed AgentSession. */
@@ -1524,5 +1525,25 @@ describe("ACP mode end to end", () => {
 			expect.objectContaining({ phase: "waiting", reason: "restart", errorMessage: WORKER_CLOSED_ERROR }),
 		]);
 		close();
+	});
+});
+
+describe("acpLeadingCommandTurn", () => {
+	const mockConnection = {
+		getCommands: async () => [{ source: "extension", name: "sandbox", registeredName: "sandbox" }],
+	} as unknown as AgentConnection;
+
+	it("includes command args in commandInvocation, not turnText (#sandbox-args)", async () => {
+		const split = splitAcpPromptBlocks([{ type: "text", text: "/sandbox --enabled false" }]);
+		const result = await acpLeadingCommandTurn(mockConnection, split);
+		expect(result?.commandInvocation).toBe("/sandbox --enabled false");
+		expect(result?.turnText).toBe("");
+	});
+
+	it("passes bare command without args", async () => {
+		const split = splitAcpPromptBlocks([{ type: "text", text: "/sandbox" }]);
+		const result = await acpLeadingCommandTurn(mockConnection, split);
+		expect(result?.commandInvocation).toBe("/sandbox");
+		expect(result?.turnText).toBe("");
 	});
 });

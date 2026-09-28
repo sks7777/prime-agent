@@ -1,0 +1,2 @@
+- Fixed `/sandbox` (and other extension commands) producing no visible output in bb/ACP mode: extension `notify` calls now relay as ACP session updates.
+- Fixed `/sandbox --enabled false` being split into a bare `/sandbox` command and a stray `--enabled false` model prompt in ACP mode.

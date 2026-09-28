@@ -198,7 +198,7 @@ export async function emitSessionShutdownEvent(
 	return false;
 }
 
-const noOpUIContext: ExtensionUIContext = {
+export const noOpUIContext: ExtensionUIContext = {
 	select: async () => undefined,
 	confirm: async () => false,
 	input: async () => undefined,
@@ -237,6 +237,7 @@ export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
+	private _hasUIOverride: boolean | undefined;
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
@@ -371,12 +372,17 @@ export class ExtensionRunner {
 		this.uiContext = uiContext ?? noOpUIContext;
 	}
 
+	/** Override hasUI for forwarding/partial UI contexts. */
+	setHasUI(hasUI: boolean): void {
+		this._hasUIOverride = hasUI;
+	}
+
 	getUIContext(): ExtensionUIContext {
 		return this.uiContext;
 	}
 
 	hasUI(): boolean {
-		return this.uiContext !== noOpUIContext;
+		return this._hasUIOverride ?? this.uiContext !== noOpUIContext;
 	}
 
 	getExtensionPaths(): string[] {

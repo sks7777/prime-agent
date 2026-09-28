@@ -325,6 +325,11 @@ class AcpUpdateProducer {
 	private eventSequence = 0;
 	private nextPromptTurnId = 0;
 	private activePromptTurnId = 0;
+
+	/** Current prompt turn ID (0 when no prompt is active). */
+	get currentTurnId(): number {
+		return this.activePromptTurnId;
+	}
 	private tail: Promise<void> = Promise.resolve();
 	private readonly childOriginTurnIds = new Map<string, number>();
 	private readonly terminalChildOriginTurns = new Set<number>();
@@ -669,7 +674,7 @@ function isRlmMirrorTargetSummary(
 	return summary.rlmDepth !== undefined && summary.rlmDepth > 0;
 }
 
-async function acpLeadingCommandTurn(
+export async function acpLeadingCommandTurn(
 	connection: AgentConnection,
 	split: AcpPromptSplit,
 ): Promise<{ commandInvocation: string; turnText: string; images?: ImageContent[] } | undefined> {
@@ -688,17 +693,17 @@ async function acpLeadingCommandTurn(
 		)
 		.catch(() => false);
 	if (!registered) return undefined;
-	const turnParts = [
-		...(command.args ? [command.args] : []),
-		...split.restTexts.slice(1),
-		...(split.instructionsText ? [split.instructionsText] : []),
-	];
+	// Extension command args are part of the command invocation, not a
+	// follow-up prompt: the command handler receives and parses them.
+	// Splitting them off would send the args to the model as a stray turn.
+	const commandInvocation = command.args ? `/${command.name} ${command.args}` : `/${command.name}`;
+	const turnParts = [...split.restTexts.slice(1), ...(split.instructionsText ? [split.instructionsText] : [])];
 	const turnText = turnParts
 		.map((part) => part.trim())
 		.filter((part) => part.length > 0)
 		.join("\n\n");
 	return {
-		commandInvocation: `/${command.name}`,
+		commandInvocation,
 		turnText,
 		...(turnText.length > 0 && split.images.length > 0 ? { images: split.images } : {}),
 	};
@@ -1280,6 +1285,37 @@ export async function runAcpModeWithConnection(
 					0,
 					"event",
 				);
+				return;
+			}
+			if (event.type === "extension_ui_request" && event.request.method === "notify") {
+				const payload = event.request.payload as { message?: unknown; notifyType?: unknown };
+				const message = typeof payload.message === "string" ? payload.message : "";
+				if (message) {
+					const notifyType =
+						payload.notifyType === "error" ? "error" : payload.notifyType === "warning" ? "warning" : "info";
+					// session_info_update with _meta is the correct ACP channel for
+					// extension notifications, but bb 0.44 classifies it as "noise" and
+					// drops it. Also publish as agent_message_chunk so the text is
+					// visible in bb today; a future bb that renders session_info_update
+					// will show the structured _meta instead.
+					void producer.publish(
+						{
+							sessionUpdate: "session_info_update",
+							_meta: primeAgentMeta({ extensionNotify: { message, type: notifyType } }),
+						},
+						producer.currentTurnId,
+						"event",
+					);
+					void producer.publish(
+						{
+							sessionUpdate: "agent_message_chunk",
+							messageId: `extension-notify-${randomUUID()}`,
+							content: { type: "text", text: message },
+						},
+						producer.currentTurnId,
+						"event",
+					);
+				}
 				return;
 			}
 			if (event.type !== "session_event") return;

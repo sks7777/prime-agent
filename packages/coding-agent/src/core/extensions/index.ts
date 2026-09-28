@@ -23,7 +23,7 @@ export type {
 	ShutdownHandler,
 	SwitchSessionHandler,
 } from "./runner.js";
-export { ExtensionRunner } from "./runner.js";
+export { ExtensionRunner, noOpUIContext } from "./runner.js";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,

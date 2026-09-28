@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
@@ -13,6 +14,7 @@ import type {
 	AgentHeartbeatManagementAction,
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
+import { noOpUIContext } from "../../core/extensions/index.js";
 import type { ExtensionUIContext } from "../../core/extensions/types.js";
 import type { AcpMcpServerConfig } from "../../core/mcp/acp-mcp-types.js";
 import type { CustomMessage } from "../../core/messages.js";
@@ -670,10 +672,34 @@ export class InProcessAgentConnection implements AgentConnection {
 		});
 	}
 
+	/**
+	 * Create a headless UI context that forwards fire-and-forget UI methods
+	 * (notify, setStatus) as extension_ui_request events. Other methods are
+	 * no-ops (no interactive UI is available). This lets extension command
+	 * handlers produce visible output in headless modes (ACP, print).
+	 */
+	private createForwardingUiContext(): ExtensionUIContext {
+		const emitUiRequest = (method: string, payload: Record<string, unknown>): void => {
+			const id = randomUUID();
+			void this.emit({
+				type: "extension_ui_request",
+				request: { id, method, payload },
+			});
+		};
+		return {
+			...noOpUIContext,
+			notify: (message, notifyType) => emitUiRequest("notify", { message, notifyType }),
+			setStatus: (key, text) => emitUiRequest("setStatus", { statusKey: key, statusText: text }),
+		};
+	}
+
 	private async bindCurrentSessionExtensions(): Promise<void> {
 		const session = this.session;
 		await session.bindExtensions({
-			uiContext: this.headlessExtensionOptions?.uiContext,
+			uiContext: this.headlessExtensionOptions?.uiContext ?? this.createForwardingUiContext(),
+			// Forwarding context provides notify/setStatus but not real UI;
+			// hasUI must stay false so extensions skip dialog-dependent paths.
+			hasUI: this.headlessExtensionOptions?.uiContext !== undefined,
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
 				newSession: (options) => this.runtimeHost.newSession(options),
