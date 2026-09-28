@@ -14,6 +14,7 @@ import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
+import { BbSpawnFailed } from "../src/core/rlm-bb-mirror.js";
 import { createRlmCollectHostHandler, type SubagentRuntimeHost } from "../src/core/rlm-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -308,6 +309,9 @@ describe("rlm.collect typed fan-in", () => {
 		// When the bb mirror spawn fails definitively, the child degrades to a
 		// plain headless run: autoMirrorThread is cleared so skipMirrorChildren
 		// paths (abort, dispose, turn-boundary cancel) treat it as cancellable.
+		// Mock _spawnChildMirrorThread to throw a definitive BbSpawnFailed so the
+		// production catch block at agent-session.ts clears the flag — no manual
+		// _activeRlmChildRuns access needed.
 		const bbEnv = {
 			BB_THREAD_ID: "thr_test",
 			BB_PROJECT_ID: "proj_test",
@@ -316,23 +320,35 @@ describe("rlm.collect typed fan-in", () => {
 		Object.assign(process.env, bbEnv);
 		try {
 			session = makeSession();
+			// Override the mirror spawn to fail definitively instead of hanging on
+			// the roster poll (which has no daemon to poll in this test).
+			(session as any)._spawnChildMirrorThread = async () => {
+				throw new BbSpawnFailed("spawn-error", "mock bb binary not found");
+			};
+
+			// Subscribe to child updates to observe the degradation progress note
+			// deterministically (no wall-clock polling).
+			let resolveDegraded!: () => void;
+			const degraded = new Promise<void>((resolve) => {
+				resolveDegraded = resolve;
+			});
+			const unsub = session.subscribe((event) => {
+				if (event.type === "rlm_child_update" && event.child.progressNote?.includes("auto-mirror degraded")) {
+					resolveDegraded();
+				}
+			});
+
 			const mirror = await session.runRlmChild("mirror task", { name: "mirror-b" });
 
-			// Manually simulate the definitive degradation path: the roster poll
-			// in _spawnChildMirrorThread hangs in this test (no daemon), so we
-			// verify the flag-clearing logic directly by checking that a run whose
-			// autoMirrorThread was cleared is NOT skipped by abort.
-			const run = (session as any)._activeRlmChildRuns.get(mirror.rlm_child_id);
-			expect(run).toBeDefined();
-			expect(run.autoMirrorThread).toBe(true);
-
-			// Simulate the degradation: clear the flag as the spawn-failure path does
-			run.autoMirrorThread = false;
+			// Wait for the mock spawn to fail and clear autoMirrorThread.
+			await degraded;
+			unsub();
 
 			await session.abort();
 
-			// With autoMirrorThread cleared, skipMirrorChildren no longer protects
-			// the child: the parent abort cancels it like a plain headless run.
+			// With autoMirrorThread cleared by the production catch block,
+			// skipMirrorChildren no longer protects the child: the parent abort
+			// cancels it like a plain headless run.
 			expect(session.getRlmChildRunStatus(mirror.rlm_child_id)).toBe("cancelled");
 		} finally {
 			for (const key of Object.keys(bbEnv)) delete process.env[key];
