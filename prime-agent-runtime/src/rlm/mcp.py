@@ -29,7 +29,13 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from . import host_request
-from .mcp_base import McpToolError
+from .mcp_base import (
+    McpToolError,
+    _agent_dir,
+    _parse_result,
+    _read_auth,
+    _resolve_config_value,
+)
 
 __all__ = [
     "McpCredentialsUnavailable",
@@ -1039,43 +1045,6 @@ def _strings(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
-def _agent_dir() -> Path:
-    """Resolve the Prime Agent config dir the same way the rest of the runtime does."""
-    raw = (
-        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        or os.environ.get("PI_CODING_AGENT_DIR")
-        or str(Path.home() / ".prime" / "agent")
-    )
-    # resolve() so a relative env override reads auth.json from the right place,
-    # not relative to the kernel's cwd.
-    return Path(raw).expanduser().resolve()
-
-
-def _read_auth(provider: str) -> dict[str, Any] | None:
-    """Read one credential entry from auth.json. Returns None if absent/unreadable."""
-    try:
-        data = json.loads((_agent_dir() / "auth.json").read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    cred = data.get(provider)
-    return cred if isinstance(cred, dict) else None
-
-
-def _resolve_config_value(value: str) -> str:
-    """Resolve a stored api_key value the way the host does.
-
-    A value may be a literal, an env-var name, or a `!command` indirection. The
-    command form can't run safely in the kernel (the host injects those resolved),
-    so skip it; otherwise treat the value as an env-var name if set, else literal.
-    """
-    value = value.strip()
-    if not value or value.startswith("!"):
-        return ""
-    return (os.environ.get(value) or value).strip()
-
-
 def _resolve_streamable_http():
     """Return an SDK streamable-HTTP transport callable.
 
@@ -1094,30 +1063,3 @@ def _resolve_streamable_http():
     )
 
 
-def _parse_result(result: Any) -> Any:
-    """Normalize a CallToolResult into plain Python (structured output preferred).
-
-    Raises McpToolError when the server flags the result as an error, so a failed
-    tool call doesn't look like a successful one to the caller.
-    """
-    texts: list[str] = []
-    for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
-        if text is not None:
-            texts.append(text)
-    is_error = getattr(result, "is_error", getattr(result, "isError", False))
-    if is_error:
-        raise McpToolError("\n".join(texts) or "MCP tool returned an error")
-
-    structured = getattr(result, "structured_content", getattr(result, "structuredContent", None))
-    if structured is not None:  # falsy-but-valid payloads ({} / []) are real results
-        return structured
-    if texts:
-        return "\n".join(texts)
-
-    # Non-text content (images, embedded resources): return them as plain dicts
-    # rather than the opaque SDK object so callers get usable data.
-    blocks = getattr(result, "content", None) or []
-    if blocks:
-        return [b.model_dump(mode="json") if hasattr(b, "model_dump") else b for b in blocks]
-    return result
