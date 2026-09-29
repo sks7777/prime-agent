@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
@@ -10,8 +9,8 @@ import {
 	type PrimeInferenceCatalogEntry,
 	parsePrimeInferenceModelCatalog,
 } from "@earendil-works/pi-ai";
-
 import { writeFileAtomicSync } from "../utils/atomic-file.js";
+import { readBoundedJsonResponse } from "./catalog-response.js";
 
 export const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
 const FETCH_TIMEOUT_MS = 5_000;
@@ -147,28 +146,12 @@ export class PrimeInferenceCatalogRequestError extends Error {
 }
 
 async function readResponse(response: Response): Promise<unknown> {
-	if (!response.ok) throw new PrimeInferenceCatalogRequestError(response.status);
-	const contentLength = Number(response.headers.get("content-length"));
-	if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) throw new Error("Response is too large");
-	if (!response.body) throw new Error("Response body is empty");
-	const reader = response.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let bytesRead = 0;
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			bytesRead += value.byteLength;
-			if (bytesRead > MAX_RESPONSE_BYTES) {
-				await reader.cancel().catch(() => {});
-				throw new Error("Response is too large");
-			}
-			chunks.push(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	return JSON.parse(Buffer.concat(chunks, bytesRead).toString("utf8")) as unknown;
+	return readBoundedJsonResponse(response, {
+		maxBytes: MAX_RESPONSE_BYTES,
+		statusError: (status) => new PrimeInferenceCatalogRequestError(status),
+		tooLargeError: () => new Error("Response is too large"),
+		emptyError: () => new Error("Response body is empty"),
+	});
 }
 
 export async function fetchPrimeInferenceModelCatalog(

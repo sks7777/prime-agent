@@ -1,13 +1,14 @@
-import { Buffer } from "node:buffer";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { writeFileAtomicSync } from "../utils/atomic-file.js";
+import { isTruthyEnvFlag } from "../utils/env-flag.js";
+import { readBoundedJsonResponse } from "./catalog-response.js";
 
 export const CATALOG_REFRESH_INTERVAL_MS = 60 * 60_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 export function isCatalogOffline(): boolean {
-	return /^(1|true|yes)$/i.test(process.env.PI_OFFLINE ?? "");
+	return isTruthyEnvFlag(process.env.PI_OFFLINE);
 }
 
 export class CatalogRequestError extends Error {
@@ -25,27 +26,12 @@ interface Snapshot<T> {
 }
 
 async function readJsonResponse(response: Response): Promise<unknown> {
-	if (!response.ok) throw new CatalogRequestError(response.status);
-	if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) throw new Error("Catalog is too large");
-	if (!response.body) throw new Error("Catalog body is empty");
-	const reader = response.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let bytes = 0;
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			bytes += value.byteLength;
-			if (bytes > MAX_RESPONSE_BYTES) {
-				await reader.cancel();
-				throw new Error("Catalog is too large");
-			}
-			chunks.push(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	return JSON.parse(Buffer.concat(chunks, bytes).toString("utf8")) as unknown;
+	return readBoundedJsonResponse(response, {
+		maxBytes: MAX_RESPONSE_BYTES,
+		statusError: (status) => new CatalogRequestError(status),
+		tooLargeError: () => new Error("Catalog is too large"),
+		emptyError: () => new Error("Catalog body is empty"),
+	});
 }
 
 /** One last-good snapshot per source. Changing scope discards the previous account's view. */
