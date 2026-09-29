@@ -488,25 +488,21 @@ class AcpUpdateProducer {
 	}
 
 	/**
-	 * Send an acp/warning notification directly to the client (bypassing the
-	 * session/update channel). bb renders acp/warning as a transient banner,
-	 * not as assistant output — so the notification text never enters the
-	 * transcript and the agent does not "process" it as a model turn.
+	 * Publish a notification as an agent_message_chunk via session/update so bb
+	 * renders the text. bb's onNotification handler (LL) only processes
+	 * session/update — acp/warning is silently dropped. The messageId is unique
+	 * per notification so bb doesn't merge it with a prior assistant message.
 	 */
-	notifyWarning(summary: string, details?: string): void {
-		this.tail = this.tail.then(async () => {
-			try {
-				await this.admissionReady;
-				if (!this.admissionOpen) return;
-				await this.client.notify("acp/warning", {
-					threadId: this.sessionId,
-					summary,
-					...(details !== undefined ? { details } : {}),
-				});
-			} catch {
-				// Drop only this warning; a rejected queue tail would strand later updates.
-			}
-		});
+	notifyMessage(message: string): void {
+		void this.publish(
+			{
+				sessionUpdate: "agent_message_chunk",
+				messageId: `extension-notify-${randomUUID()}`,
+				content: { type: "text", text: message },
+			},
+			this.currentTurnId,
+			"event",
+		);
 	}
 
 	drain(): Promise<void> {
@@ -1325,10 +1321,10 @@ export async function runAcpModeWithConnection(
 						producer.currentTurnId,
 						"event",
 					);
-					// acp/warning renders as a transient banner in bb, not as
-					// assistant output — the text never enters the transcript and
-					// the agent does not process it as a model turn.
-					producer.notifyWarning(message, notifyType !== "info" ? `type: ${notifyType}` : undefined);
+					// bb's onNotification handler only processes session/update;
+					// acp/warning is silently dropped. Publish the notification text
+					// as an agent_message_chunk so bb renders it.
+					producer.notifyMessage(message);
 				}
 				return;
 			}
