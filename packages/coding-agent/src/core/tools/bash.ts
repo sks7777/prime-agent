@@ -187,7 +187,11 @@ const DISCARD_RESTORE_PATTERN = new RegExp(
 	"g",
 );
 const DISCARD_RESET_PATTERN = new RegExp(
-	`\\bgit\\s+${GIT_GLOBAL_OPTIONS}reset\\s+(?:(?:-[^\\s;&|]+)\\s+)*--hard\\b`,
+	// --hard may appear anywhere within the reset invocation: the common
+	// commit-first ordering (`git reset <commit> --hard`) must hit the guard
+	// exactly like the flag-first one. Bounded to one segment on the
+	// quoted-masked command, so it cannot swallow a chained command.
+	`\\bgit\\s+${GIT_GLOBAL_OPTIONS}reset\\s+[^;&|()]*--hard\\b`,
 	"g",
 );
 const DISCARD_CLEAN_PATTERN = new RegExp(`\\bgit\\s+${GIT_GLOBAL_OPTIONS}clean\\s+([^;&|]*)`, "g");
