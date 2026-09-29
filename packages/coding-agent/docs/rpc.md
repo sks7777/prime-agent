@@ -1051,7 +1051,7 @@ Some `ExtensionUIContext` methods are not supported or degraded in RPC mode beca
 - `getTheme()` returns `undefined`
 - `setTheme()` returns `{ success: false, error: "..." }`
 
-Note: `ctx.hasUI` is `true` in RPC mode because the dialog and fire-and-forget methods are functional via the extension UI sub-protocol.
+Note: `ctx.hasUI` is `true` in RPC mode because the dialog and fire-and-forget methods are functional via the extension UI sub-protocol. In daemon-hosted sessions it reads `false` until the client attaches; read it at decision time rather than once during `session_start`.
 
 ### Extension UI Requests (stdout)
 

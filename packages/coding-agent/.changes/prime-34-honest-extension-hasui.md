@@ -1,0 +1,1 @@
+- Fixed extension tools seeing a fake interactive UI in daemon sessions: `hasUI` now derives from attached clients, so question tools fail fast with a clear "UI not available" instead of a misleading "user cancelled".

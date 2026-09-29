@@ -895,6 +895,8 @@ UI methods for user interaction. See [Custom UI](#custom-ui) for full details.
 
 `false` in print mode (`-p`) and JSON mode. `true` in interactive and RPC mode. In RPC mode, dialog methods (`select`, `confirm`, `input`, `editor`) work via the extension UI sub-protocol, and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) emit requests to the client. Some TUI-specific methods are no-ops or return defaults (see [rpc.md](rpc.md#extension-ui-protocol)).
 
+In daemon-hosted sessions `ctx.hasUI` is dynamic: it reads `false` until an extension UI-capable client (interactive TUI, RPC) is attached, and stays `false` for non-interactive hosts. Read `ctx.hasUI` at decision time rather than once during `session_start`.
+
 ### ctx.cwd
 
 Current working directory.

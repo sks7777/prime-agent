@@ -134,6 +134,11 @@ export async function bindActiveSessionState(
 
 	await session.bindExtensions({
 		uiContext: createExtensionUIContext(state, callbacks.broadcast),
+		// Interactive capability is dynamic: it depends on which clients are
+		// attached right now (bb ACP clients never answer extension dialogs;
+		// the interactive TUI client declares extension_ui). Derived from the
+		// dialog-delivery gate so the two cannot drift apart.
+		hasUI: () => hasExtensionUiClientForMethod(state, "select"),
 		commandContextActions: createCommandContextActions(state),
 		shutdownHandler: callbacks.shutdown,
 		onError: (error) => {

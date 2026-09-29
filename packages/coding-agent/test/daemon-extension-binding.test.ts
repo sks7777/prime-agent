@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
@@ -15,7 +16,7 @@ import { AuthStorage } from "../src/core/auth-storage.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ExtensionAPI, ExtensionFactory } from "../src/index.js";
 
-import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
+import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import { bindActiveSessionState } from "../src/modes/daemon/daemon-extension-binding.js";
 import type { DaemonOutbound } from "../src/modes/daemon/daemon-protocol.js";
 
@@ -100,19 +101,36 @@ describe("daemon extension binding", () => {
 		return runtime;
 	}
 
-	it("strips the duplicated partial message from broadcast message_update events", async () => {
-		const runtime = await createRuntimeForTest(() => {}, ["streamed reply"]);
-
-		const outbound: DaemonOutbound[] = [];
-		const state: ActiveSessionState = {
-			activeSessionId: "active-slim",
+	function testState(runtime: Awaited<ReturnType<typeof createRuntimeForTest>>, id: string): ActiveSessionState {
+		return {
+			activeSessionId: id,
 			runtime,
 			clients: new Set(),
 			pendingAttaches: 0,
 			extensionUiRequests: new Map(),
-			eventGeneration: "generation-slim",
+			eventGeneration: `generation-${id}`,
 			lastEventSequence: 0,
 		};
+	}
+
+	function socketClient(id: string, sessionId: string, extensionUi: boolean, customWidgets = false) {
+		const client: DaemonSocketClient = {
+			id,
+			socket: null as unknown as Socket,
+			attachedActiveSessionIds: new Set([sessionId]),
+			detachInput: () => {},
+			supportsExtensionUi: extensionUi,
+			capabilities: new Set(["attach_snapshot", "event_sequence"]),
+			capabilitiesByActiveSessionId: customWidgets ? new Map([[sessionId, new Set(["custom_widgets"])]]) : new Map(),
+		};
+		return client;
+	}
+
+	it("strips the duplicated partial message from broadcast message_update events", async () => {
+		const runtime = await createRuntimeForTest(() => {}, ["streamed reply"]);
+
+		const outbound: DaemonOutbound[] = [];
+		const state = testState(runtime, "active-slim");
 		await bindActiveSessionState(state, {
 			broadcast: (_state, message) => {
 				outbound.push(message);
@@ -167,27 +185,11 @@ describe("daemon extension binding", () => {
 		);
 
 		const outbound: DaemonOutbound[] = [];
-		const state: ActiveSessionState = {
-			activeSessionId: "active-custom",
-			runtime,
-			clients: new Set(),
-			pendingAttaches: 0,
-			extensionUiRequests: new Map(),
-			eventGeneration: "generation-custom",
-			lastEventSequence: 0,
-		};
+		const state = testState(runtime, "active-custom");
 		// A client with extension UI support must be attached for custom() to proceed.
 		// Production wiring: the base client set stays at the connection defaults
 		// and the attach path writes negotiated capabilities per session.
-		state.clients.add({
-			id: "client-custom",
-			socket: null as unknown as import("node:net").Socket,
-			attachedActiveSessionIds: new Set(["active-custom"]),
-			detachInput: () => {},
-			supportsExtensionUi: true,
-			capabilities: new Set(["attach_snapshot", "event_sequence"]),
-			capabilitiesByActiveSessionId: new Map([["active-custom", new Set(["custom_widgets"])]]),
-		});
+		state.clients.add(socketClient("client-custom", "active-custom", true, true));
 		await bindActiveSessionState(state, {
 			broadcast: (_state, message) => {
 				outbound.push(message);
@@ -255,24 +257,8 @@ describe("daemon extension binding", () => {
 			},
 			["custom undefined reply"],
 		);
-		const state: ActiveSessionState = {
-			activeSessionId: "active-unanswered",
-			runtime,
-			clients: new Set(),
-			pendingAttaches: 0,
-			extensionUiRequests: new Map(),
-			eventGeneration: "generation-unanswered",
-			lastEventSequence: 0,
-		};
-		state.clients.add({
-			id: "client-dialogs-only",
-			socket: null as unknown as import("node:net").Socket,
-			attachedActiveSessionIds: new Set(["active-unanswered"]),
-			detachInput: () => {},
-			supportsExtensionUi: true,
-			capabilities: new Set(["attach_snapshot", "event_sequence"]),
-			capabilitiesByActiveSessionId: new Map(),
-		});
+		const state = testState(runtime, "active-unanswered");
+		state.clients.add(socketClient("client-dialogs-only", "active-unanswered", true));
 		await bindActiveSessionState(state, {
 			broadcast: (_state, message) => {
 				outbound.push(message);
@@ -286,5 +272,27 @@ describe("daemon extension binding", () => {
 		// (the prompt turn completing proves it did not pend).
 		expect(outbound.some((message) => message.type === "extension_ui_request")).toBe(false);
 		expect(customOutcome).toBe("undefined");
+	});
+
+	it("derives hasUI from attached extension-ui clients", async () => {
+		const seen: boolean[] = [];
+		const runtime = await createRuntimeForTest(
+			(pi) => {
+				pi.registerCommand("daemon-hasui", {
+					description: "capture ctx.hasUI",
+					handler: async (_args, ctx) => {
+						seen.push(ctx.hasUI);
+					},
+				});
+			},
+			["ok", "ok"],
+		);
+		const state = testState(runtime, "active-hasui");
+		await bindActiveSessionState(state, { broadcast: () => {}, shutdown: () => {} });
+
+		await runtime.session.prompt("/daemon-hasui");
+		state.clients.add(socketClient("client-hasui", "active-hasui", true));
+		await runtime.session.prompt("/daemon-hasui");
+		expect(seen).toEqual([false, true]);
 	});
 });

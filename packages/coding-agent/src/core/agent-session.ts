@@ -606,8 +606,13 @@ export interface AgentSessionConfig {
 
 export interface ExtensionBindings {
 	uiContext?: ExtensionUIContext;
-	/** Override hasUI for forwarding/partial UI contexts that should not be treated as interactive. */
-	hasUI?: boolean;
+	/**
+	 * Override hasUI for forwarding/partial UI contexts that should not be treated as interactive.
+	 * A provider is re-evaluated on every access: daemon sessions derive it from the attached
+	 * clients, so it reads false until an extension_ui-capable client attaches. Read ctx.hasUI
+	 * at decision time, not once at session_start.
+	 */
+	hasUI?: boolean | (() => boolean);
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
@@ -1761,7 +1766,7 @@ export class AgentSession {
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
-	private _extensionHasUI?: boolean;
+	private _extensionHasUI?: boolean | (() => boolean);
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;

@@ -237,7 +237,7 @@ export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
-	private _hasUIOverride: boolean | undefined;
+	private _hasUIOverride: boolean | (() => boolean) | undefined;
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
@@ -372,8 +372,8 @@ export class ExtensionRunner {
 		this.uiContext = uiContext ?? noOpUIContext;
 	}
 
-	/** Override hasUI for forwarding/partial UI contexts. */
-	setHasUI(hasUI: boolean): void {
+	/** Override hasUI for forwarding/partial UI contexts; a provider re-evaluates per call. */
+	setHasUI(hasUI: boolean | (() => boolean)): void {
 		this._hasUIOverride = hasUI;
 	}
 
@@ -382,6 +382,7 @@ export class ExtensionRunner {
 	}
 
 	hasUI(): boolean {
+		if (typeof this._hasUIOverride === "function") return this._hasUIOverride();
 		return this._hasUIOverride ?? this.uiContext !== noOpUIContext;
 	}
 
