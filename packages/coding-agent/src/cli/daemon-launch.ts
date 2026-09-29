@@ -37,6 +37,7 @@ import {
 	DAEMON_WORKER_TOKEN_ENV,
 } from "../modes/daemon/daemon-worker-protocol.js";
 import { spawnHidden } from "../utils/child-process.js";
+import { isTruthyEnvFlag } from "../utils/env-flag.js";
 import { isHelpCommandRequest, REMOVED_COMMAND_NAMES } from "./command-registry.js";
 import {
 	extractHelpCommandPath,
@@ -611,11 +612,6 @@ export function shouldPrewarmWorkerForArgs(args: readonly string[]): boolean {
  * CLI. Runs before the heavy main module graph loads so the worker is booting
  * while the client boots.
  */
-function isTruthyEnvFlag(value: string | undefined): boolean {
-	if (!value) return false;
-	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
-}
-
 /**
  * Mirror main()'s startup telemetry decision (same env checks + settings) so
  * the prewarm config carries the same telemetryDisabled the create will send.

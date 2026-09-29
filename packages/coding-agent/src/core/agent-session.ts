@@ -12789,6 +12789,18 @@ export class AgentSession {
 		return [...freed];
 	}
 
+	private _assertRlmThinkingLevel(
+		modelSelection: RlmSubagentModelSelection,
+		requestedThinkingLevel: ThinkingLevel,
+	): void {
+		const supported = getSupportedThinkingLevels(modelSelection.model) as ThinkingLevel[];
+		if (!supported.includes(requestedThinkingLevel)) {
+			throw new Error(
+				`Requested thinking level "${requestedThinkingLevel}" is not supported by model "${modelSelection.model.provider}/${modelSelection.model.id}"; supported levels: ${supported.join(", ")}`,
+			);
+		}
+	}
+
 	private async _assertRlmSubagentSessionNameAvailable(name: string, ignorePendingReservation = false): Promise<void> {
 		const depth = this._rlmDepth + 1;
 		if (!ignorePendingReservation && this._pendingRlmSubagentSessionNames.has(name)) {
@@ -12965,12 +12977,7 @@ export class AgentSession {
 				requestedModel ?? this.settingsManager.getSubagentDefaultModel(),
 			);
 			if (requestedThinkingLevel !== undefined) {
-				const supported = getSupportedThinkingLevels(modelSelection.model) as ThinkingLevel[];
-				if (!supported.includes(requestedThinkingLevel)) {
-					throw new Error(
-						`Requested thinking level "${requestedThinkingLevel}" is not supported by model "${modelSelection.model.provider}/${modelSelection.model.id}"; supported levels: ${supported.join(", ")}`,
-					);
-				}
+				this._assertRlmThinkingLevel(modelSelection, requestedThinkingLevel);
 			}
 			if (this._disposed || this._disposing) {
 				throw new Error("Cannot spawn a subagent after its parent was disposed");
@@ -13608,12 +13615,7 @@ export class AgentSession {
 		const cwd = rawCwd === undefined ? this._cwd : resolve(this._cwd, rawCwd.trim());
 		const modelSelection = await this._resolveRlmSubagentModel(requestedModel, "top-level session");
 		if (requestedThinkingLevel !== undefined) {
-			const supported = getSupportedThinkingLevels(modelSelection.model) as ThinkingLevel[];
-			if (!supported.includes(requestedThinkingLevel)) {
-				throw new Error(
-					`Requested thinking level "${requestedThinkingLevel}" is not supported by model "${modelSelection.model.provider}/${modelSelection.model.id}"; supported levels: ${supported.join(", ")}`,
-				);
-			}
+			this._assertRlmThinkingLevel(modelSelection, requestedThinkingLevel);
 		}
 		const thinkingLevel =
 			requestedThinkingLevel ?? (clampThinkingLevel(modelSelection.model, this.thinkingLevel) as ThinkingLevel);

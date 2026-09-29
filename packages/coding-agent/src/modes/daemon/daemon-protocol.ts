@@ -1286,30 +1286,6 @@ export type DaemonOutbound =
 			meta?: DaemonEventMeta;
 	  };
 
-export const DAEMON_OUTBOUND_COMPATIBILITY = {
-	response: LEGACY_DAEMON_COMMAND,
-	session_list_progress: LEGACY_DAEMON_COMMAND,
-	session_list_item: LEGACY_DAEMON_COMMAND,
-	daemon_hello: LEGACY_DAEMON_COMMAND,
-	daemon_closing: LEGACY_DAEMON_COMMAND,
-	heartbeats_changed: { minProtocol: 7, capability: "heartbeat_catalog" },
-	roster_update: { minProtocol: 7, capability: "agent_roster" },
-	session_event: LEGACY_DAEMON_COMMAND,
-	side_question_event: LEGACY_DAEMON_COMMAND,
-	session_status: LEGACY_DAEMON_COMMAND,
-	session_replaced: LEGACY_DAEMON_COMMAND,
-	session_resynced: LEGACY_DAEMON_COMMAND,
-	session_attached: LEGACY_DAEMON_COMMAND,
-	session_snapshot_begin: LEGACY_DAEMON_COMMAND,
-	session_snapshot_chunk: LEGACY_DAEMON_COMMAND,
-	session_snapshot_end: LEGACY_DAEMON_COMMAND,
-	session_snapshot_failed: LEGACY_DAEMON_COMMAND,
-	session_detached: LEGACY_DAEMON_COMMAND,
-	session_closed: LEGACY_DAEMON_COMMAND,
-	extension_ui_request: LEGACY_DAEMON_COMMAND,
-	extension_error: LEGACY_DAEMON_COMMAND,
-} as const satisfies Record<DaemonOutbound["type"], DaemonCommandCompatibility>;
-
 export function createDaemonCommandEnvelope<TCommand extends DaemonCommand>(
 	command: TCommand,
 	id: DaemonCommandId,

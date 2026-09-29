@@ -154,10 +154,16 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 	try {
 		switch (parsed.command) {
 			case "list":
-				await runList(client, parsed.positionals, parsed.json);
+				await runDaemonListCommand(client, parsed.positionals, parsed.json, {
+					optionLabel: "list",
+					format: formatSessionListTable,
+				});
 				return;
 			case "sessions":
-				await runSessions(client, parsed.positionals, parsed.json);
+				await runDaemonListCommand(client, parsed.positionals, parsed.json, {
+					optionLabel: "sessions",
+					format: formatSessionsTable,
+				});
 				return;
 			case "create":
 				await runCreate(client, parsed.positionals, parsed.json);
@@ -749,8 +755,19 @@ async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promis
 	}
 }
 
-async function runList(client: DaemonClient, args: string[], json: boolean): Promise<void> {
-	const { all } = parseListArgs(args);
+interface DaemonListCommandOptions {
+	/** Label used in the "Unknown option" error, e.g. "list" or "sessions". */
+	optionLabel: string;
+	format: (sessions: SessionSummary[]) => string;
+}
+
+async function runDaemonListCommand(
+	client: DaemonClient,
+	args: string[],
+	json: boolean,
+	options: DaemonListCommandOptions,
+): Promise<void> {
+	const { all } = parseListArgs(args, options.optionLabel);
 	const response = await client.request({ type: "list", all });
 	const data = requireSuccess(response);
 	if (json) {
@@ -769,53 +786,17 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		return;
 	}
 
-	console.log(formatSessionListTable(sessions));
+	console.log(options.format(sessions));
 }
 
-function parseListArgs(args: string[]): { all: boolean } {
+function parseListArgs(args: string[], optionLabel: string): { all: boolean } {
 	let all = false;
 	for (const arg of args) {
 		if (arg === "-a" || arg === "--all") {
 			all = true;
 			continue;
 		}
-		throw new Error(`Unknown list option: ${arg}`);
-	}
-	return { all };
-}
-
-// The same list RPC as `prime-agent list`, rendered as a one-line-per-agent table.
-async function runSessions(client: DaemonClient, args: string[], json: boolean): Promise<void> {
-	const { all } = parseSessionsArgs(args);
-	const response = await client.request({ type: "list", all });
-	const data = requireSuccess(response);
-	if (json) {
-		printJson(data);
-		return;
-	}
-
-	const sessions = getSessionSummaries(data);
-	if (!sessions) {
-		printJson(data);
-		return;
-	}
-
-	if (sessions.length === 0) {
-		console.log(all ? "No agents." : "No active agents.");
-		return;
-	}
-
-	console.log(formatSessionsTable(sessions));
-}
-
-function parseSessionsArgs(args: string[]): { all: boolean } {
-	let all = false;
-	for (const arg of args) {
-		if (arg === "-a" || arg === "--all") {
-			all = true;
-			continue;
-		}
-		throw new Error(`Unknown sessions option: ${arg}`);
+		throw new Error(`Unknown ${optionLabel} option: ${arg}`);
 	}
 	return { all };
 }
