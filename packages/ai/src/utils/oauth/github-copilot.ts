@@ -1,6 +1,7 @@
 import { COPILOT_CLIENT_HEADERS, COPILOT_CLIENT_USER_AGENT } from "../../copilot-client-version.js";
 import { getModels } from "../../models.js";
 import type { Api, Model } from "../../types.js";
+import { abortableSleep } from "./abortable-sleep.js";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "./types.js";
 
 type CopilotCredentials = OAuthCredentials & {
@@ -131,26 +132,6 @@ async function startDeviceFlow(domain: string): Promise<DeviceCodeResponse> {
 		interval,
 		expires_in: expiresIn,
 	};
-}
-
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Login cancelled"));
-			return;
-		}
-
-		const timeout = setTimeout(resolve, ms);
-
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timeout);
-				reject(new Error("Login cancelled"));
-			},
-			{ once: true },
-		);
-	});
 }
 
 async function pollForGitHubAccessToken(

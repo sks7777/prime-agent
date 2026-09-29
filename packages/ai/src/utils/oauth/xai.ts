@@ -1,4 +1,5 @@
 import type { Api, Model } from "../../types.js";
+import { abortableSleep } from "./abortable-sleep.js";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "./types.js";
 
 const CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -104,24 +105,6 @@ function credentialsFromResponse(body: JsonObject, previousRefresh?: string): OA
 	return { access, refresh, expires: Date.now() + lifetimeMs - Math.min(REFRESH_SKEW_MS, lifetimeMs / 2) };
 }
 
-function wait(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Login cancelled"));
-			return;
-		}
-		const onAbort = () => {
-			clearTimeout(timeout);
-			reject(new Error("Login cancelled"));
-		};
-		const timeout = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-}
-
 export async function loginXai(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
 	const response = await postForm(
 		DEVICE_CODE_URL,
@@ -141,7 +124,7 @@ export async function loginXai(callbacks: OAuthLoginCallbacks): Promise<OAuthCre
 			: 5000;
 	callbacks.onAuth({ url, instructions: `Enter code: ${userCode}` });
 	while (Date.now() < deadline) {
-		await wait(Math.min(intervalMs, deadline - Date.now(), 2_147_483_647), callbacks.signal);
+		await abortableSleep(Math.min(intervalMs, deadline - Date.now(), 2_147_483_647), callbacks.signal);
 		checkCancelled(callbacks.signal);
 		if (Date.now() >= deadline) break;
 		const token = await postForm(
