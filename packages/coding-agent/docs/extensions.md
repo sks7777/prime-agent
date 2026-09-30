@@ -2297,7 +2297,7 @@ ctx.ui.addAutocompleteProvider((current) => ({
   },
 }));
 
-// Tool output expansion
+// Tool output expansion (does not change the saved chatDetail setting)
 const wasExpanded = ctx.ui.getToolsExpanded();
 ctx.ui.setToolsExpanded(true);
 ctx.ui.setToolsExpanded(wasExpanded);

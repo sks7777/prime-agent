@@ -30,11 +30,13 @@ from typing import Any, TypeVar
 
 from . import host_request
 from .mcp_base import (
+    _EXPIRY_SKEW_SECONDS,
     McpToolError,
     _agent_dir,
     _parse_result,
     _read_auth,
     _resolve_config_value,
+    _resolve_streamable_http,
 )
 
 __all__ = [
@@ -1043,23 +1045,4 @@ def _seconds(value: Any, default: float) -> float:
 
 def _strings(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
-
-
-def _resolve_streamable_http():
-    """Return an SDK streamable-HTTP transport callable.
-
-    SDK versions vary: some expose ``streamablehttp_client(url, headers=...)``,
-    others ``streamable_http_client(url, *, http_client=...)``, and some expose
-    both with *different* signatures.
-    """
-    from mcp.client import streamable_http as mod
-
-    for name in ("streamablehttp_client", "streamable_http_client"):
-        fn = getattr(mod, name, None)
-        if fn is not None:
-            return fn
-    raise ImportError(
-        "the installed `mcp` SDK exposes no streamable-HTTP client; upgrade `mcp`"
-    )
-
 

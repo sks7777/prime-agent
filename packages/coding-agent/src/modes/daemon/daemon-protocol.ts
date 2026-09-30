@@ -914,6 +914,24 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	shutdown: LEGACY_DAEMON_COMMAND,
 } as const satisfies Record<DaemonCommandName, DaemonCommandCompatibility>;
 
+/** Commands only the supervisor serves; a worker rejects them as unknown. */
+const SUPERVISOR_ONLY_DAEMON_COMMANDS: ReadonlySet<string> = new Set([
+	"complete_owned_session",
+	"get_direct_worker_transport",
+	"list_agent_peers",
+	"promote_owned_session",
+	"reattach",
+	"roster_subscribe",
+	"roster_unsubscribe",
+] satisfies DaemonCommandName[]);
+
+/** Commands the supervisor admits: every command in the compatibility table. */
+export const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set(Object.keys(DAEMON_COMMAND_COMPATIBILITY));
+
+export const WORKER_DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set(
+	[...DAEMON_COMMAND_TYPES].filter((type) => !SUPERVISOR_ONLY_DAEMON_COMMANDS.has(type)),
+);
+
 /**
  * Which endpoint serves each command when a client holds both a supervisor
  * (control-plane) and a direct worker (session-plane) connection. Session is
@@ -1285,6 +1303,31 @@ export type DaemonOutbound =
 			error: string;
 			meta?: DaemonEventMeta;
 	  };
+
+// Compile-time only: forces every DaemonOutbound type to declare its compatibility.
+const _DAEMON_OUTBOUND_COMPATIBILITY = {
+	response: LEGACY_DAEMON_COMMAND,
+	session_list_progress: LEGACY_DAEMON_COMMAND,
+	session_list_item: LEGACY_DAEMON_COMMAND,
+	daemon_hello: LEGACY_DAEMON_COMMAND,
+	daemon_closing: LEGACY_DAEMON_COMMAND,
+	heartbeats_changed: { minProtocol: 7, capability: "heartbeat_catalog" },
+	roster_update: { minProtocol: 7, capability: "agent_roster" },
+	session_event: LEGACY_DAEMON_COMMAND,
+	side_question_event: LEGACY_DAEMON_COMMAND,
+	session_status: LEGACY_DAEMON_COMMAND,
+	session_replaced: LEGACY_DAEMON_COMMAND,
+	session_resynced: LEGACY_DAEMON_COMMAND,
+	session_attached: LEGACY_DAEMON_COMMAND,
+	session_snapshot_begin: LEGACY_DAEMON_COMMAND,
+	session_snapshot_chunk: LEGACY_DAEMON_COMMAND,
+	session_snapshot_end: LEGACY_DAEMON_COMMAND,
+	session_snapshot_failed: LEGACY_DAEMON_COMMAND,
+	session_detached: LEGACY_DAEMON_COMMAND,
+	session_closed: LEGACY_DAEMON_COMMAND,
+	extension_ui_request: LEGACY_DAEMON_COMMAND,
+	extension_error: LEGACY_DAEMON_COMMAND,
+} as const satisfies Record<DaemonOutbound["type"], DaemonCommandCompatibility>;
 
 export function createDaemonCommandEnvelope<TCommand extends DaemonCommand>(
 	command: TCommand,

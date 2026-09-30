@@ -49,6 +49,44 @@ export interface AgentSessionRuntimeMetadata {
 	sessionDir?: string;
 }
 
+/** Maps an RLM spawn request to child session options and runtime metadata. */
+export function rlmSubagentRuntimeSpec(options: CreateRlmSubagentRuntimeOptions): {
+	sessionOptions: AgentSessionCreationOptions;
+	runtimeMetadata: AgentSessionRuntimeMetadata;
+} {
+	return {
+		sessionOptions: {
+			model: options.model,
+			thinkingLevel: options.thinkingLevel,
+			serviceTier: options.serviceTier,
+			scopedModels: options.scopedModels,
+			initialActiveToolNames: options.activeToolNames,
+			allowedToolNames: options.allowedToolNames,
+			customTools: options.customTools,
+			includeGoals: options.includeGoals,
+			includeCompactSkill: options.includeCompactSkill,
+			rlmDepth: options.rlmDepth,
+			rlmMaxDepth: options.rlmMaxDepth,
+			rlmSessionDir: options.sessionDir,
+			rlmParentNodeId: options.rlmParentNodeId,
+			rlmParentAgent: options.parentSession.sessionName ?? options.parentSession.sessionId,
+			semanticParentSessionId: options.parentSession.sessionId,
+			semanticSpawnedByRequestId: options.spawnedByRequestId,
+		},
+		runtimeMetadata: {
+			kind: "subagent",
+			createdAt: Date.now(),
+			parentSessionId: options.parentSession.sessionId,
+			parentSessionFile: options.parentSession.sessionFile,
+			rlmChildId: options.id,
+			rlmParentNodeId: options.rlmParentNodeId,
+			prompt: options.prompt,
+			spawnCode: options.spawnCode,
+			sessionDir: options.sessionDir,
+		},
+	};
+}
+
 function extractUserMessageText(content: string | Array<{ type: string; text?: string }>): string {
 	if (typeof content === "string") {
 		return content;
@@ -203,9 +241,6 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 			reason,
 			targetSessionFile,
 		});
-		// Bare dispose() emits session_shutdown("dispose") only for teardown paths
-		// that bypass this runtime teardown.
-		this.session.markSessionShutdownEmitted?.();
 		this.beforeSessionInvalidate?.();
 		// Await the kernel's final snapshot flush before invalidating the session.
 		await this.session.disposeAsync();
@@ -331,36 +366,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "startup" },
 				sessionConfig: this.sessionConfig,
-				sessionOptions: {
-					model: options.model,
-					thinkingLevel: options.thinkingLevel,
-					serviceTier: options.serviceTier,
-					temperature: options.temperature,
-					scopedModels: options.scopedModels,
-					initialActiveToolNames: options.activeToolNames,
-					allowedToolNames: options.allowedToolNames,
-					customTools: options.customTools,
-					includeGoals: options.includeGoals,
-					includeCompactSkill: options.includeCompactSkill,
-					rlmDepth: options.rlmDepth,
-					rlmMaxDepth: options.rlmMaxDepth,
-					rlmSessionDir: options.sessionDir,
-					rlmParentNodeId: options.rlmParentNodeId,
-					rlmParentAgent: options.parentSession.sessionName ?? options.parentSession.sessionId,
-					semanticParentSessionId: options.parentSession.sessionId,
-					semanticSpawnedByRequestId: options.spawnedByRequestId,
-				},
-				runtimeMetadata: {
-					kind: "subagent",
-					createdAt: Date.now(),
-					parentSessionId: options.parentSession.sessionId,
-					parentSessionFile: options.parentSession.sessionFile,
-					rlmChildId: options.id,
-					rlmParentNodeId: options.rlmParentNodeId,
-					prompt: options.prompt,
-					spawnCode: options.spawnCode,
-					sessionDir: options.sessionDir,
-				},
+				...rlmSubagentRuntimeSpec(options),
 			}),
 		);
 		this.subagentRuntimes.set(options.id, runtime);
@@ -700,9 +706,6 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		} catch (error) {
 			disposeError ??= error;
 		}
-		// Bare dispose() emits session_shutdown("dispose") only for teardown paths
-		// that bypass this runtime teardown.
-		this.session.markSessionShutdownEmitted?.();
 		try {
 			this.beforeSessionInvalidate?.();
 		} catch (error) {
