@@ -2,3 +2,4 @@
 - Added `toolRounds` and `toolCallsPerRound` to session stats for the tool-call batching DoD.
 - Marked the `ipython` tool `parallelSafe` so serial-config batches queue through the kernel in order.
 - Strengthened the batching guidance to require in-cell recomputation of reported numbers and a self-check printout in the last research cell.
+- Made multi-call responses the default response shape in batching guidance (2-4 cells per response with speculative reads at turn start).
