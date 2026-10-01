@@ -2,3 +2,4 @@
 - Added `toolRounds` and `toolCallsPerRound` to session stats for the tool-call batching DoD.
 - Marked the `ipython` tool `parallelSafe` so serial-config batches queue through the kernel in order.
 - Strengthened the batching guidance to require in-cell recomputation of reported numbers and a self-check printout in the last research cell.
+- Extended the batching guidance with a lean-transcript policy: findings held in kernel variables (survive compaction), summaries printed instead of raw sources.
