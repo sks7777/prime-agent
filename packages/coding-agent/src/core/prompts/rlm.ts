@@ -15,7 +15,7 @@ export interface RlmPromptOptions {
 
 const LONG_RUNNING_WORK_PROMPT = [
 	"For slow or independently completing work, use a nonblocking control loop: start the work, record its handle or output location, then end your turn. A `bash()` handle left running beyond its creating cell sends a completion follow-up; when it arrives, inspect the saved handle and continue. Reading a finished handle's result first cancels that follow-up.",
-	"When delegation is available and useful, assign independent substantive tasks to separate workers. Start independent workers without waiting for each one sequentially, and let them run in parallel.",
+	"When a task has 2 or more independent legs that each need research or multi-step work, delegate them to children: spawn all independent children in one response (several `rlm.spawn` calls in one cell), then end your turn. Start independent workers without waiting for each one sequentially. Spawn early — before doing inline work — so the legs overlap in wall time; collect their results at the end. For single-command sub-tasks, use a compound cell instead — spawning a child for a one-liner costs more than it saves.",
 	"Do not keep the turn open by polling with `time.sleep()` or shell `sleep`, and do not replace polling with a long blocking `await`. Await only the short operation needed to start work or inspect a result that is already available; otherwise end the turn.",
 ].join("\n");
 
@@ -187,7 +187,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			parts.push("Inspect files a child wrote when you need to collect its work without an observation capability.");
 		}
 		parts.push(
-			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed.",
+			"Spawn independent children in one response (several `rlm.spawn` calls in one cell) and end your turn instead of awaiting completion. Spawn early — before inline work — so children run while you handle other legs. Multiple replies may arrive over multiple turns. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed. Use `rlm.collect(targets)` to fan-in child results without steering them.",
 		);
 		if (options.insideBb && depth === 0) {
 			parts.push(

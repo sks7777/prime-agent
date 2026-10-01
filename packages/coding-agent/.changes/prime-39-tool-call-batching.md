@@ -3,3 +3,4 @@
 - Marked the `ipython` tool `parallelSafe` so serial-config batches queue through the kernel in order.
 - Strengthened the batching guidance to require in-cell recomputation of reported numbers and a self-check printout in the last research cell.
 - Made multi-call responses the default response shape in batching guidance (2-4 cells per response with speculative reads at turn start).
+- Strengthened RLM fan-out guidance: spawn all independent children in one response before inline work, spawn early for wall-time overlap, use compound cells for single-command sub-tasks instead of over-spawning.
