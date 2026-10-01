@@ -467,6 +467,13 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	executionMode?: ToolExecutionMode;
 
+	/**
+	 * Safe to run concurrently even when the session-level tool execution is
+	 * "sequential". Set for tools that serialize their own work (a
+	 * single-threaded kernel) without depending on sibling calls in the batch.
+	 */
+	parallelSafe?: boolean;
+
 	/** Execute the tool. */
 	execute(
 		toolCallId: string,

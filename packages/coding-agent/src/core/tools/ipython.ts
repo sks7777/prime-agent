@@ -685,10 +685,16 @@ export function createIpythonToolDefinition(
 		name: "ipython",
 		label: "ipython",
 		description:
-			"Execute Python code in a persistent Python REPL. Top-level `await` is supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
+			"Execute Python code in a persistent Python REPL. Top-level `await` is supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment. Batch independent operations into one cell (several `bash()` calls, file reads, or searches in a single `code`) instead of one operation per call; keep dependent operations in later calls.",
 		promptSnippet: "ipython - persistent Python REPL for code, state, and bash() orchestration",
+		promptGuidelines: [
+			"Batch independent operations: put several `bash()` calls, file reads, or searches into one `ipython` cell and emit multiple independent tool calls in one response. Keep dependent operations sequential. Cap each operation's printed output; group operations by phase and end research cells with a short self-check printout.",
+		],
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
+		// parallelSafe keeps batches concurrent under a serial session config; the kernel queue
+		// serializes the actual cell execution, so cells still run in source order.
 		executionMode: "sequential",
+		parallelSafe: true,
 		parameters: ipythonSchema,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 			let hasWorkingMessage = false;

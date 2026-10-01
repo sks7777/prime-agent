@@ -1,0 +1,1 @@
+- Added `parallelSafe` on agent tools, letting a sequential tool-execution config run multi-call batches of self-serializing tools concurrently.

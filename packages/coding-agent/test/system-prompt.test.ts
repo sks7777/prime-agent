@@ -34,3 +34,40 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("<available_prompt_templates>");
 	});
 });
+
+describe("buildSystemPrompt batching guidance (PRIME-39)", () => {
+	const batchingSnippet = "Batch independent operations";
+
+	it("appends tool promptGuidelines in the default prompt path", () => {
+		const prompt = buildSystemPrompt({
+			cwd: "/tmp",
+			selectedTools: ["ipython"],
+			promptGuidelines: [`${batchingSnippet}: compound cells.`],
+		});
+
+		expect(prompt).toContain("# Additional Guidance");
+		expect(prompt).toContain(`${batchingSnippet}: compound cells.`);
+	});
+
+	it("appends tool promptGuidelines in the customPrompt path", () => {
+		const prompt = buildSystemPrompt({
+			customPrompt: "Base prompt.",
+			cwd: "/tmp",
+			selectedTools: ["ipython"],
+			promptGuidelines: [`${batchingSnippet}: compound cells.`],
+		});
+
+		expect(prompt).toContain("# Additional Guidance");
+		expect(prompt).toContain(`${batchingSnippet}: compound cells.`);
+	});
+
+	it("omits the Additional Guidance section when no guidelines are configured", () => {
+		const prompt = buildSystemPrompt({
+			customPrompt: "Base prompt.",
+			cwd: "/tmp",
+			selectedTools: ["ipython"],
+		});
+
+		expect(prompt).not.toContain("# Additional Guidance");
+	});
+});

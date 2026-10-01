@@ -594,6 +594,18 @@ async function executeToolCalls(
 		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
 	);
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
+		// Semi-parallel escape hatch: a serial config can still run a batch
+		// concurrently when every tool is marked parallelSafe and none of the
+		// calls targets a per-tool sequential tool. Serial-config semantics
+		// stay in force otherwise (batch of one is unaffected).
+		if (config.toolExecution === "sequential" && !hasSequentialToolCall && toolCalls.length > 1) {
+			const allParallelSafe = toolCalls.every(
+				(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.parallelSafe === true,
+			);
+			if (allParallelSafe) {
+				return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
+			}
+		}
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
 	}
 	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);

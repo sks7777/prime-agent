@@ -15241,6 +15241,9 @@ export class AgentSession {
 		const assistantMessages = state.messages.filter((m) => m.role === "assistant").length;
 		const toolResults = state.messages.filter((m) => m.role === "toolResult").length;
 
+		let toolRounds = 0;
+		let maxCallsPerRound = 0;
+		let callsPerRoundSum = 0;
 		let toolCalls = 0;
 		let totalInput = 0;
 		let totalOutput = 0;
@@ -15251,7 +15254,13 @@ export class AgentSession {
 		for (const message of state.messages) {
 			if (message.role === "assistant") {
 				const assistantMsg = message as AssistantMessage;
-				toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
+				const roundCalls = assistantMsg.content.filter((c) => c.type === "toolCall").length;
+				toolCalls += roundCalls;
+				if (roundCalls > 0) {
+					toolRounds += 1;
+					callsPerRoundSum += roundCalls;
+					if (roundCalls > maxCallsPerRound) maxCallsPerRound = roundCalls;
+				}
 				totalInput += assistantMsg.usage.input;
 				totalOutput += assistantMsg.usage.output;
 				totalCacheRead += assistantMsg.usage.cacheRead;
@@ -15265,6 +15274,11 @@ export class AgentSession {
 			sessionId: this.sessionId,
 			userMessages,
 			assistantMessages,
+			toolRounds,
+			toolCallsPerRound: {
+				max: maxCallsPerRound,
+				avg: toolRounds > 0 ? callsPerRoundSum / toolRounds : 0,
+			},
 			toolCalls,
 			toolResults,
 			totalMessages: state.messages.length,

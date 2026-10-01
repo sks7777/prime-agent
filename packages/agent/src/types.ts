@@ -368,6 +368,12 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * If omitted, the default execution mode applies.
 	 */
 	executionMode?: ToolExecutionMode;
+	/**
+	 * Safe to run concurrently even when the session-level `toolExecution` is
+	 * "sequential". Set for tools that serialize their own work (single-threaded
+	 * kernel, file lock) without depending on sibling tool calls in the batch.
+	 */
+	parallelSafe?: boolean;
 }
 
 /** Context snapshot passed to the low-level agent loop and tool hooks. */

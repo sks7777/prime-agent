@@ -1885,6 +1885,30 @@ describe("AgentSession rlm recursion", () => {
 		expect(attribution.aggregateUsage.cost.total).toBe(10);
 	});
 
+	it("reports toolRounds and toolCallsPerRound in getSessionStats", () => {
+		const root = createSession();
+		const single = assistantMessage("one call", usage(1, 1));
+		(single as unknown as { content: AssistantMessage["content"] }).content = [
+			{ type: "toolCall", id: "call-1", name: "ipython", arguments: {} } as never,
+		];
+		const multi = assistantMessage("two calls", usage(2, 2));
+		(multi as unknown as { content: AssistantMessage["content"] }).content = [
+			{ type: "toolCall", id: "call-2", name: "ipython", arguments: {} } as never,
+			{ type: "toolCall", id: "call-3", name: "ipython", arguments: {} } as never,
+		];
+		const noCalls = assistantMessage("pure text", usage(1, 1));
+
+		for (const message of [single, multi, noCalls]) {
+			root.agent.state.messages.push(message);
+			root.sessionManager.appendMessage(message);
+		}
+
+		const stats = root.getSessionStats();
+		expect(stats.toolRounds).toBe(2);
+		expect(stats.toolCalls).toBe(3);
+		expect(stats.toolCallsPerRound).toEqual({ max: 2, avg: 1.5 });
+	});
+
 	it("coalesces the admitted task's tool-loop turns into one flushed spawn-usage attribution", async () => {
 		const root = createToolLoopSession(2, [usage(1, 1), usage(2, 2)]);
 

@@ -1285,7 +1285,241 @@ describe("agentLoop with AgentMessage", () => {
 		expect(executionOrder[0]).toBe("slow:a");
 		expect(executionOrder).toContain("fast:b");
 	});
+	it("should run parallelSafe tools concurrently even when config.toolExecution is sequential", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		let firstEntered = false;
+		let firstCompleted = false;
+		let parallelObserved = false;
+		let releaseFirstBySecond: (() => void) | undefined;
+		const secondEntered = new Promise<void>((resolve) => {
+			releaseFirstBySecond = resolve;
+		});
 
+		const kernelTool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "kernel",
+			label: "Kernel",
+			description: "Kernel tool",
+			parameters: toolSchema,
+			parallelSafe: true,
+			async execute(_toolCallId, params) {
+				if (params.value === "first") {
+					firstEntered = true;
+					// Releases only if the sibling call entered concurrently; in a
+					// serial run the sibling enters after this call already finished.
+					await secondEntered;
+					firstCompleted = true;
+				}
+				if (params.value === "second" && firstEntered && !firstCompleted) {
+					parallelObserved = true;
+					releaseFirstBySecond?.();
+				}
+				return {
+					content: [{ type: "text", text: `kernel: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [kernelTool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("run both");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+
+		let callIndex = 0;
+		const stream = agentLoop([userPrompt], context, config, undefined, () => {
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const message = createAssistantMessage(
+						[
+							{ type: "toolCall", id: "tool-1", name: "kernel", arguments: { value: "first" } },
+							{ type: "toolCall", id: "tool-2", name: "kernel", arguments: { value: "second" } },
+						],
+						"toolUse",
+					);
+					mockStream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return mockStream;
+		});
+
+		const events: AgentEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const toolResultIds = events.flatMap((event) => {
+			if (event.type !== "message_end" || event.message.role !== "toolResult") {
+				return [];
+			}
+			return [event.message.toolCallId];
+		});
+
+		expect(parallelObserved).toBe(true);
+		expect(firstCompleted).toBe(true);
+		expect(toolResultIds).toEqual(["tool-1", "tool-2"]);
+	});
+
+	// Serial-config batches without parallelSafe stay sequential: `b` enters only after `a` completed.
+	it("should stay sequential under toolExecution sequential when a parallelSafe tool lacks the flag", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executionOrder: string[] = [];
+
+		const unsafeTool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "unsafe",
+			label: "Unsafe",
+			description: "Unsafe tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executionOrder.push(`unsafe:${params.value}:start`);
+				await Promise.resolve();
+				executionOrder.push(`unsafe:${params.value}:end`);
+				return {
+					content: [{ type: "text", text: `unsafe: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [unsafeTool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("run both");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+
+		let callIndex = 0;
+		const stream = agentLoop([userPrompt], context, config, undefined, () => {
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const message = createAssistantMessage(
+						[
+							{ type: "toolCall", id: "tool-1", name: "unsafe", arguments: { value: "a" } },
+							{ type: "toolCall", id: "tool-2", name: "unsafe", arguments: { value: "b" } },
+						],
+						"toolUse",
+					);
+					mockStream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return mockStream;
+		});
+
+		const events: AgentEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// Serial execution interleaves per call; concurrent execution would emit
+		// ["a:start", "b:start", "a:end", "b:end"].
+		expect(executionOrder).toEqual(["unsafe:a:start", "unsafe:a:end", "unsafe:b:start", "unsafe:b:end"]);
+	});
+
+	// executionMode "sequential" on one tool force-serializes even a parallelSafe sibling under a serial config.
+	it("should keep sequential execution when a batch mixes parallelSafe with executionMode sequential", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executionOrder: string[] = [];
+
+		const sequentialTool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "seq",
+			label: "Seq",
+			description: "Sequential tool",
+			parameters: toolSchema,
+			executionMode: "sequential",
+			async execute(_toolCallId, params) {
+				executionOrder.push(`seq:${params.value}:start`);
+				await Promise.resolve();
+				executionOrder.push(`seq:${params.value}:end`);
+				return {
+					content: [{ type: "text", text: `seq: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const safeTool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "safe",
+			label: "Safe",
+			description: "Safe tool",
+			parameters: toolSchema,
+			parallelSafe: true,
+			async execute(_toolCallId, params) {
+				executionOrder.push(`safe:${params.value}:start`);
+				await Promise.resolve();
+				executionOrder.push(`safe:${params.value}:end`);
+				return {
+					content: [{ type: "text", text: `safe: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [sequentialTool, safeTool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("run both");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+
+		let callIndex = 0;
+		const stream = agentLoop([userPrompt], context, config, undefined, () => {
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const message = createAssistantMessage(
+						[
+							{ type: "toolCall", id: "tool-1", name: "seq", arguments: { value: "a" } },
+							{ type: "toolCall", id: "tool-2", name: "safe", arguments: { value: "b" } },
+						],
+						"toolUse",
+					);
+					mockStream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return mockStream;
+		});
+
+		const events: AgentEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// Full serial interleave; concurrent execution would interleave start/end across calls.
+		expect(executionOrder).toEqual(["seq:a:start", "seq:a:end", "safe:b:start", "safe:b:end"]);
+	});
 	it("should allow parallel execution when all tools have executionMode=parallel", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		let firstResolved = false;

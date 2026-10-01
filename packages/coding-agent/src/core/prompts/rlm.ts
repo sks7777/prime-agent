@@ -51,6 +51,7 @@ const REPL_CONTROL_PROMPT = [
 	"Terminology: continual harness names the persisted prompt, memory, skill, and subagent layer; RLM names the runtime, Python REPL kernel, and native call interface exposed to the model.",
 	"",
 	"RLM-native call contract: installed Python skills are pre-imported modules. Read the matching SKILL.md and call its documented function, such as `await <skill_import>.<function>(...)`; when a CLI exists, use `<skill_import> ...` from shell. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm.spawn('sub-task', name='worker')`; admission returns a child handle immediately. Results arrive only through an available messaging capability or files, never as an `rlm.spawn()` return value. Do not invent non-native wrappers such as `call_skill(...)` or `run_subagent(...)`.",
+	"Batch independent operations: write compound REPL cells (several `bash()` calls, file reads, and searches in one `code`) and emit multiple independent tool calls in one response. Keep dependent operations sequential. Cap each operation's printed output, group operations by phase, and end research cells with a short self-check printout.",
 ].join("\n");
 
 export interface ChildAgentDoctrineOptions {
@@ -94,7 +95,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	const canRunShellSkills = hasIpython || activeTools.includes("bash");
 	const parts = [
 		"You are a general purpose agent that uses code to solve tasks.",
-		"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating one step at a time.",
+		"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating step by step (one logical concern per step — not one tool call per step).",
 		"When you are done, stop calling tools and state your final answer.",
 		"",
 		LONG_RUNNING_WORK_PROMPT,

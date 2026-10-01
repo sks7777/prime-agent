@@ -1,0 +1,3 @@
+- Added batch-friendly system-prompt guidance: compound REPL cells, multi-call responses, output caps, and self-check printouts instead of one operation per LLM round.
+- Added `toolRounds` and `toolCallsPerRound` to session stats for the tool-call batching DoD.
+- Marked the `ipython` tool `parallelSafe` so serial-config batches queue through the kernel in order.

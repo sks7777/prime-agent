@@ -78,6 +78,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	if (customPrompt) {
 		let prompt = customPrompt;
 
+		const customGuidelines = formatPromptGuidelines(promptGuidelines);
+		if (customGuidelines) {
+			prompt += `\n\n# Additional Guidance\n\n${customGuidelines}`;
+		}
+
 		// Append project context files
 		if (contextFiles.length > 0) {
 			prompt += "\n\n# Project Context\n\n";
