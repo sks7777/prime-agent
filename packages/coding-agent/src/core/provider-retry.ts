@@ -62,20 +62,37 @@ export function providerStreamFailureStatus(message: AssistantMessage): number |
  * blips (observed 2026-09-13 killing every active session), so it counts as
  * transient unavailability, not a permanent rejection. Safety filters
  * deterministically reject identical requests, so they never retry.
+ *
+ * A 400 that rejects a nameless tool call is the one repairable invalid_request
+ * shape: the request builder drops the malformed call (PRIME-43), so a retry
+ * sends a different, repaired payload instead of replaying the rejected one.
  */
 export function isPermanentProviderFailureKind(
 	kind: string | undefined,
 	retriesPerformed: number,
 	status?: number,
+	errorMessage?: string,
 ): boolean {
 	if (kind === "invalid_request" && status === 404) {
 		return false;
 	}
 	if (kind === "invalid_request" || kind === "refusal" || kind === "permission" || kind === "safety") {
+		if (
+			kind === "invalid_request" &&
+			status === 400 &&
+			retriesPerformed === 0 &&
+			errorMessage !== undefined &&
+			TOOL_CALL_NAME_INVALID_REQUEST_PATTERN.test(errorMessage)
+		) {
+			return false;
+		}
 		return true;
 	}
 	return retriesPerformed > 0 && kind === "auth";
 }
+
+/** OpenAI-compatible rejection of a tool call without a function name. */
+const TOOL_CALL_NAME_INVALID_REQUEST_PATTERN = /tool_calls\[\d+\]\.function\.name must be a non-empty string/;
 
 export type ProviderRetryDelay = { kind: "wait"; delayMs: number } | { kind: "exceeds-cap"; retryAfterMs: number };
 
@@ -129,7 +146,14 @@ export async function completeWithProviderRetry(
 			return message;
 		}
 		const kind = providerStreamFailureKind(message);
-		if (isPermanentProviderFailureKind(kind, retriesPerformed, providerStreamFailureStatus(message))) {
+		if (
+			isPermanentProviderFailureKind(
+				kind,
+				retriesPerformed,
+				providerStreamFailureStatus(message),
+				message.errorMessage,
+			)
+		) {
 			return message;
 		}
 		const delay = providerRetryDelay(retriesPerformed + 1, providerStreamFailureRetryAfterMs(message), policy);

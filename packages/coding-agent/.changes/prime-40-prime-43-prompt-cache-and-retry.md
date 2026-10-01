@@ -1,0 +1,2 @@
+- Fixed full provider-turn loss on a 400 nameless-tool-call rejection: the session now retries once with the repaired payload instead of replaying the rejected request (PRIME-43).
+- Dropped the repeated `<system_instructions>` wrapper that bb re-attaches on reconnect, so a resumed session no longer re-sends the ~20K instruction block as a new prompt (PRIME-40).

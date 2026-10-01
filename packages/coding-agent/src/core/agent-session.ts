@@ -208,12 +208,14 @@ import {
 	type HarnessDigestDetails,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
+	historyContainsInstructionsWrapper,
 	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 	isSessionSlashCommandMessage,
 	PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE,
 	type RefinementSource,
 	RLM_CHILD_FAILURE_CUSTOM_TYPE,
 	RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE,
+	stripRepeatedInstructionsWrapper,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { findExactModelReferenceMatch } from "./model-resolver.js";
@@ -5669,6 +5671,11 @@ export class AgentSession {
 		images: ImageContent[] | undefined,
 		policy: SubmissionNormalizationPolicy,
 	): NormalizedSubmission | Promise<NormalizedSubmission> {
+		// PRIME-40: bb re-attaches the `<system_instructions>` wrapper to the
+		// first prompt of every new connection (reconnect). The first copy is
+		// already in the restored history; replaying another full copy only
+		// duplicates ~20K tokens per reconnect. Keep the first copy only.
+		text = stripRepeatedInstructionsWrapper(text, historyContainsInstructionsWrapper(this.agent.state.messages));
 		// ACP clients prepend a `<system_instructions>` wrapper to a spawned
 		// thread's first prompt, and bb tell attribution prefixes steered
 		// cross-thread commands; split them so slash commands still parse. The
@@ -13677,6 +13684,7 @@ export class AgentSession {
 			this._getProviderStreamFailureKind(message),
 			this._retryAttempt,
 			providerStreamFailureStatus(message),
+			message.errorMessage,
 		);
 	}
 

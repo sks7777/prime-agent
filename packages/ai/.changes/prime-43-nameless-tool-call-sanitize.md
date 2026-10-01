@@ -1,0 +1,1 @@
+- Fixed replayed history containing a nameless tool call (streamed by a broken provider) from being rejected whole by OpenAI-compatible endpoints; the malformed call and its result are now dropped before sending (PRIME-43).

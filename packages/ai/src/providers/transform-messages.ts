@@ -1,3 +1,4 @@
+import { getLogger } from "../log.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -8,6 +9,8 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.js";
+
+const log = getLogger("transform-messages");
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
@@ -118,6 +121,20 @@ export function transformMessages<TApi extends Api>(
 
 				if (block.type === "toolCall") {
 					const toolCall = block as ToolCall;
+					// PRIME-43: some providers emit tool calls that never receive a
+					// function name. Replaying a nameless call makes OpenAI-compatible
+					// endpoints reject the whole request ("tool_calls[0].function.name
+					// must be a non-empty string"), killing the turn. Drop the call
+					// here; its tool result is dropped below because pendingToolCalls
+					// no longer contains the id.
+					if (!toolCall.name || toolCall.name.trim().length === 0) {
+						log.warn("dropped nameless tool call from history", {
+							model: model.id,
+							provider: model.provider,
+							toolCallId: toolCall.id,
+						});
+						return [];
+					}
 					let normalizedToolCall: ToolCall = toolCall;
 
 					if (!isSameModel && toolCall.thoughtSignature) {

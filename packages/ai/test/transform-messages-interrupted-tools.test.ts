@@ -210,3 +210,56 @@ describe("cross-model session migration", () => {
 		});
 	});
 });
+
+// PRIME-43: an empty-name tool call (streamed by a broken provider and recorded
+// in history) makes OpenAI-compatible endpoints reject the whole replayed
+// request with "tool_calls[0].function.name must be a non-empty string".
+describe("nameless tool call sanitization (PRIME-43)", () => {
+	function assistantWithName(name: string, id: string): AssistantMessage {
+		return {
+			...assistant("toolUse"),
+			content: [{ type: "toolCall", id, name, arguments: {} }],
+		};
+	}
+
+	it("drops a nameless tool call and its result from replayed history", () => {
+		const messages = [user, assistantWithName("", "call_1"), toolResult("call_1")];
+
+		const result = transformMessages(messages, model);
+		expect(result).toHaveLength(2);
+		const assistantMsg = result[1] as AssistantMessage;
+		expect(assistantMsg.content).toEqual([]);
+		// No result is replayed or synthesized for the dropped call.
+		expect(result.filter((message) => message.role === "toolResult")).toHaveLength(0);
+	});
+
+	it("keeps named calls around a nameless one and drops only the orphaned result", () => {
+		const messages = [
+			user,
+			{
+				...assistant("toolUse"),
+				content: [
+					{ type: "toolCall", id: "call_1", name: "bash", arguments: {} } as const,
+					{ type: "toolCall", id: "call_2", name: "", arguments: {} } as const,
+					{ type: "toolCall", id: "call_3", name: "read", arguments: {} } as const,
+				],
+			},
+			toolResult("call_1"),
+			toolResult("call_2"),
+			toolResult("call_3"),
+		];
+
+		expect(transformMessages(messages, model)).toEqual([
+			user,
+			{
+				...assistant("toolUse"),
+				content: [
+					{ type: "toolCall", id: "call_1", name: "bash", arguments: {} } as const,
+					{ type: "toolCall", id: "call_3", name: "read", arguments: {} } as const,
+				],
+			},
+			toolResult("call_1"),
+			toolResult("call_3"),
+		]);
+	});
+});

@@ -14,7 +14,12 @@ import {
 	type HarnessScope,
 	type RefinementResult,
 } from "./refinement/refinement.js";
-import { isSessionSlashCommandName, parseSessionSlashCommand, type SessionSlashCommand } from "./slash-commands.js";
+import {
+	INSTRUCTIONS_WRAPPER_PREFIX_PATTERN,
+	isSessionSlashCommandName,
+	parseSessionSlashCommand,
+	type SessionSlashCommand,
+} from "./slash-commands.js";
 
 export const COMPACTION_SUMMARY_PREFIX = `[compaction-summary]
 
@@ -204,6 +209,38 @@ The persistent memories produced across this session so far:
 
 export const HARNESS_DIGEST_SUFFIX = `
 </harness_state>`;
+
+/**
+ * PRIME-40: detect whether the session history already carries a
+ * `<system_instructions>` wrapper. ACP clients (bb) attach the wrapper to the
+ * first prompt of every new connection, so a reconnect replays a second full
+ * copy; a duplicate only adds ~20K tokens and keeps the prompt drifting from
+ * the cached prefix.
+ */
+export function historyContainsInstructionsWrapper(messages: readonly AgentMessage[]): boolean {
+	for (const message of messages) {
+		if (message.role !== "user") continue;
+		const { content } = message;
+		const text =
+			typeof content === "string"
+				? content
+				: content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+		if (text.includes("<system_instructions>") && text.includes("</system_instructions>")) return true;
+	}
+	return false;
+}
+
+/**
+ * PRIME-40: drop a leading `<system_instructions>` wrapper when the history
+ * already contains one, so a reconnect prompt does not persist a second copy.
+ */
+export function stripRepeatedInstructionsWrapper(text: string, historyHasWrapper: boolean): string {
+	if (!historyHasWrapper) return text;
+	const match = INSTRUCTIONS_WRAPPER_PREFIX_PATTERN.exec(text.trimStart());
+	if (!match) return text;
+	const rest = text.trimStart().slice(match[0].length).trimStart();
+	return rest.length > 0 ? rest : text;
+}
 
 export function createHarnessDigestMessage(
 	digest: string,

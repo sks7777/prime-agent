@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	completeWithProviderRetry,
 	DEFAULT_PROVIDER_WAIT_POLICY,
+	isPermanentProviderFailureKind,
 	type ProviderParkDecision,
 	type ProviderWaitPolicy,
 	parseProviderResetMs,
@@ -73,6 +74,75 @@ describe("completeWithProviderRetry", () => {
 			kind: "wait",
 			delayMs: 2_147_483_647,
 		});
+	});
+
+	// PRIME-43: a 400 that rejects a nameless tool call is repairable — the
+	// request builder drops the malformed call, so the retry sends a repaired
+	// payload instead of replaying the rejected one. One retry, then stop.
+	it("retries a nameless-tool-call 400 once and stops on the second failure", async () => {
+		const namelessCallError = (): AssistantMessage => ({
+			...providerError("invalid_request"),
+			errorMessage:
+				"Internal error: prime-agent turn failed: model — [400]: tool_calls[0].function.name must be a non-empty string (got empty string) (HTTP 400)",
+			diagnostics: [
+				{
+					type: "provider_stream_failure",
+					timestamp: Date.now(),
+					details: { kind: "invalid_request", status: 400 },
+				},
+			],
+		});
+		let attemptCount = 0;
+		const attempt = vi.fn(async () => {
+			attemptCount += 1;
+			return attemptCount === 1 ? namelessCallError() : { ...providerError(), stopReason: "stop" as const };
+		});
+
+		const result = await completeWithProviderRetry(attempt, {
+			policy: { enabled: true, maxRetries: 3, baseDelayMs: 1, maxRetryDelayMs: 60_000 },
+		});
+
+		expect(result.stopReason).toBe("stop");
+		expect(attempt).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps a repeated nameless-tool-call 400 permanent after the first retry", async () => {
+		const namelessCallError = (): AssistantMessage => ({
+			...providerError("invalid_request"),
+			errorMessage:
+				"model — [400]: tool_calls[0].function.name must be a non-empty string (got empty string) (HTTP 400)",
+			diagnostics: [
+				{
+					type: "provider_stream_failure",
+					timestamp: Date.now(),
+					details: { kind: "invalid_request", status: 400 },
+				},
+			],
+		});
+		const attempt = vi.fn(async () => namelessCallError());
+
+		const result = await completeWithProviderRetry(attempt, {
+			policy: { enabled: true, maxRetries: 3, baseDelayMs: 1, maxRetryDelayMs: 60_000 },
+		});
+
+		expect(result.stopReason).toBe("error");
+		expect(attempt).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("isPermanentProviderFailureKind (PRIME-43)", () => {
+	const TOOL_NAME_400 =
+		"model — [400]: tool_calls[0].function.name must be a non-empty string (got empty string) (HTTP 400)";
+
+	it("allows exactly one retry for a nameless-tool-call 400", () => {
+		expect(isPermanentProviderFailureKind("invalid_request", 0, 400, TOOL_NAME_400)).toBe(false);
+		expect(isPermanentProviderFailureKind("invalid_request", 1, 400, TOOL_NAME_400)).toBe(true);
+	});
+
+	it("keeps invalid_request failures permanent without the tool-name shape", () => {
+		expect(isPermanentProviderFailureKind("invalid_request", 0, 400, "Invalid model id")).toBe(true);
+		expect(isPermanentProviderFailureKind("invalid_request", 0, 400)).toBe(true);
+		expect(isPermanentProviderFailureKind("invalid_request", 0, undefined, TOOL_NAME_400)).toBe(true);
 	});
 });
 
