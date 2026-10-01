@@ -351,6 +351,10 @@ const OWNED_WORKER_DISCONNECT_GRACE_MS = 30_000;
 const IDLE_EVICTION_MAX_SWEEP_INTERVAL_MS = 5 * 60_000;
 const IDLE_EVICTION_MIN_SWEEP_INTERVAL_MS = 60_000;
 const IDLE_EVICTION_DRAIN_TIMEOUT_MS = 5_000;
+/** Grace period before an empty-session worker can be evicted on last client detach.
+ * Covers the spawn-to-prompt race: an RLM child worker has zero messages until the
+ * parent's first prompt arrives; without this guard the reaper kills it first. */
+const EMPTY_SESSION_EVICTION_GRACE_MS = 30_000;
 const CHILD_PASSIVATION_PER_WORKER_CAP = 2;
 const SCHEDULED_WAKE_RETRY_MS = 60_000;
 const SCHEDULED_WAKE_MAX_TIMEOUT_MS = 2_147_483_647;
@@ -1841,6 +1845,14 @@ export class DaemonSupervisor {
 			this.isWorkerStopping(worker) ||
 			this.isWakeBlindScheduledWorker(worker)
 		) {
+			return false;
+		}
+		// Grace period: a freshly spawned RLM child worker has zero messages until
+		// the parent's prompt arrives. Without this guard the empty-session eviction
+		// reaper kills the worker before the first prompt attaches, causing
+		// "Daemon worker client closed" on all concurrent children.
+		const workerAgeMs = Date.now() - new Date(worker.descriptor.createdAt).getTime();
+		if (Number.isFinite(workerAgeMs) && workerAgeMs < EMPTY_SESSION_EVICTION_GRACE_MS) {
 			return false;
 		}
 		const summaries = this.workerRosterEntries(worker)
