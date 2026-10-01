@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PromptTemplate } from "../src/core/prompt-templates.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
+import type { BuildSystemPromptOptions } from "../src/core/system-prompt.js";
 import { buildSystemPrompt } from "../src/core/system-prompt.js";
 
 const template: PromptTemplate = {
@@ -36,38 +37,20 @@ describe("buildSystemPrompt", () => {
 });
 
 describe("buildSystemPrompt batching guidance (PRIME-39)", () => {
-	const batchingSnippet = "Batch independent operations";
-
-	it("appends tool promptGuidelines in the default prompt path", () => {
-		const prompt = buildSystemPrompt({
-			cwd: "/tmp",
-			selectedTools: ["ipython"],
-			promptGuidelines: [`${batchingSnippet}: compound cells.`],
-		});
-
-		expect(prompt).toContain("# Additional Guidance");
-		expect(prompt).toContain(`${batchingSnippet}: compound cells.`);
-	});
-
-	it("appends tool promptGuidelines in the customPrompt path", () => {
-		const prompt = buildSystemPrompt({
-			customPrompt: "Base prompt.",
-			cwd: "/tmp",
-			selectedTools: ["ipython"],
-			promptGuidelines: [`${batchingSnippet}: compound cells.`],
-		});
-
-		expect(prompt).toContain("# Additional Guidance");
-		expect(prompt).toContain(`${batchingSnippet}: compound cells.`);
-	});
-
-	it("omits the Additional Guidance section when no guidelines are configured", () => {
-		const prompt = buildSystemPrompt({
-			customPrompt: "Base prompt.",
-			cwd: "/tmp",
-			selectedTools: ["ipython"],
-		});
-
-		expect(prompt).not.toContain("# Additional Guidance");
+	it("appends tool promptGuidelines in both prompt paths and omits the section when unset", () => {
+		const guideline = "Batch independent operations: compound cells.";
+		const paths: Array<[string, BuildSystemPromptOptions]> = [
+			["default", { cwd: "/tmp", selectedTools: ["ipython"], promptGuidelines: [guideline] }],
+			[
+				"custom",
+				{ customPrompt: "Base prompt.", cwd: "/tmp", selectedTools: ["ipython"], promptGuidelines: [guideline] },
+			],
+		];
+		for (const [name, options] of paths) {
+			expect(buildSystemPrompt(options), `${name} path`).toContain(`# Additional Guidance\n\n- ${guideline}`);
+		}
+		expect(
+			buildSystemPrompt({ customPrompt: "Base prompt.", cwd: "/tmp", selectedTools: ["ipython"] }),
+		).not.toContain("# Additional Guidance");
 	});
 });
