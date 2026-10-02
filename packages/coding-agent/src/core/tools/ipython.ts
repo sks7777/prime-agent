@@ -685,11 +685,8 @@ export function createIpythonToolDefinition(
 		name: "ipython",
 		label: "ipython",
 		description:
-			"Execute Python code in a persistent Python REPL. Top-level `await` is supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment. Prefer emitting 2-4 tool calls per response (one per phase step) and batch independent operations into one cell (several `bash()` calls, file reads, or searches in a single `code`); a call that needs a previous call output stays for a later response. In the cell that produces a result you will report, recompute the numbers and re-check the claims before leaving the cell — totals that were not recomputed in-cell tend to be wrong.",
+			"Execute Python code in a persistent Python REPL. Top-level `await` is supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
 		promptSnippet: "ipython - persistent Python REPL for code, state, and bash() orchestration",
-		promptGuidelines: [
-			"Default response shape: 2-4 `ipython` tool calls per response, one per phase step (a cell needing a previous output waits for the next response); compound cells batch several `bash()` calls, file reads, or searches. Keep dependent operations sequential. Cap each operation's printed output and group operations by phase. End the last research cell of a task with a self-check printout: recompute totals and re-open key facts inside that cell before you report them.",
-		],
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
 		// parallelSafe keeps batches concurrent under a serial session config; the kernel queue
 		// serializes the actual cell execution, so cells still run in source order.

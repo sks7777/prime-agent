@@ -53,4 +53,26 @@ describe("buildSystemPrompt batching guidance (PRIME-39)", () => {
 			buildSystemPrompt({ customPrompt: "Base prompt.", cwd: "/tmp", selectedTools: ["ipython"] }),
 		).not.toContain("# Additional Guidance");
 	});
+
+	it("uses compound-cell example and research-phase language in the default RLM prompt", () => {
+		const prompt = buildSystemPrompt({ cwd: "/tmp", selectedTools: ["ipython"] });
+		expect(prompt).toContain("one research phase per turn");
+		expect(prompt).toContain("h1 = bash('rg -n foo src/')");
+		expect(prompt).toContain("r1, r2 = await h1, await h2");
+		expect(prompt).not.toContain("one logical concern per step");
+	});
+
+	it("uses explicit delegation threshold (3+ turns) in the default RLM prompt", () => {
+		const prompt = buildSystemPrompt({ cwd: "/tmp", selectedTools: ["ipython"] });
+		expect(prompt).toContain("3+ turns");
+		expect(prompt).toContain("rlm.collect(targets)");
+		expect(prompt).not.toContain("single-command sub-tasks");
+	});
+
+	it("includes speculative-first-cell example in the default RLM prompt", () => {
+		const prompt = buildSystemPrompt({ cwd: "/tmp", selectedTools: ["ipython"] });
+		expect(prompt).toContain("speculative cell");
+		expect(prompt).toContain("h1=bash('ls src/')");
+		expect(prompt).toContain("r1,r2,r3 = await h1, await h2, await h3");
+	});
 });

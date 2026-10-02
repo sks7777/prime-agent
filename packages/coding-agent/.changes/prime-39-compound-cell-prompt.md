@@ -1,0 +1,4 @@
+- Changed RLM prompt to use concrete compound-cell examples instead of abstract batching instructions, redefining a step as one research phase per turn.
+- Removed duplicated batching instructions from ipython tool description and promptGuidelines; batching guidance now lives only in the RLM system prompt.
+- Added explicit delegation threshold (3+ turns) to RLM prompt so the model can decide spawn vs compound cell.
+- Added speculative-first-cell example to RLM prompt with concrete ls + rg + cat pattern for research turns.
