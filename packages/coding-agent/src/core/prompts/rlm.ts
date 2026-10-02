@@ -15,7 +15,7 @@ export interface RlmPromptOptions {
 
 const LONG_RUNNING_WORK_PROMPT = [
 	"For slow or independently completing work, use a nonblocking control loop: start the work, record its handle or output location, then end your turn. A `bash()` handle left running beyond its creating cell sends a completion follow-up; when it arrives, inspect the saved handle and continue. Reading a finished handle's result first cancels that follow-up.",
-	"When a task has 2 or more independent legs that each need research or multi-step work, delegate them to children: spawn all in one response, then end your turn. Spawn early — before inline work — so the legs overlap in wall time; collect at the end. For single-command sub-tasks, use a compound cell instead — spawning a child for a one-liner costs more than it saves.",
+	"When a task has 2 or more independent legs that each need research or multi-step work, delegate them to children: spawn all independent children in one response (several `rlm.spawn` calls in one cell), then end your turn. Start independent workers without waiting for each one sequentially. Spawn early — before doing inline work — so the legs overlap in wall time; collect their results at the end. For single-command sub-tasks, use a compound cell instead — spawning a child for a one-liner costs more than it saves.",
 	"Do not keep the turn open by polling with `time.sleep()` or shell `sleep`, and do not replace polling with a long blocking `await`. Await only the short operation needed to start work or inspect a result that is already available; otherwise end the turn.",
 ].join("\n");
 
@@ -51,7 +51,7 @@ const REPL_CONTROL_PROMPT = [
 	"Terminology: continual harness names the persisted prompt, memory, skill, and subagent layer; RLM names the runtime, Python REPL kernel, and native call interface exposed to the model.",
 	"",
 	"RLM-native call contract: installed Python skills are pre-imported modules. Read the matching SKILL.md and call its documented function, such as `await <skill_import>.<function>(...)`; when a CLI exists, use `<skill_import> ...` from shell. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm.spawn('sub-task', name='worker')`; admission returns a child handle immediately. Results arrive only through an available messaging capability or files, never as an `rlm.spawn()` return value. Do not invent non-native wrappers such as `call_skill(...)` or `run_subagent(...)`.",
-	"Batch independent operations: several cells per response, several operations per cell; keep dependent operations sequential; recompute any number you report inside the cell that produced it.",
+	"Make multiple tool calls the default response shape: plan the next 2-4 cells of the current phase and emit them in one response (several `ipython` calls plus any independent `bash()`/skill calls) instead of one call per response; the kernel queue executes same-kernel cells in source order, so keep only the true sequencing dependency: a cell that needs a previous cell's output stays for a later response. Write compound REPL cells too (several `bash()` calls, file reads, and searches in one `code`). Begin research turns with one speculative cell that lists/reads the obvious candidates. Cap each operation's printed output and group operations by phase. Verify before reporting: recompute any number, cross-check any claim inside the cell that produced it, and end the last research cell of a task with a short self-check printout (recount totals, re-open key facts); never quote a number the cell did not recompute or re-examine.",
 ].join("\n");
 
 export interface ChildAgentDoctrineOptions {
@@ -95,7 +95,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	const canRunShellSkills = hasIpython || activeTools.includes("bash");
 	const parts = [
 		"You are a general purpose agent that uses code to solve tasks.",
-		"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating step by step (one logical concern per step).",
+		"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating step by step (one logical concern per step — not one tool call per step).",
 		"When you are done, stop calling tools and state your final answer.",
 		"",
 		LONG_RUNNING_WORK_PROMPT,
@@ -187,7 +187,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			parts.push("Inspect files a child wrote when you need to collect its work without an observation capability.");
 		}
 		parts.push(
-			"Spawn independent children in one response and end your turn. Spawn early — before inline work — so children run while you handle other legs. Multiple replies may arrive over multiple turns. Use `rlm.collect(targets)` to fan-in results; delete a direct child with `await rlm.delete_subagent(child)` when done.",
+			"Spawn independent children in one response (several `rlm.spawn` calls in one cell) and end your turn instead of awaiting completion. Spawn early — before inline work — so children run while you handle other legs. Multiple replies may arrive over multiple turns. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed. Use `rlm.collect(targets)` to fan-in child results without steering them.",
 		);
 		if (options.insideBb && depth === 0) {
 			parts.push(
