@@ -834,8 +834,17 @@ export function createBashToolDefinition(
 
 				const snapshot = await finishOutput();
 				const { text: outputText, details } = formatOutput(snapshot);
+				// A nonzero exit of a successfully executed command is data, not a
+				// tool error: the command ran, and its output plus the status line
+				// is what the model needs to pick the next step. Only execution
+				// failures (spawn error, timeout, abort) turn into tool errors.
+				// Returning normally also preserves `details` (truncation info,
+				// fullOutputPath) that the throw path dropped.
 				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+					return {
+						content: [{ type: "text", text: appendStatus(outputText, `Command exited with code ${exitCode}`) }],
+						details,
+					};
 				}
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {

@@ -201,13 +201,13 @@ describe("bash tool destructive-git dirty-tree guard", () => {
 	it("fails open outside a git repository", async () => {
 		const bash = createBashTool(testDir);
 
-		const error = await bash.execute("guard-no-repo", { command: "git checkout -- ." }).then(
-			() => undefined,
-			(err: Error) => err,
-		);
+		// Nonzero exits are data, not tool errors: the guard stays out of the
+		// way and the command failure surfaces in the result text.
+		const result = await bash.execute("guard-no-repo", { command: "git checkout -- ." });
 
-		expect(error).toBeInstanceOf(Error);
-		expect((error as Error).message).not.toMatch(/Refusing to run/);
+		const text = result.content.map((c) => ("text" in c ? c.text : "")).join("");
+		expect(text).not.toMatch(/Refusing to run/);
+		expect(text).toMatch(/Command exited with code/);
 	});
 
 	it("runs no probe for non-discard commands", async () => {
