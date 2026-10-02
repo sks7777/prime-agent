@@ -20,6 +20,16 @@ export interface PrimeAgentSubagentMeta {
 	depth?: number;
 	tokenCount?: number;
 	error?: string;
+	/** Latest child progress note (`rlm.progress.note`), newest wins. */
+	progressNote?: string;
+	/** Child activity projection: waiting/writing/executing + tool name. */
+	activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string };
+	/** Tail of the child's latest assistant message (answer preview). */
+	answerPreview?: string;
+	/** One-line recent-work recap from the daemon summarizer. */
+	recap?: string;
+	/** Wall-clock of the child's last tracked activity. */
+	lastActivityAt?: number;
 }
 
 export interface PrimeAgentAutonomousMeta {

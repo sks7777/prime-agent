@@ -1,0 +1,2 @@
+- Enriched RLM child update `_meta.subagents` with `progressNote`, `activity`, `answerPreview`, `recap`, `lastActivityAt` for structured ACP clients.
+- Extracted `mergeSubagentSnapshot` from interactive mode to a shared `agent-connection/rlm-snapshot-merge.ts` module.

@@ -364,4 +364,44 @@ describe("ACP session event mapping", () => {
 			},
 		]);
 	});
+
+	it("enriches rlm_child_update with progress fields in _meta subagents", () => {
+		const state: AcpEventMappingState = {};
+		const child = {
+			id: "sub-abc123",
+			sessionName: "reviewer",
+			status: "running",
+			model: "omnirouter/glm-5.3",
+			tokenCount: 5000,
+			progressNote: "analyzing diff",
+			activity: { kind: "writing" as const, toolName: "ipython" },
+			answerPreview: "Found 3 issues",
+			recap: "reviewing PR",
+			lastActivityAt: 1700000000000,
+			sessionDir: "/tmp/child",
+		};
+		const updates = acpUpdatesForSessionEvent(
+			{ type: "rlm_child_update", child } as AgentConnectionSessionEvent,
+			state,
+		);
+		// Exactly one update: enriched session_info_update (no visible thought chunk).
+		expect(updates).toHaveLength(1);
+		expect(updates[0]).toMatchObject({
+			sessionUpdate: "session_info_update",
+			_meta: {
+				[PRIME_AGENT_META_NAMESPACE]: {
+					subagents: [
+						expect.objectContaining({
+							id: "sub-abc123",
+							progressNote: "analyzing diff",
+							activity: { kind: "writing", toolName: "ipython" },
+							answerPreview: "Found 3 issues",
+							recap: "reviewing PR",
+							lastActivityAt: 1700000000000,
+						}),
+					],
+				},
+			},
+		});
+	});
 });

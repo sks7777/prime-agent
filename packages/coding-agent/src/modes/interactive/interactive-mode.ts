@@ -213,7 +213,7 @@ import type {
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
-import { AgentConnectionPromptAdmissionError } from "../agent-connection/index.js";
+import { AgentConnectionPromptAdmissionError, mergeSubagentSnapshot } from "../agent-connection/index.js";
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
 import { getModelArgumentCompletions } from "../model-autocomplete.js";
 import {
@@ -444,25 +444,6 @@ export function formatSplashCwd(cwd: string): string {
 	}
 
 	return normalized;
-}
-
-function mergeSubagentSnapshot(
-	previous: AgentConnectionRlmChildAgentSnapshot,
-	incoming: AgentConnectionRlmChildAgentSnapshot,
-): AgentConnectionRlmChildAgentSnapshot {
-	const active = incoming.status === "running" || incoming.status === "queued";
-	return {
-		...previous,
-		...incoming,
-		parentId: incoming.parentId ?? previous.parentId,
-		// Active updates may omit a previously known daemon session id, but a
-		// terminal update without one means the child is no longer resident.
-		activeSessionId: active ? (incoming.activeSessionId ?? previous.activeSessionId) : incoming.activeSessionId,
-		// A completed retained child can become active again when it receives a
-		// follow-up. Its RLM run status stays terminal, so activity must remain an
-		// independent projection of the live session state.
-		activity: active ? (incoming.activity ?? previous.activity) : incoming.activity,
-	};
 }
 
 export function truncatePathMiddle(value: string, width: number): string {
