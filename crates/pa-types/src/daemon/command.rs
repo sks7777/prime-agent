@@ -80,6 +80,10 @@ pub struct PromptInput {
     /// a caller-supplied value can never name a live mint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rlm_notice_nonce: Option<String>,
+    /// Resume the dangling same-text user turn instead of appending a
+    /// duplicate user message (PRIME-55). Set by prompt-recovery re-issue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_pending_user_message: Option<bool>,
 }
 
 /// Client commands, tagged by `type`. Every variant carries `id` (bare

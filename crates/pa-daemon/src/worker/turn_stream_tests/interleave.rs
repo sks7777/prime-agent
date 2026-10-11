@@ -456,6 +456,7 @@ async fn lane_work_parking_at_the_gate_cancels_the_stop() {
         queue_visible: true,
         policy: TurnPolicy::Queued,
         forced_batch: false,
+        resume_pending_user_message: None,
     };
     {
         let mut core = seam.core.lock().unwrap();

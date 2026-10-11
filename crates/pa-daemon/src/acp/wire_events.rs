@@ -10,7 +10,7 @@
 use serde::Deserialize as _;
 use serde_json::{json, Value};
 
-use super::meta::{prime_agent_meta, PrimeAgentCompactionMeta, PrimeAgentSessionMeta};
+use super::meta::{prime_agent_meta, PrimeAgentAutoRetryMeta, PrimeAgentCompactionMeta, PrimeAgentSessionMeta};
 use super::types::{AcpSessionUpdate, AcpToolKind, AcpToolStatus, TextBlock};
 
 /// The model-facing Python REPL tool.
@@ -372,6 +372,25 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                             .and_then(|child| child.get("error"))
                             .and_then(Value::as_str)
                             .map(str::to_string),
+                        progress_note: child
+                            .and_then(|child| child.get("progressNote"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        activity: child
+                            .and_then(|child| child.get("activity"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        answer_preview: child
+                            .and_then(|child| child.get("answerPreview"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        recap: child
+                            .and_then(|child| child.get("recap"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        last_activity_at: child
+                            .and_then(|child| child.get("lastActivityAt"))
+                            .and_then(Value::as_u64),
                     }]),
                     ..Default::default()
                 }),
@@ -448,6 +467,57 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                             .and_then(|message| message.get("deliveryStatus"))
                             .and_then(Value::as_str)
                             .map(str::to_string),
+                    }),
+                    ..Default::default()
+                }),
+            }]
+        }
+        // Provider auto-retry: the session loop is waiting on a retry timer
+        // (PRIME-55). Publish the loop state so a client can show "retrying"
+        // instead of silence.
+        "auto_retry_start" => {
+            let attempt = event.get("attempt").and_then(Value::as_u64);
+            let max_attempts = event.get("maxAttempts").and_then(Value::as_u64);
+            let delay_ms = event.get("delayMs").and_then(Value::as_u64);
+            let reason = event.get("reason").and_then(Value::as_str);
+            let backup_model = event.get("backupModel").and_then(Value::as_str);
+            let error_message = event.get("errorMessage").and_then(Value::as_str);
+            vec![AcpSessionUpdate::SessionInfoUpdate {
+                meta: prime_agent_meta(&PrimeAgentSessionMeta {
+                    auto_retry: Some(PrimeAgentAutoRetryMeta {
+                        phase: "waiting".to_string(),
+                        attempt: attempt.map(|v| v as u32),
+                        max_attempts: max_attempts.map(|v| v as u32),
+                        delay_ms: delay_ms,
+                        reason: reason.map(str::to_string),
+                        backup_model: backup_model.map(str::to_string),
+                        restored_model: None,
+                        error_message: error_message.map(str::to_string),
+                    }),
+                    ..Default::default()
+                }),
+            }]
+        }
+        "auto_retry_end" => {
+            let success = event.get("success").and_then(Value::as_bool).unwrap_or(false);
+            let attempt = event.get("attempt").and_then(Value::as_u64);
+            let final_error = event.get("finalError").and_then(Value::as_str);
+            let restored_model = event.get("restoredModel").and_then(Value::as_str);
+            vec![AcpSessionUpdate::SessionInfoUpdate {
+                meta: prime_agent_meta(&PrimeAgentSessionMeta {
+                    auto_retry: Some(PrimeAgentAutoRetryMeta {
+                        phase: if success {
+                            "recovered".to_string()
+                        } else {
+                            "exhausted".to_string()
+                        },
+                        attempt: attempt.map(|v| v as u32),
+                        max_attempts: None,
+                        delay_ms: None,
+                        reason: None,
+                        backup_model: None,
+                        restored_model: restored_model.map(str::to_string),
+                        error_message: final_error.map(str::to_string),
                     }),
                     ..Default::default()
                 }),
@@ -632,7 +702,6 @@ mod tests {
             "turn_end",
             "agent_begin",
             "session_action_update",
-            "auto_retry_start",
         ] {
             let updates = wire_updates(
                 &json!({ "type": event_type, "message": { "role": "user" } }),
@@ -848,6 +917,82 @@ mod tests {
         assert_eq!(
             namespaced(&updates[0])["refinement"],
             json!({ "status": "failed", "error": "Summarization failed: no responses" })
+        );
+    }
+
+    #[test]
+    fn auto_retry_start_surfaces_waiting_metadata() {
+        let mut state = WireMappingState::default();
+        let updates = wire_updates(
+            &json!({
+                "type": "auto_retry_start",
+                "attempt": 2,
+                "maxAttempts": 3,
+                "delayMs": 8000,
+                "reason": "unavailable",
+                "errorMessage": "503 Service temporarily unavailable",
+            }),
+            &mut state,
+        );
+        assert_eq!(updates.len(), 1);
+        let value = updates[0].to_bare_value();
+        assert_eq!(value["sessionUpdate"], "session_info_update");
+        assert_eq!(
+            namespaced(&updates[0])["autoRetry"],
+            json!({
+                "phase": "waiting",
+                "attempt": 2,
+                "maxAttempts": 3,
+                "delayMs": 8000,
+                "reason": "unavailable",
+                "errorMessage": "503 Service temporarily unavailable",
+            })
+        );
+    }
+
+    #[test]
+    fn auto_retry_end_success_surfaces_recovered() {
+        let mut state = WireMappingState::default();
+        let updates = wire_updates(
+            &json!({
+                "type": "auto_retry_end",
+                "success": true,
+                "attempt": 2,
+                "restoredModel": "openai/gpt-5",
+            }),
+            &mut state,
+        );
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            namespaced(&updates[0])["autoRetry"],
+            json!({
+                "phase": "recovered",
+                "attempt": 2,
+                "restoredModel": "openai/gpt-5",
+            })
+        );
+    }
+
+    #[test]
+    fn auto_retry_end_failure_surfaces_exhausted() {
+        let mut state = WireMappingState::default();
+        let updates = wire_updates(
+            &json!({
+                "type": "auto_retry_end",
+                "success": false,
+                "attempt": 3,
+                "finalError": "retry exhausted",
+            }),
+            &mut state,
+        );
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            namespaced(&updates[0])["autoRetry"],
+            json!({
+                "phase": "exhausted",
+                "attempt": 3,
+                "errorMessage": "retry exhausted",
+            })
         );
     }
 

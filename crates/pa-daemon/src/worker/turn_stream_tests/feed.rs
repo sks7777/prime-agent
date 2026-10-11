@@ -28,6 +28,7 @@ async fn the_waiting_prompt_resolves_only_after_the_turn_settles() {
                     queue_visible: true,
                     policy: TurnPolicy::Queued,
                     forced_batch: false,
+                    resume_pending_user_message: None,
                 }],
             )
             .await;
@@ -189,6 +190,7 @@ async fn roster_feed_publishes_live_tool_activity() {
                 queue_visible: true,
                 policy: TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             }],
         )
         .await;

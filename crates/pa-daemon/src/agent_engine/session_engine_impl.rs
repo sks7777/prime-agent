@@ -7,7 +7,7 @@ use super::{
     AgentSessionEngine, Arc, BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun,
     CompactionOutcome, CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection,
     ParentIdentity, PromptRequest, ProviderTarget, SessionEngine, SideQuestionOutcome,
-    SideQuestionRequest, StartupScope, TurnPrompt, Value, DEFAULT_RLM_MAX_DEPTH,
+    SideQuestionRequest, StartupScope, TurnAdmission, TurnPrompt, Value, DEFAULT_RLM_MAX_DEPTH,
 };
 
 impl SessionEngine for AgentSessionEngine {
@@ -144,6 +144,7 @@ impl SessionEngine for AgentSessionEngine {
                     source: "user".to_string(),
                     agent_message_id: None,
                     custom_message: Some(crate::session_commands::custom_message_value(&message)),
+                    resume_pending_user_message: None,
                 },
                 goal_update,
                 pending_handle,
@@ -1297,7 +1298,7 @@ impl SessionEngine for AgentSessionEngine {
                 )) {
                     return;
                 }
-                self.run_turns(TurnPrompt::Injected(message), aborted, &mut emit);
+                self.run_turns(TurnPrompt::Injected(message), TurnAdmission::FreshPrompt, aborted, &mut emit);
             } else {
                 emit(EngineEvent::Done(Ok(())));
             }
@@ -1325,52 +1326,64 @@ impl SessionEngine for AgentSessionEngine {
             }
             None => None,
         };
+        // A recovery re-issue may resume a dangling turn: the previous
+        // attempt already appended this exact user message, and re-appending
+        // it would duplicate the turn in the transcript (PRIME-55). Reuse
+        // the transcript tail so the turn runs without a second append.
+        let resume_tail = request.resume_pending_user_message == Some(true)
+            && request.custom_message.is_none()
+            && request.batch.is_empty()
+            && self.dangling_user_message_tail(&request.message);
         // The accepted turn row: an injected custom row replaces the user
         // message; the plain turn records the accepted row, images after.
-        let accepted = if let Some(custom) = &request.custom_message {
-            EngineEvent::CustomMessage(custom.clone())
-        } else {
-            let mut content = vec![json!({ "type": "text", "text": request.message })];
-            for image in &request.images {
-                let mut block = match serde_json::to_value(image) {
-                    Ok(Value::Object(block)) => Value::Object(block),
-                    _ => continue,
-                };
-                if let Some(object) = block.as_object_mut() {
-                    object.insert("type".to_string(), json!("image"));
+        // A resumed turn skips the accepted row — the transcript already
+        // holds it.
+        if !resume_tail {
+            let accepted = if let Some(custom) = &request.custom_message {
+                EngineEvent::CustomMessage(custom.clone())
+            } else {
+                let mut content = vec![json!({ "type": "text", "text": request.message })];
+                for image in &request.images {
+                    let mut block = match serde_json::to_value(image) {
+                        Ok(Value::Object(block)) => Value::Object(block),
+                        _ => continue,
+                    };
+                    if let Some(object) = block.as_object_mut() {
+                        object.insert("type".to_string(), json!("image"));
+                    }
+                    content.push(block);
                 }
-                content.push(block);
-            }
-            EngineEvent::UserMessage(json!({
-                "role": "user",
-                "content": content,
-                "timestamp": now_millis(),
-            }))
-        };
-        if !emit(accepted) {
-            return;
-        }
-        // The batched co-delivery rows: one accepted user row per batched
-        // message, in delivery order, already expanded above.
-        for row in &request.batch {
-            let text = row.text.clone();
-            let mut content = vec![json!({ "type": "text", "text": text })];
-            for image in &row.images {
-                let mut block = match serde_json::to_value(image) {
-                    Ok(Value::Object(block)) => Value::Object(block),
-                    _ => continue,
-                };
-                if let Some(object) = block.as_object_mut() {
-                    object.insert("type".to_string(), json!("image"));
-                }
-                content.push(block);
-            }
-            if !emit(EngineEvent::UserMessage(json!({
-                "role": "user",
-                "content": content,
-                "timestamp": now_millis(),
-            }))) {
+                EngineEvent::UserMessage(json!({
+                    "role": "user",
+                    "content": content,
+                    "timestamp": now_millis(),
+                }))
+            };
+            if !emit(accepted) {
                 return;
+            }
+            // The batched co-delivery rows: one accepted user row per batched
+            // message, in delivery order, already expanded above.
+            for row in &request.batch {
+                let text = row.text.clone();
+                let mut content = vec![json!({ "type": "text", "text": text })];
+                for image in &row.images {
+                    let mut block = match serde_json::to_value(image) {
+                        Ok(Value::Object(block)) => Value::Object(block),
+                        _ => continue,
+                    };
+                    if let Some(object) = block.as_object_mut() {
+                        object.insert("type".to_string(), json!("image"));
+                    }
+                    content.push(block);
+                }
+                if !emit(EngineEvent::UserMessage(json!({
+                    "role": "user",
+                    "content": content,
+                    "timestamp": now_millis(),
+                }))) {
+                    return;
+                }
             }
         }
         let turn_prompt = match injected {
@@ -1394,7 +1407,12 @@ impl SessionEngine for AgentSessionEngine {
             emit(EngineEvent::Done(Err(refusal)));
             return;
         }
-        self.run_turns(turn_prompt, aborted, &mut emit);
+        let initial_admission = if resume_tail {
+            TurnAdmission::ResumePending
+        } else {
+            TurnAdmission::FreshPrompt
+        };
+        self.run_turns(turn_prompt, initial_admission, aborted, &mut emit);
         self.clear_image_route();
     }
 

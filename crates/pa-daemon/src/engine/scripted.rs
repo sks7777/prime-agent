@@ -257,6 +257,7 @@ impl SessionEngine for ScriptedEngine {
                     },
                     "timestamp": crate::util::now_ms(),
                 })),
+                resume_pending_user_message: None,
             },
             goal_update: Some(goal.state.clone()),
             // The scripted faux mints through no real driver: no guard.

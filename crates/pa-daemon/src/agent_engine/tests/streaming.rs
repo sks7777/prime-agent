@@ -20,6 +20,7 @@ fn prompt_images_ride_the_user_message_content() {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: None,
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {
@@ -90,6 +91,7 @@ fn assistant_updates_stream_live_while_the_turn_runs() {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: None,
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {
@@ -164,6 +166,7 @@ fn agent_engine_streams_updates_and_final_message() {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: None,
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {

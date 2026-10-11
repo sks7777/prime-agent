@@ -777,6 +777,7 @@ fn injected_custom_turn_holds_one_representation() {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: Some(notice),
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {
@@ -966,6 +967,7 @@ fn active_goal_aborted_turn_row_broadcasts_and_goal_accounting_skips_it() {
                 source: "user".to_string(),
                 agent_message_id: None,
                 custom_message: None,
+                resume_pending_user_message: None,
             },
             &|| false,
             &mut |event| {

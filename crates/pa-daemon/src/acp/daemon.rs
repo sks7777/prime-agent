@@ -42,6 +42,11 @@ use super::wire_config::{
 };
 use super::wire_events::{self, WireMappingState};
 
+/// Bounded wait for a daemon restart during prompt recovery (PRIME-55).
+const PROMPT_RECOVERY_MAX_WAIT_MS: u64 = 180_000;
+/// Poll interval for the daemon socket during prompt recovery.
+const PROMPT_RECOVERY_PROBE_MS: u64 = 2_000;
+
 /// Response timeout for session-scoped commands.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -68,7 +73,7 @@ pub(crate) struct DaemonLink {
 }
 
 impl DaemonLink {
-    async fn connect(socket_path: &Path) -> anyhow::Result<Self> {
+    pub(crate) async fn connect(socket_path: &Path) -> anyhow::Result<Self> {
         let stream = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             pa_types::platform::transport::connect_transport(socket_path),
@@ -298,6 +303,10 @@ pub(crate) struct DaemonAcpState {
     pub(crate) closed_input_pause_id: Option<String>,
     pub(crate) closed_input_pause_key: Option<String>,
     pub(crate) mcp_server_names: Vec<String>,
+    /// Set when a graceful `session_closed{shutdown}` arrived: the ACP
+    /// connection rides out the shutdown and re-attaches on the
+    /// replacement daemon (PRIME-55).
+    pub(crate) shutdown_recovery_pending: bool,
 }
 
 /// Serve the daemon-attached ACP mode until stdin closes. The caller
@@ -352,6 +361,19 @@ pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::
                             None;
                         {
                             let mut guard = state.lock().await;
+                            // A graceful shutdown is terminal at the
+                            // connection level in TS, but an ACP
+                            // connection that owns daemon recovery rides
+                            // it out: mark the session as needing
+                            // recovery so the next prompt re-attaches on
+                            // the replacement daemon (PRIME-55).
+                            if event.get("type").and_then(Value::as_str)
+                                == Some("session_closed")
+                                && event.get("reason").and_then(Value::as_str)
+                                    == Some("shutdown")
+                            {
+                                guard.shutdown_recovery_pending = true;
+                            }
                             let Some(current) = guard.session.as_mut() else {
                                 continue;
                             };
@@ -506,10 +528,19 @@ pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::
             } => {
                 let link = Arc::clone(&link);
                 let state = Arc::clone(&state);
+                let socket_path = options.socket_path.clone();
                 let options_tx = tx.clone();
                 handlers.spawn(async move {
-                    handle_session_prompt(id, params, admission_id, &link, &state, options_tx)
-                        .await;
+                    handle_session_prompt(
+                        id,
+                        params,
+                        admission_id,
+                        &link,
+                        &state,
+                        &socket_path,
+                        options_tx,
+                    )
+                    .await;
                 });
             }
             // A refused prompt or close answers from the prefix; the
@@ -2078,9 +2109,10 @@ async fn handle_session_prompt(
     admission_id: String,
     link: &Arc<DaemonLink>,
     state: &Arc<Mutex<DaemonAcpState>>,
+    socket_path: &Path,
     tx: producer::FrameSink,
 ) {
-    let reply = prompt_turn(id, params, &admission_id, link, state).await;
+    let reply = prompt_turn(id, params, &admission_id, link, state, socket_path).await;
     release_turn_slot(state, &admission_id).await;
     let _ = tx.send(reply);
 }
@@ -2144,6 +2176,224 @@ fn prompt_block_error(id: &Value, error: &types::PromptBlockError) -> Value {
     )
 }
 
+/// Bounded wait for a daemon restart, then re-issue the prompt (PRIME-55).
+///
+/// On a transport error from `request_until_close`, publishes a waiting
+/// `autoRetry` meta, polls the daemon socket until it comes back (bounded
+/// 180 s), then re-issues the prompt once with `resumePendingUserMessage`
+/// so the transcript does not duplicate the dangling user turn. If the
+/// daemon does not return within the deadline, publishes an exhausted meta
+/// and returns the original error.
+async fn prompt_with_recovery(
+    link: &Arc<DaemonLink>,
+    socket_path: &Path,
+    hosted_daemon_session_id: &str,
+    admission_id: &str,
+    mut prompt: DaemonCommand,
+    producer: &Arc<UpdateProducer>,
+    turn_id: u64,
+    state: &Arc<Mutex<DaemonAcpState>>,
+) -> anyhow::Result<DaemonResponse> {
+    // First attempt: the original prompt on the existing link. A
+    // graceful shutdown may answer the request with a failure response
+    // instead of a transport error — treat shutdown-marked failures as
+    // retryable too (PRIME-55).
+    let recovery_error: Option<anyhow::Error> = match link.request_until_close(prompt.clone()).await {
+        Ok(response) if response.success => return Ok(response),
+        Ok(response) => {
+            let error_msg = response
+                .error
+                .as_deref()
+                .unwrap_or("unknown error");
+            if !is_prompt_recovery_retryable_message(error_msg) {
+                return Ok(response);
+            }
+            Some(anyhow::anyhow!("{error_msg}"))
+        }
+        Err(error) => {
+            if !is_prompt_recovery_retryable(&error) {
+                return Err(error);
+            }
+            Some(error)
+        }
+    };
+    // A retryable failure — run the bounded recovery loop.
+    let error = recovery_error.expect("recovery error");
+    // Publish a waiting meta so the client sees the recovery hold.
+    let _ = producer
+        .publish(
+            &types::AcpSessionUpdate::SessionInfoUpdate {
+                meta: meta::prime_agent_meta(&PrimeAgentSessionMeta {
+                    auto_retry: Some(meta::PrimeAgentAutoRetryMeta {
+                        phase: "waiting".to_string(),
+                        attempt: Some(1),
+                        max_attempts: Some(1),
+                        delay_ms: Some(PROMPT_RECOVERY_PROBE_MS),
+                        reason: Some("restart".to_string()),
+                        error_message: Some(error.to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            },
+            turn_id,
+            PrimeAgentEventPhase::Event,
+            None,
+        )
+        .await;
+    // Bounded reconnect loop: poll the socket until a new daemon answers.
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(PROMPT_RECOVERY_MAX_WAIT_MS);
+    let mut recovered_link: Option<Arc<DaemonLink>> = None;
+    while std::time::Instant::now() < deadline {
+        // Check for cancellation while waiting.
+        if turn_cancelled(&*state.lock().await, admission_id) {
+            return Err(anyhow::anyhow!("prompt cancelled during recovery"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(PROMPT_RECOVERY_PROBE_MS)).await;
+        match DaemonLink::connect(socket_path).await {
+            Ok(new_link) => {
+                // Re-attach the session on the new daemon.
+                match reattach_session(&new_link, hosted_daemon_session_id).await {
+                    Ok(()) => {
+                        recovered_link = Some(Arc::new(new_link));
+                        break;
+                    }
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    let Some(new_link) = recovered_link else {
+        // Exhausted: publish the exhausted meta and return the error.
+        let _ = producer
+            .publish(
+                &types::AcpSessionUpdate::SessionInfoUpdate {
+                    meta: meta::prime_agent_meta(&PrimeAgentSessionMeta {
+                        auto_retry: Some(meta::PrimeAgentAutoRetryMeta {
+                            phase: "exhausted".to_string(),
+                            attempt: Some(1),
+                            max_attempts: Some(1),
+                            reason: Some("restart".to_string()),
+                            error_message: Some(error.to_string()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                },
+                turn_id,
+                PrimeAgentEventPhase::Event,
+                None,
+            )
+            .await;
+        return Err(error);
+    };
+    // Spawn an event forwarder for the new link so session events
+    // reach the producer during the re-issued turn.
+    let forward_state = Arc::clone(state);
+    let forward_link = Arc::clone(&new_link);
+    let forwarder = tokio::spawn(async move {
+        let mut frames = forward_link.frames.lock().await;
+        while let Some(frame) = frames.recv().await {
+            match frame {
+                LinkFrame::Event(frame) => {
+                    let event = frame.get("event").cloned().unwrap_or(Value::Null);
+                    let mut guard = forward_state.lock().await;
+                    let Some(current) = guard.session.as_mut() else {
+                        continue;
+                    };
+                    if let Some(stop) = wire_events::assistant_stop(&event) {
+                        current.assistant_stop_reason = stop.stop_reason;
+                    }
+                    let active_turn = current.producer.active_prompt_turn().await;
+                    for update in wire_events::wire_updates(&event, &mut current.mapping) {
+                        let _ = current
+                            .producer
+                            .publish(&update, active_turn, PrimeAgentEventPhase::Event, None)
+                            .await;
+                    }
+                }
+                LinkFrame::Response(response) => {
+                    let id = response.id.clone().unwrap_or_default();
+                    if let Some(tx) = forward_link.pending.lock().unwrap().remove(&id) {
+                        let _ = tx.send(response);
+                    }
+                }
+                LinkFrame::HeartbeatsChanged => {}
+            }
+        }
+    });
+    // Re-issue the prompt with resumePendingUserMessage on the new link.
+    set_prompt_resume_flag(&mut prompt);
+    let result = new_link.request_until_close(prompt).await;
+    // The forwarder's frames are drained: let it finish naturally
+    // (the new link's reader ends when the response closes).
+    forwarder.abort();
+    result
+}
+
+/// Whether an error from the daemon link is a transport failure that
+/// recovery can retry (PRIME-55).
+fn is_prompt_recovery_retryable(error: &anyhow::Error) -> bool {
+    is_prompt_recovery_retryable_message(&error.to_string())
+}
+
+/// Whether an error message is a transport failure that recovery can
+/// retry (PRIME-55). Covers both transport errors (socket close) and
+/// pre-dispatch rejections from a shutting-down supervisor.
+fn is_prompt_recovery_retryable_message(message: &str) -> bool {
+    message.contains("the daemon connection is closed")
+        || message.contains("the daemon connection closed mid-request")
+        || message.contains("shutting down; retry the command")
+        || message.contains("supervisor_generation_stale")
+        || message.contains("is not connected")
+        || message.contains("not running")
+        || message.contains("session is closed")
+        || message.contains("session_closed")
+}
+
+/// Set `resumePendingUserMessage: true` on a prompt-family command so the
+/// resumed transcript does not duplicate the dangling user turn (PRIME-55).
+fn set_prompt_resume_flag(command: &mut DaemonCommand) {
+    match command {
+        DaemonCommand::Prompt { input, .. }
+        | DaemonCommand::PromptAndWait { input, .. }
+        | DaemonCommand::Steer { input, .. }
+        | DaemonCommand::FollowUp { input, .. } => {
+            input.resume_pending_user_message = Some(true);
+        }
+        _ => {}
+    }
+}
+
+/// Re-attach the ACP session on a replacement daemon (PRIME-55). The
+/// replacement inherits the session file, so a bare `attach` recovers
+/// the session by its active session id.
+async fn reattach_session(link: &DaemonLink, active_session_id: &str) -> anyhow::Result<()> {
+    let response = link
+        .request(DaemonCommand::Attach {
+            id: None,
+            active_session_id: active_session_id.to_string(),
+            client_id: None,
+            capabilities: None,
+            resume_cursor: None,
+            telemetry_disabled: None,
+            recovery_config: None,
+            env: None,
+            launch_env: None,
+            rest: Map::default(),
+        })
+        .await?;
+    if !response.success {
+        anyhow::bail!(
+            "re-attach failed: {}",
+            response.error.unwrap_or_else(|| "unknown error".to_string())
+        );
+    }
+    Ok(())
+}
+
 /// Run one admitted prompt turn and return its reply frame.
 async fn prompt_turn(
     id: Value,
@@ -2151,6 +2401,7 @@ async fn prompt_turn(
     admission_id: &str,
     link: &Arc<DaemonLink>,
     state: &Arc<Mutex<DaemonAcpState>>,
+    socket_path: &Path,
 ) -> Value {
     let params = types::PromptParams::parse(&params);
     let admitted = match types::AdmittedPrompt::parse(&params.prompt) {
@@ -2192,7 +2443,7 @@ async fn prompt_turn(
         producer.finish_prompt(turn_id).await;
         return cancelled_response(&id);
     }
-    let prompt = DaemonCommand::PromptAndWait {
+    let mut prompt = DaemonCommand::PromptAndWait {
         id: None,
         active_session_id: hosted_daemon_session_id.clone(),
         message: admitted.text,
@@ -2222,10 +2473,37 @@ async fn prompt_turn(
             prefix_messages: None,
             admission_id: Some(admission_id.to_string()),
             rlm_notice_nonce: None,
+            resume_pending_user_message: None,
         },
         rest: Map::default(),
     };
-    let response = match link.request_until_close(prompt).await {
+    // Check whether a graceful shutdown already closed the session: if
+    // so, re-arm the prompt with resumePendingUserMessage and skip the
+    // first attempt on the dead link (PRIME-55).
+    let shutdown_pending = state
+        .lock()
+        .await
+        .shutdown_recovery_pending;
+    if shutdown_pending {
+        set_prompt_resume_flag(&mut prompt);
+    }
+    // Prompt recovery (PRIME-55): a daemon restart mid-turn drops the
+    // transport. Hold the ACP prompt open, wait (bounded 180s) for the
+    // daemon to come back, then re-issue the prompt once with
+    // `resumePendingUserMessage` so the resumed transcript does not
+    // duplicate the dangling user turn. Exhaustion keeps the error path.
+    let response = match prompt_with_recovery(
+        link,
+        socket_path,
+        &hosted_daemon_session_id,
+        admission_id,
+        prompt,
+        &producer,
+        turn_id,
+        state,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(error) => {
             publish_error_boundary(&producer, turn_id).await;

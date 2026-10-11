@@ -971,6 +971,7 @@ fn threshold_below_the_headroom_stays_silent() {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: None,
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {

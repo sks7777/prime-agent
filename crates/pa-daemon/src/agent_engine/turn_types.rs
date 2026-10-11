@@ -26,6 +26,10 @@ pub(crate) enum TurnAdmission {
     /// Re-issue the loop without a new user message, after the failed
     /// turn's error message left the loop context.
     Continue,
+    /// Resume the dangling same-text user turn: the transcript tail is
+    /// already the user message, so the loop continues without appending
+    /// a duplicate (PRIME-55).
+    ResumePending,
 }
 
 /// The first turn's admitted prompt: a plain user prompt, or an

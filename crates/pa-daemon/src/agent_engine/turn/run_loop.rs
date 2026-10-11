@@ -22,6 +22,7 @@ impl AgentSessionEngine {
     pub(in crate::agent_engine) fn run_turns(
         &self,
         first: TurnPrompt,
+        initial_admission: TurnAdmission,
         aborted: &dyn Fn() -> bool,
         emit: &mut dyn FnMut(EngineEvent) -> bool,
     ) {
@@ -29,6 +30,10 @@ impl AgentSessionEngine {
         // runs text-only (attachments are never re-sent).
         let prompt = first;
         let mut overflow_retry = false;
+        // The first turn's admission may be a resume instead of a fresh
+        // prompt: a recovery re-issue reuses the dangling transcript tail
+        // (PRIME-55).
+        let mut pending_admission = Some(initial_admission);
         // Whether a loop-boundary frame already passed in this item: the
         // worker's run-opening frames are the first run's, so the engine
         // forwards the later runs' opening frames.
@@ -52,6 +57,8 @@ impl AgentSessionEngine {
             // clears the slot as it reads it — a plain clear would be a dead store).
             let admission = if std::mem::take(&mut overflow_retry) {
                 TurnAdmission::Continue
+            } else if let Some(initial) = std::mem::take(&mut pending_admission) {
+                initial
             } else {
                 TurnAdmission::FreshPrompt
             };

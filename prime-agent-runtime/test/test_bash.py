@@ -74,6 +74,71 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
             activity_request("tail", activity_id, 201)
         self.assertFalse(activity_request("kill", activity_id)["killed"])
 
+    async def test_completion_notice_signals_exited_before_flush(self):
+        # The quiescence barrier must track the completion-notice delivery window,
+        # not handle liveness: a running handle is environment state, while an
+        # exited handle with an unflushed notice is unsettled work. The kernel
+        # marks the transition with an "exited" activity emission before the
+        # bash.completed host request, then retires it with active=False.
+        emitted: list[dict] = []
+        completed: list[dict] = []
+
+        async def fake_host_request(payload):
+            completed.append(payload)
+            return {"status": "ok"}
+
+        from rlm import repl as repl_module
+
+        with mock.patch.object(repl_module, "emit", lambda event: emitted.append(event)), mock.patch.object(
+            repl_module, "host_request", fake_host_request
+        ), mock.patch.object(repl_module, "is_active", lambda: True):
+            handle = bash("echo hi")
+            activity = {"id": "a" * 32, "pid": handle.pid, "active": True}
+            cell_finished = asyncio.Event()
+            cell_finished.set()
+            await bash_module.BashHandle._notify_background_completion(handle, cell_finished, activity)
+
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        activity_emits = [
+            event[mime] for event in emitted if mime in event
+        ]
+        self.assertEqual(
+            activity_emits,
+            [{**activity, "active": True, "exited": True}, {**activity, "active": False}],
+        )
+        self.assertEqual(completed[0]["type"], "bash.completed")
+        self.assertEqual(completed[0]["exitCode"], 0)
+
+    async def test_completion_notice_signals_exited_when_flush_is_skipped(self):
+        emitted: list[dict] = []
+        completed: list[dict] = []
+
+        async def fake_host_request(payload):
+            completed.append(payload)
+            return {"status": "ok"}
+
+        from rlm import repl as repl_module
+
+        with mock.patch.object(repl_module, "emit", lambda event: emitted.append(event)), mock.patch.object(
+            repl_module, "host_request", fake_host_request
+        ), mock.patch.object(repl_module, "is_active", lambda: True):
+            handle = bash("echo hi")
+            handle._result_consumed = True
+            activity = {"id": "b" * 32, "pid": handle.pid, "active": True}
+            cell_finished = asyncio.Event()
+            cell_finished.set()
+            await bash_module.BashHandle._notify_background_completion(handle, cell_finished, activity)
+
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        activity_emits = [
+            event[mime] for event in emitted if mime in event
+        ]
+        self.assertEqual(
+            activity_emits,
+            [{**activity, "active": True, "exited": True}, {**activity, "active": False}],
+        )
+        self.assertEqual(completed, [])
+
     async def test_activity_tail_frame_stays_under_the_wire_cap(self):
         # json escaping can expand one byte to six (\uXXXX), so the cap
         # must hold on the serialized frame, not the decoded slice.

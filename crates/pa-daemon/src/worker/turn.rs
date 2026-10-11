@@ -342,6 +342,7 @@ impl TurnRunner {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: first.custom_message.clone(),
+            resume_pending_user_message: first.resume_pending_user_message,
         };
         // `message_update` frames park in a single slot; other frames go
         // out direct, flushing the parked update first (wire order matches

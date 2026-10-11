@@ -96,6 +96,7 @@ async fn turn_session_events(engine: Arc<dyn SessionEngine>) -> Vec<Value> {
                 queue_visible: true,
                 policy: TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             }],
         )
         .await;
@@ -213,6 +214,7 @@ async fn gate_sighting_events(
                 queue_visible: true,
                 policy: TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             }],
         )
         .await;

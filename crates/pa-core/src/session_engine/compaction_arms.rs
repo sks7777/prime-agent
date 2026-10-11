@@ -146,6 +146,35 @@ impl AgentSession {
         })
     }
 
+    /// Whether the transcript tail is a user message whose single text
+    /// block equals `text` — the shape a recovery re-issue produces when
+    /// the prior turn was admitted but never answered (PRIME-55). Returns
+    /// `false` for anything else.
+    pub async fn dangling_user_message_tail(&self, text: &str) -> bool {
+        let state = self.agent.state().await;
+        let Some(tail) = state.messages.last() else {
+            return false;
+        };
+        let Ok(value) = serde_json::to_value(tail) else {
+            return false;
+        };
+        let Ok(SessionAgentMessage::User(user)) = serde_json::from_value::<SessionAgentMessage>(value) else {
+            return false;
+        };
+        match &user.content {
+            pa_types::ai::UserContent::Text(tail_text) => tail_text == text,
+            pa_types::ai::UserContent::Blocks(blocks) => {
+                blocks.len() == 1
+                    && blocks.iter().any(|block| match block {
+                        pa_types::ai::UserContentBlock::Text(text_block) => {
+                            text_block.text == text
+                        }
+                        _ => false,
+                    })
+            }
+        }
+    }
+
     /// Execute `/compact`: summarize the pre-cut prefix, persist the entry,
     /// and rebuild the loop context summary-first; a skip leaves the session
     /// untouched, an aborted run never commits.

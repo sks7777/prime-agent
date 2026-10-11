@@ -46,6 +46,7 @@ fn abort_in_flight_turn_cancels_a_mid_provider_wait() {
                 source: "user".to_string(),
                 agent_message_id: None,
                 custom_message: None,
+                resume_pending_user_message: None,
             },
             &|| false,
             &mut |event| {
@@ -165,6 +166,7 @@ fn abort_racing_the_admission_prefix_settles_the_turn_before_the_provider_call()
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: None,
+            resume_pending_user_message: None,
         },
         &|| true,
         &mut |event| {
@@ -562,6 +564,7 @@ fn abort_in_flight_turn_cancels_a_running_kernel_cell() {
                     source: "user".to_string(),
                     agent_message_id: None,
                     custom_message: None,
+                    resume_pending_user_message: None,
                 },
                 &|| false,
                 &mut move |event: EngineEvent| {
