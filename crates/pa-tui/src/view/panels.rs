@@ -45,6 +45,23 @@ impl AgentView {
                 action: ClickAction::OpenAgentsView,
             });
         }
+        // Session name + cwd line below the tray (session-name-footer
+        // extension replacement): dim `name • cwd` or just `cwd`.
+        if !self.chrome.chat_name.is_empty() || !self.chrome.cwd.is_empty() {
+            let muted = self.theme.fg_style(ThemeColor::Muted);
+            let dim = self.theme.fg_style(ThemeColor::Dim);
+            let mut name_line: Line = vec![Span::raw(" ".to_string())];
+            if !self.chrome.chat_name.is_empty() {
+                name_line.push(Span::styled(self.chrome.chat_name.clone(), muted));
+                if !self.chrome.cwd.is_empty() {
+                    name_line.push(Span::styled(" • ".to_string(), dim));
+                }
+            }
+            if !self.chrome.cwd.is_empty() {
+                name_line.push(Span::styled(self.chrome.cwd.clone(), muted));
+            }
+            lines.push(name_line);
+        }
         // The activity dock's group segments are click regions too:
         // the groups sit on the frame's second row.
         if let Some(dock) = &self.chrome.activity {
