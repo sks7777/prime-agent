@@ -43,11 +43,16 @@ pub struct McpCapabilities {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionCapabilities {
     pub close: CloseCapability,
+    pub fork: ForkCapability,
 }
 
 /// `{}`: present means `session/close` is served.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CloseCapability {}
+
+/// `{}`: present means `session/fork` is served.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ForkCapability {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,6 +186,15 @@ pub enum AcpSessionUpdate {
     ConfigOptionUpdate {
         #[serde(rename = "configOptions")]
         config_options: Vec<super::config_options::SessionConfigOption>,
+    },
+    /// Context window usage for one completed assistant response (TS
+    /// `usage_update`): `used` is the request's context size, `size` is
+    /// the model's context window. bb maps these to the thread context
+    /// window ring and popover.
+    #[serde(rename = "usage_update")]
+    UsageUpdate {
+        used: u64,
+        size: u64,
     },
 }
 
@@ -329,6 +343,69 @@ impl NewSessionParams {
     }
 }
 
+/// The `session/load` request params.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadSessionParams {
+    pub session_id: String,
+    pub cwd: Option<String>,
+    pub mcp_servers: Vec<Value>,
+}
+
+impl LoadSessionParams {
+    /// Parse `session/load` params. Unknown fields are ignored.
+    pub fn parse(params: &Value) -> LoadSessionParams {
+        LoadSessionParams {
+            session_id: params
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            cwd: params.get("cwd").and_then(Value::as_str).map(String::from),
+            mcp_servers: params
+                .get("mcpServers")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// The `session/fork` request params.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForkSessionParams {
+    pub session_id: String,
+    pub cwd: Option<String>,
+    pub mcp_servers: Vec<Value>,
+    /// Whether the request allows a foreign cwd (the `_meta` opt-in, PRIME-25).
+    pub allow_foreign_cwd: bool,
+}
+
+impl ForkSessionParams {
+    /// Parse `session/fork` params. Unknown fields are ignored.
+    pub fn parse(params: &Value) -> ForkSessionParams {
+        let allow_foreign_cwd = params
+            .get("_meta")
+            .and_then(|meta| meta.get(super::meta::PRIME_AGENT_META_NAMESPACE))
+            .and_then(|payload| payload.get("allowForeignCwd"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        ForkSessionParams {
+            session_id: params
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            cwd: params.get("cwd").and_then(Value::as_str).map(String::from),
+            mcp_servers: params
+                .get("mcpServers")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            allow_foreign_cwd,
+        }
+    }
+}
+
 /// The `session/prompt` request params.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptParams {
@@ -387,7 +464,7 @@ pub fn initialize_result(product_version: &str) -> InitializeResult {
     InitializeResult {
         protocol_version: 1,
         agent_capabilities: AgentCapabilities {
-            load_session: false,
+            load_session: true,
             prompt_capabilities: PromptCapabilities {
                 image: true,
                 embedded_context: true,
@@ -395,6 +472,7 @@ pub fn initialize_result(product_version: &str) -> InitializeResult {
             mcp_capabilities: Some(McpCapabilities { http: true }),
             session_capabilities: SessionCapabilities {
                 close: CloseCapability::default(),
+                fork: ForkCapability::default(),
             },
         },
         agent_info: AgentInfo {
@@ -419,10 +497,10 @@ mod tests {
             json!({
                 "protocolVersion": 1,
                 "agentCapabilities": {
-                    "loadSession": false,
+                    "loadSession": true,
                     "promptCapabilities": { "image": true, "embeddedContext": true },
                     "mcpCapabilities": { "http": true },
-                    "sessionCapabilities": { "close": {} },
+                    "sessionCapabilities": { "close": {}, "fork": {} },
                 },
                 "agentInfo": { "name": "prime-agent", "title": "Prime Agent", "version": "9.9.9" },
                 "_meta": { "ai.primeintellect.prime-agent": {} },

@@ -477,10 +477,14 @@ pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::
         // frame's handler).
         match frame_order_prefix(&incoming, &state).await {
             FrameOrder::Spawn => {
-                // `session/new` settles before the next frame is read, so
-                // EOF's teardown always sees the session it installs.
-                if matches!(&incoming, Incoming::Request { method, .. } if method == "session/new")
-                {
+                // `session/new`, `session/load`, and `session/fork` settle
+                // before the next frame is read, so EOF's teardown always
+                // sees the session they install.
+                if matches!(
+                    &incoming,
+                    Incoming::Request { method, .. }
+                    if method == "session/new" || method == "session/load" || method == "session/fork"
+                ) {
                     let options_tx = tx.clone();
                     handle_incoming(incoming, &link, &state, &options, &binding, options_tx).await;
                 } else {
@@ -1023,6 +1027,12 @@ async fn handle_incoming(
         "session/new" => {
             handle_session_new(id, params, link, state, options, binding, tx).await;
         }
+        "session/load" => {
+            handle_session_load(id, params, link, state, options, binding, tx).await;
+        }
+        "session/fork" => {
+            handle_session_fork(id, params, link, state, options, binding, tx).await;
+        }
         "session/set_config_option" => {
             handle_set_config_option(id, params, link, state, tx).await;
         }
@@ -1164,7 +1174,16 @@ async fn handle_session_new(
         cancel_task: None,
         turn: None,
         assistant_stop_reason: None,
-        mapping: WireMappingState::default(),
+        mapping: {
+            let mut mapping = WireMappingState::default();
+            mapping.context_window = state_value.as_ref().and_then(|state| {
+                state
+                    .get("model")
+                    .and_then(|model| model.get("contextWindow"))
+                    .and_then(Value::as_u64)
+            });
+            mapping
+        },
         observed_children: std::collections::HashSet::new(),
     };
     // The ACP MCP servers ride the wire command, not a local manager.
@@ -1274,6 +1293,720 @@ async fn handle_session_new(
                         .await;
                 }
             }
+        }
+    }
+    let _ = tx.send(jsonrpc::response(&id, &result));
+    if let Some((pause_id, lease_key)) = inherited_pause {
+        match release_session_input_pause(link, &binding.active_session_id, &pause_id).await {
+            Ok(()) => {
+                let mut guard = state.lock().await;
+                if guard.closed_input_pause_id.as_deref() == Some(&pause_id) {
+                    guard.closed_input_pause_id = None;
+                    guard.closed_input_pause_key = None;
+                }
+                if let Some(hosted) = guard
+                    .session
+                    .as_mut()
+                    .filter(|hosted| hosted.input_pause_id.as_deref() == Some(&pause_id))
+                {
+                    hosted.input_pause_id = None;
+                    if hosted.input_pause_key.as_deref() == Some(&lease_key) {
+                        hosted.input_pause_key = None;
+                    }
+                }
+            }
+            Err(error) => {
+                if let Some(hosted) = state
+                    .lock()
+                    .await
+                    .session
+                    .as_mut()
+                    .filter(|hosted| hosted.input_pause_id.as_deref() == Some(&pause_id))
+                {
+                    hosted.stop_failure = Some(error.to_string());
+                }
+            }
+        }
+    }
+    // Register in the cross-process registry so a later session/fork or
+    // session/load (in the process bb spawns) can resolve this session.
+    if let Some(sv) = state_value.as_ref() {
+        let session_dir = sv.get("sessionDir").and_then(Value::as_str);
+        let runtime_id = sv.get("sessionId").and_then(Value::as_str).map(str::to_string);
+        let session_file = sv.get("sessionFile").and_then(Value::as_str).map(str::to_string);
+        let reg_cwd = sv.get("cwd").and_then(Value::as_str).map(str::to_string);
+        if let (Some(session_dir), Some(reg_cwd)) = (session_dir, reg_cwd) {
+            super::session_registry::register_session(
+                Path::new(session_dir),
+                &acp_session_id,
+                runtime_id,
+                session_file,
+                &reg_cwd,
+            );
+        }
+    }
+    producer.commit_session_new_response().await;
+}
+
+
+/// `session/load`: resolve a registered ACP session id and switch this
+/// process onto its session file (TS PRIME-8). The session id is the
+/// client-provided one from the original `session/new`.
+async fn handle_session_load(
+    id: Value,
+    params: Value,
+    link: &Arc<DaemonLink>,
+    state: &Arc<Mutex<DaemonAcpState>>,
+    options: &DaemonAcpOptions,
+    binding: &DaemonBinding,
+    tx: producer::FrameSink,
+) {
+    // Same single-slot reservation as session/new.
+    {
+        let mut guard = state.lock().await;
+        if guard.session.is_some()
+            || guard.session_new_in_flight
+            || guard.session_close_done.is_some()
+        {
+            let _ = tx.send(super::internal_error(
+                &id,
+                "prime-agent ACP mode hosts one session per connection; start another prime-agent process for a second session",
+            ));
+            return;
+        }
+        guard.session_new_in_flight = true;
+    }
+    let params = types::LoadSessionParams::parse(&params);
+    if !state.lock().await.mcp_server_names.is_empty() {
+        if let Err(error) = clear_connection_servers(
+            link,
+            &binding.active_session_id,
+            &binding.mcp_owner_id,
+            state,
+        )
+        .await
+        {
+            state.lock().await.session_new_in_flight = false;
+            let _ = tx.send(super::internal_error(&id, &error.to_string()));
+            return;
+        }
+    }
+    let resolved =
+        match super::mcp::resolve_acp_mcp_servers(&params.mcp_servers, &options.actual_cwd) {
+            Ok(resolved) => resolved,
+            Err(reason) => {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(jsonrpc::error_response(
+                    &id,
+                    jsonrpc::INVALID_PARAMS,
+                    "Invalid params",
+                    Some(&json!({ "reason": reason })),
+                ));
+                return;
+            }
+        };
+    if let Err(details) = super::mcp::acp_mcp_tool_names(&resolved) {
+        state.lock().await.session_new_in_flight = false;
+        let _ = tx.send(super::internal_error(&id, &details));
+        return;
+    }
+    // Fetch the process connection state for session_dir and cwd.
+    let process_state = fetch_connection_state(link, &binding.active_session_id).await;
+    let session_dir = process_state
+        .as_ref()
+        .and_then(|s| s.get("sessionDir"))
+        .and_then(Value::as_str);
+    let Some(session_dir) = session_dir else {
+        state.lock().await.session_new_in_flight = false;
+        let _ = tx.send(jsonrpc::error_response(
+            &id,
+            jsonrpc::INVALID_PARAMS,
+            "Invalid params",
+            Some(&json!({ "reason": "Could not resolve the ACP session directory for load" })),
+        ));
+        return;
+    };
+    let session_dir = PathBuf::from(session_dir);
+    // Resolve the requested session id through the cross-process registry.
+    let Some(source) = super::session_registry::resolve_session(&session_dir, &params.session_id)
+    else {
+        state.lock().await.session_new_in_flight = false;
+        let _ = tx.send(super::internal_error(
+            &id,
+            &format!("Unknown ACP session: {}", params.session_id),
+        ));
+        return;
+    };
+    // Cwd validation (PRIME-8 review): a stored session from another
+    // workspace must not be restored into this one.
+    if let Some(requested_cwd) = params.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+        if !super::same_cwd(Path::new(requested_cwd), Path::new(&source.entry.cwd)) {
+            state.lock().await.session_new_in_flight = false;
+            let _ = tx.send(jsonrpc::error_response(
+                &id,
+                jsonrpc::INVALID_PARAMS,
+                "Invalid params",
+                Some(&json!({ "reason": format!("ACP session {} belongs to another working directory", params.session_id) })),
+            ));
+            return;
+        }
+    }
+    // If the resolved session file exists, switch this process onto it.
+    if let Some(session_file) = source.session_file.as_ref() {
+        let switch = link
+            .request(DaemonCommand::SwitchSession {
+                id: None,
+                active_session_id: binding.active_session_id.clone(),
+                session_path: session_file.to_string_lossy().to_string(),
+                cwd_override: None,
+                rest: Map::default(),
+            })
+            .await;
+        match switch {
+            Ok(response) if !response.success => {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(super::internal_error(
+                    &id,
+                    &response
+                        .error
+                        .unwrap_or_else(|| "session switch failed".to_string()),
+                ));
+                return;
+            }
+            Err(error) => {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(super::internal_error(&id, &error.to_string()));
+                return;
+            }
+            _ => {}
+        }
+    }
+    // No persisted file means the source session never wrote history:
+    // loading it is a no-op on the fresh boot session.
+    // Admit the ACP session under the requested id, reusing the same
+    // logic as session/new: seed context window, install MCP servers,
+    // publish child snapshot.
+    let acp_session_id = params.session_id.clone();
+    let producer = UpdateProducer::new(acp_session_id.clone(), tx.clone());
+    // Fetch fresh state after the switch (the model and context window may differ).
+    let (state_value, models) = (
+        fetch_connection_state(link, &binding.active_session_id).await,
+        fetch_available_models(link, &binding.active_session_id)
+            .await
+            .unwrap_or_default(),
+    );
+    let published = picker_options_from_state(state_value.as_ref(), &models);
+    let config = Arc::new(HostedConfig {
+        queue: tokio::sync::Mutex::new(()),
+        published: tokio::sync::Mutex::new(published),
+        models: tokio::sync::Mutex::new(models),
+    });
+    let mut hosted = HostedSession {
+        acp_session_id: acp_session_id.clone(),
+        daemon_active_session_id: binding.active_session_id.clone(),
+        producer,
+        config,
+        cancelling: false,
+        stop_failure: None,
+        input_pause_key: None,
+        input_pause_id: None,
+        cancel_task: None,
+        turn: None,
+        assistant_stop_reason: None,
+        mapping: {
+            let mut mapping = WireMappingState::default();
+            mapping.context_window = state_value.as_ref().and_then(|s| {
+                s.get("model")
+                    .and_then(|model| model.get("contextWindow"))
+                    .and_then(Value::as_u64)
+            });
+            mapping
+        },
+        observed_children: std::collections::HashSet::new(),
+    };
+    // MCP server replacement (same as session/new).
+    let replace_skipped = resolved.is_empty() && state.lock().await.mcp_server_names.is_empty();
+    if !replace_skipped {
+        if !resolved.is_empty() {
+            state.lock().await.mcp_server_names = resolved
+                .iter()
+                .map(pa_core::mcp::AcpMcpServerConfig::name)
+                .map(str::to_string)
+                .collect();
+        }
+        if let Err(error) = replace_connection_servers(
+            link,
+            &binding.active_session_id,
+            &binding.mcp_owner_id,
+            &resolved,
+        )
+        .await
+        {
+            let _ = clear_connection_servers(
+                link,
+                &binding.active_session_id,
+                &binding.mcp_owner_id,
+                state,
+            )
+            .await;
+            state.lock().await.session_new_in_flight = false;
+            let _ = tx.send(super::internal_error(&id, &error.to_string()));
+            return;
+        }
+        if resolved.is_empty() {
+            state.lock().await.mcp_server_names.clear();
+        }
+    }
+    let result = json!({
+        "sessionId": acp_session_id,
+        "configOptions": *hosted.config.published.lock().await,
+    });
+    let producer = Arc::clone(&hosted.producer);
+    let inherited_pause = {
+        let mut guard = state.lock().await;
+        guard.session_new_in_flight = false;
+        if let Some(pause_id) = guard.closed_input_pause_id.clone() {
+            hosted.input_pause_id = Some(pause_id);
+            hosted.input_pause_key = guard.closed_input_pause_key.clone();
+        }
+        guard.session = Some(hosted);
+        guard
+            .closed_input_pause_id
+            .clone()
+            .zip(guard.closed_input_pause_key.clone())
+    };
+    // Publish the initial child snapshot.
+    let children = match fetch_rlm_children(link, &binding.active_session_id).await {
+        Ok(children) => children,
+        Err(error) => {
+            let _ = clear_connection_servers(
+                link,
+                &binding.active_session_id,
+                &binding.mcp_owner_id,
+                state,
+            )
+            .await;
+            let mut guard = state.lock().await;
+            guard.session = None;
+            guard.session_new_in_flight = false;
+            drop(guard);
+            let _ = tx.send(super::internal_error(&id, &error.to_string()));
+            return;
+        }
+    };
+    {
+        let mut guard = state.lock().await;
+        if let Some(current) = guard.session.as_mut() {
+            for child in children {
+                let child_id = child.get("id").and_then(Value::as_str).unwrap_or_default();
+                if !current.observed_children.insert(child_id.to_string()) {
+                    continue;
+                }
+                let event = json!({ "type": "rlm_child_update", "child": child });
+                for update in wire_events::wire_updates(&event, &mut current.mapping) {
+                    let _ = current
+                        .producer
+                        .publish(&update, 0, PrimeAgentEventPhase::Event, None)
+                        .await;
+                }
+            }
+        }
+    }
+    // Register in the registry (best-effort).
+    let reg_state = fetch_connection_state(link, &binding.active_session_id).await;
+    if let Some(rs) = reg_state.as_ref() {
+        let session_dir = rs.get("sessionDir").and_then(Value::as_str);
+        let runtime_id = rs.get("sessionId").and_then(Value::as_str).map(str::to_string);
+        let session_file = rs.get("sessionFile").and_then(Value::as_str).map(str::to_string);
+        let reg_cwd = rs.get("cwd").and_then(Value::as_str).map(str::to_string);
+        if let (Some(session_dir), Some(reg_cwd)) = (session_dir, reg_cwd) {
+            super::session_registry::register_session(
+                Path::new(session_dir),
+                &acp_session_id,
+                runtime_id,
+                session_file,
+                &reg_cwd,
+            );
+        }
+    }
+    let _ = tx.send(jsonrpc::response(&id, &result));
+    if let Some((pause_id, lease_key)) = inherited_pause {
+        match release_session_input_pause(link, &binding.active_session_id, &pause_id).await {
+            Ok(()) => {
+                let mut guard = state.lock().await;
+                if guard.closed_input_pause_id.as_deref() == Some(&pause_id) {
+                    guard.closed_input_pause_id = None;
+                    guard.closed_input_pause_key = None;
+                }
+                if let Some(hosted) = guard
+                    .session
+                    .as_mut()
+                    .filter(|hosted| hosted.input_pause_id.as_deref() == Some(&pause_id))
+                {
+                    hosted.input_pause_id = None;
+                    if hosted.input_pause_key.as_deref() == Some(&lease_key) {
+                        hosted.input_pause_key = None;
+                    }
+                }
+            }
+            Err(error) => {
+                if let Some(hosted) = state
+                    .lock()
+                    .await
+                    .session
+                    .as_mut()
+                    .filter(|hosted| hosted.input_pause_id.as_deref() == Some(&pause_id))
+                {
+                    hosted.stop_failure = Some(error.to_string());
+                }
+            }
+        }
+    }
+    producer.commit_session_new_response().await;
+}
+
+/// `session/fork`: resolve a registered source session, clone its history
+/// into a branched session file, and switch this process onto it (TS
+/// `session/fork`). A new ACP session id is generated for the fork.
+async fn handle_session_fork(
+    id: Value,
+    params: Value,
+    link: &Arc<DaemonLink>,
+    state: &Arc<Mutex<DaemonAcpState>>,
+    options: &DaemonAcpOptions,
+    binding: &DaemonBinding,
+    tx: producer::FrameSink,
+) {
+    // Same single-slot reservation as session/new.
+    {
+        let mut guard = state.lock().await;
+        if guard.session.is_some()
+            || guard.session_new_in_flight
+            || guard.session_close_done.is_some()
+        {
+            let _ = tx.send(super::internal_error(
+                &id,
+                "prime-agent ACP mode hosts one session per connection; start another prime-agent process for a second session",
+            ));
+            return;
+        }
+        guard.session_new_in_flight = true;
+    }
+    let params = types::ForkSessionParams::parse(&params);
+    if !state.lock().await.mcp_server_names.is_empty() {
+        if let Err(error) = clear_connection_servers(
+            link,
+            &binding.active_session_id,
+            &binding.mcp_owner_id,
+            state,
+        )
+        .await
+        {
+            state.lock().await.session_new_in_flight = false;
+            let _ = tx.send(super::internal_error(&id, &error.to_string()));
+            return;
+        }
+    }
+    let resolved =
+        match super::mcp::resolve_acp_mcp_servers(&params.mcp_servers, &options.actual_cwd) {
+            Ok(resolved) => resolved,
+            Err(reason) => {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(jsonrpc::error_response(
+                    &id,
+                    jsonrpc::INVALID_PARAMS,
+                    "Invalid params",
+                    Some(&json!({ "reason": reason })),
+                ));
+                return;
+            }
+        };
+    if let Err(details) = super::mcp::acp_mcp_tool_names(&resolved) {
+        state.lock().await.session_new_in_flight = false;
+        let _ = tx.send(super::internal_error(&id, &details));
+        return;
+    }
+    // Fetch the process connection state for session_dir and cwd.
+    let process_state = fetch_connection_state(link, &binding.active_session_id).await;
+    let session_dir = process_state
+        .as_ref()
+        .and_then(|s| s.get("sessionDir"))
+        .and_then(Value::as_str);
+    let process_cwd = process_state
+        .as_ref()
+        .and_then(|s| s.get("cwd"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| options.actual_cwd.display().to_string());
+    let Some(session_dir) = session_dir else {
+        state.lock().await.session_new_in_flight = false;
+        let _ = tx.send(jsonrpc::error_response(
+            &id,
+            jsonrpc::INVALID_PARAMS,
+            "Invalid params",
+            Some(&json!({ "reason": "Could not resolve the ACP session directory for fork" })),
+        ));
+        return;
+    };
+    let session_dir = PathBuf::from(session_dir);
+    // Resolve the source session through the cross-process registry.
+    let Some(source) = super::session_registry::resolve_session(&session_dir, &params.session_id)
+    else {
+        state.lock().await.session_new_in_flight = false;
+        let _ = tx.send(super::internal_error(
+            &id,
+            &format!("Unknown ACP session: {}", params.session_id),
+        ));
+        return;
+    };
+    // Cwd validation with opt-out (PRIME-25): a trusted client may allow
+    // a foreign cwd via `_meta[ns].allowForeignCwd = true`. session/load
+    // keeps the strict same-cwd guard.
+    if !params.allow_foreign_cwd {
+        if let Some(requested_cwd) = params.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+            if !super::same_cwd(Path::new(requested_cwd), Path::new(&source.entry.cwd)) {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(jsonrpc::error_response(
+                    &id,
+                    jsonrpc::INVALID_PARAMS,
+                    "Invalid params",
+                    Some(&json!({ "reason": format!("ACP session {} belongs to another working directory", params.session_id) })),
+                ));
+                return;
+            }
+        }
+    }
+    // Clone the source session into a branched file.
+    let branched_file = if let Some(source_file) = source.session_file.as_ref() {
+        // Fork from the source file: creates a branched copy with the
+        // source as parent, writes it to disk.
+        match pa_core::session::manager::SessionManager::fork_from(
+            source_file,
+            Path::new(&process_cwd),
+            &session_dir,
+        ) {
+            Ok(manager) => {
+                match manager.get_session_file() {
+                    Some(file) => file.to_path_buf(),
+                    None => {
+                        state.lock().await.session_new_in_flight = false;
+                        let _ = tx.send(super::internal_error(
+                            &id,
+                            "Failed to create forked session file",
+                        ));
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(super::internal_error(&id, &error));
+                return;
+            }
+        }
+    } else {
+        // The source session never persisted (no messages yet): fork is a
+        // fresh session in the same directory, parented at the source's
+        // session file (if any).
+        let parent = source.entry.session_file.as_deref();
+        let mut manager = pa_core::session::manager::SessionManager::persisted(
+            Path::new(&process_cwd),
+            &session_dir,
+        );
+        manager.new_session(&pa_core::session::manager::NewSessionOptions {
+            id: None,
+            parent_session: parent.map(str::to_string),
+            rlm_depth: None,
+        });
+        match manager.flush_now() {
+            Ok(()) => {}
+            Err(error) => {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(super::internal_error(&id, &error.to_string()));
+                return;
+            }
+        }
+        match manager.get_session_file() {
+            Some(file) => file.to_path_buf(),
+            None => {
+                state.lock().await.session_new_in_flight = false;
+                let _ = tx.send(super::internal_error(
+                    &id,
+                    "Failed to create forked session file",
+                ));
+                return;
+            }
+        }
+    };
+    // Switch this process onto the branched session file.
+    let switch = link
+        .request(DaemonCommand::SwitchSession {
+            id: None,
+            active_session_id: binding.active_session_id.clone(),
+            session_path: branched_file.to_string_lossy().to_string(),
+            cwd_override: None,
+            rest: Map::default(),
+        })
+        .await;
+    match switch {
+        Ok(response) if !response.success => {
+            state.lock().await.session_new_in_flight = false;
+            let _ = tx.send(super::internal_error(
+                &id,
+                &response
+                    .error
+                    .unwrap_or_else(|| "session switch failed".to_string()),
+            ));
+            return;
+        }
+        Err(error) => {
+            state.lock().await.session_new_in_flight = false;
+            let _ = tx.send(super::internal_error(&id, &error.to_string()));
+            return;
+        }
+        _ => {}
+    }
+    // Admit the forked ACP session with a fresh id.
+    let acp_session_id = uuid::Uuid::new_v4().to_string();
+    let producer = UpdateProducer::new(acp_session_id.clone(), tx.clone());
+    let (state_value, models) = (
+        fetch_connection_state(link, &binding.active_session_id).await,
+        fetch_available_models(link, &binding.active_session_id)
+            .await
+            .unwrap_or_default(),
+    );
+    let published = picker_options_from_state(state_value.as_ref(), &models);
+    let config = Arc::new(HostedConfig {
+        queue: tokio::sync::Mutex::new(()),
+        published: tokio::sync::Mutex::new(published),
+        models: tokio::sync::Mutex::new(models),
+    });
+    let mut hosted = HostedSession {
+        acp_session_id: acp_session_id.clone(),
+        daemon_active_session_id: binding.active_session_id.clone(),
+        producer,
+        config,
+        cancelling: false,
+        stop_failure: None,
+        input_pause_key: None,
+        input_pause_id: None,
+        cancel_task: None,
+        turn: None,
+        assistant_stop_reason: None,
+        mapping: {
+            let mut mapping = WireMappingState::default();
+            mapping.context_window = state_value.as_ref().and_then(|s| {
+                s.get("model")
+                    .and_then(|model| model.get("contextWindow"))
+                    .and_then(Value::as_u64)
+            });
+            mapping
+        },
+        observed_children: std::collections::HashSet::new(),
+    };
+    // MCP server replacement (same as session/new).
+    let replace_skipped = resolved.is_empty() && state.lock().await.mcp_server_names.is_empty();
+    if !replace_skipped {
+        if !resolved.is_empty() {
+            state.lock().await.mcp_server_names = resolved
+                .iter()
+                .map(pa_core::mcp::AcpMcpServerConfig::name)
+                .map(str::to_string)
+                .collect();
+        }
+        if let Err(error) = replace_connection_servers(
+            link,
+            &binding.active_session_id,
+            &binding.mcp_owner_id,
+            &resolved,
+        )
+        .await
+        {
+            let _ = clear_connection_servers(
+                link,
+                &binding.active_session_id,
+                &binding.mcp_owner_id,
+                state,
+            )
+            .await;
+            state.lock().await.session_new_in_flight = false;
+            let _ = tx.send(super::internal_error(&id, &error.to_string()));
+            return;
+        }
+        if resolved.is_empty() {
+            state.lock().await.mcp_server_names.clear();
+        }
+    }
+    let result = json!({
+        "sessionId": acp_session_id,
+        "configOptions": *hosted.config.published.lock().await,
+    });
+    let producer = Arc::clone(&hosted.producer);
+    let inherited_pause = {
+        let mut guard = state.lock().await;
+        guard.session_new_in_flight = false;
+        if let Some(pause_id) = guard.closed_input_pause_id.clone() {
+            hosted.input_pause_id = Some(pause_id);
+            hosted.input_pause_key = guard.closed_input_pause_key.clone();
+        }
+        guard.session = Some(hosted);
+        guard
+            .closed_input_pause_id
+            .clone()
+            .zip(guard.closed_input_pause_key.clone())
+    };
+    // Publish the initial child snapshot.
+    let children = match fetch_rlm_children(link, &binding.active_session_id).await {
+        Ok(children) => children,
+        Err(error) => {
+            let _ = clear_connection_servers(
+                link,
+                &binding.active_session_id,
+                &binding.mcp_owner_id,
+                state,
+            )
+            .await;
+            let mut guard = state.lock().await;
+            guard.session = None;
+            guard.session_new_in_flight = false;
+            drop(guard);
+            let _ = tx.send(super::internal_error(&id, &error.to_string()));
+            return;
+        }
+    };
+    {
+        let mut guard = state.lock().await;
+        if let Some(current) = guard.session.as_mut() {
+            for child in children {
+                let child_id = child.get("id").and_then(Value::as_str).unwrap_or_default();
+                if !current.observed_children.insert(child_id.to_string()) {
+                    continue;
+                }
+                let event = json!({ "type": "rlm_child_update", "child": child });
+                for update in wire_events::wire_updates(&event, &mut current.mapping) {
+                    let _ = current
+                        .producer
+                        .publish(&update, 0, PrimeAgentEventPhase::Event, None)
+                        .await;
+                }
+            }
+        }
+    }
+    // Register the forked session in the registry so fork-of-fork works.
+    let forked_state = fetch_connection_state(link, &binding.active_session_id).await;
+    if let Some(fs) = forked_state.as_ref() {
+        let session_dir = fs.get("sessionDir").and_then(Value::as_str);
+        let runtime_id = fs.get("sessionId").and_then(Value::as_str).map(str::to_string);
+        let session_file = fs.get("sessionFile").and_then(Value::as_str).map(str::to_string);
+        let reg_cwd = fs.get("cwd").and_then(Value::as_str).map(str::to_string);
+        if let (Some(session_dir), Some(reg_cwd)) = (session_dir, reg_cwd) {
+            super::session_registry::register_session(
+                Path::new(session_dir),
+                &acp_session_id,
+                runtime_id,
+                session_file,
+                &reg_cwd,
+            );
         }
     }
     let _ = tx.send(jsonrpc::response(&id, &result));
@@ -1436,6 +2169,23 @@ async fn prompt_turn(
         }
     };
     let turn_id = producer.begin_prompt().await;
+    // Refresh per turn: the model (and therefore the context window) can
+    // change between turns, and completed responses report usage against it.
+    // A failed state read keeps the previously seeded window (TS behavior).
+    if let Some(turn_state) =
+        fetch_connection_state(link, &hosted_daemon_session_id).await
+    {
+        if let Some(window) = turn_state
+            .get("model")
+            .and_then(|model| model.get("contextWindow"))
+            .and_then(Value::as_u64)
+            .filter(|&window| window > 0)
+        {
+            if let Some(hosted) = state.lock().await.session.as_mut() {
+                hosted.mapping.context_window = Some(window);
+            }
+        }
+    }
     // TS `abort.signal.aborted` before `promptAndWait`.
     let cancelled = turn_cancelled(&*state.lock().await, admission_id);
     if cancelled {
