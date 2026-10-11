@@ -195,17 +195,19 @@ mod tests {
             guide.contains("| `Ctrl+Z` | Suspend to background |"),
             "{guide}"
         );
-        assert!(
-            guide.contains(
-                "| `Shift+Ctrl+\u{2191}` / `Shift+Alt+\u{2193}` | Select one paragraph |"
-            ),
-            "{guide}"
-        );
+        // Platform-aware: `alt` renders as `Option` on macOS, `Alt` elsewhere.
+        let alt_text = crate::keybindings::format_key_text("alt+up");
+        let alt_label = alt_text.split('+').next().unwrap_or("Alt");
+        let up = '\u{2191}';
+        let down = '\u{2193}';
+        let para =
+            format!("| `Shift+Ctrl+{up}` / `Shift+{alt_label}+{down}` | Select one paragraph |");
+        assert!(guide.contains(&para), "{guide}\nexpected: {para}");
         assert!(guide.contains("Select to start / end of text"), "{guide}");
-        assert!(
-            guide.contains("| `Alt+\u{2191}` / `Alt+\u{2193}` | Browse and edit queued messages |"),
-            "{guide}"
+        let queue = format!(
+            "| `{alt_label}+{up}` / `{alt_label}+{down}` | Browse and edit queued messages |"
         );
+        assert!(guide.contains(&queue), "{guide}\nexpected: {queue}");
     }
 
     #[test]
@@ -217,7 +219,11 @@ mod tests {
         );
         let kb = KeybindingsManager::with_user_bindings(cfg);
         let guide = hotkeys_guide(&kb);
-        assert!(guide.contains("| `Ctrl+Alt+X` | Cycle overview"), "{guide}");
+        let alt_x = crate::keybindings::format_key_text("ctrl+alt+x");
+        assert!(
+            guide.contains(&format!("| `{alt_x}` | Cycle overview")),
+            "{guide}"
+        );
         assert!(!guide.contains("`Ctrl+O`"), "{guide}");
     }
 
@@ -231,6 +237,9 @@ mod tests {
         let kb = KeybindingsManager::with_user_bindings(cfg);
         let guide = hotkeys_guide(&kb);
         assert!(guide.contains("| `` | Cycle overview"), "{guide}");
-        assert!(!guide.contains("Ctrl+O"), "{guide}");
+        // The disabled binding's default key must not appear as a standalone
+        // key cell (``Ctrl+O`` with backtick delimiters), not just as a
+        // substring of ``Ctrl+Option+`` entries.
+        assert!(!guide.contains("`Ctrl+O`"), "{guide}");
     }
 }
