@@ -443,13 +443,20 @@ pub async fn execute_bash(
         }
         Ok(exit_code) => {
             let formatted = format_output(&snapshot, last_line_bytes, "(no output)");
-            let text = formatted.text;
-            if exit_code.is_some_and(|code| code != 0) {
-                anyhow::bail!(append_status(
-                    &text,
-                    &format!("Command exited with code {}", exit_code.unwrap())
-                ));
-            }
+            // A nonzero exit of a successfully executed command is data, not a
+            // tool error: the command ran, and its output plus the status line
+            // is what the model needs to pick the next step. Only execution
+            // failures (spawn error, timeout, abort) turn into tool errors.
+            // Returning normally also preserves `details` (truncation info,
+            // fullOutputPath) that the bail path dropped.
+            let text = if exit_code.is_some_and(|code| code != 0) {
+                append_status(
+                    &formatted.text,
+                    &format!("Command exited with code {}", exit_code.unwrap()),
+                )
+            } else {
+                formatted.text
+            };
             Ok(ToolExecutionResult {
                 content: vec![ToolContentBlock::text(text)],
                 details: formatted.details,
