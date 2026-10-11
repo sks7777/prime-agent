@@ -33,8 +33,19 @@ pub fn key_event_to_id(key: &KeyEvent) -> Option<KeyId> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let super_key = key.modifiers.contains(KeyModifiers::SUPER);
+    // Russian keyboard layout: normalize Cyrillic codepoints to their Latin
+    // physical-key equivalents when a keybinding modifier (ctrl/alt/super) is
+    // active, so keybindings match regardless of the active layout. Shift alone
+    // is text input (uppercase letters), not a keybinding modifier — Cyrillic
+    // uppercase passes through unchanged.
+    let has_keybinding_modifier = ctrl || alt || super_key;
     let base = match key.code {
         KeyCode::Char(c) => {
+            let c = if has_keybinding_modifier {
+                crate::layout_normalize::normalize_cyrillic_char(c).unwrap_or(c)
+            } else {
+                c
+            };
             if ctrl {
                 return Some(ctrl_char_id(c, alt, shift, super_key));
             }
@@ -689,5 +700,58 @@ mod tests {
         assert!(kb.matches("shift+ctrl+left", "tui.editor.selectWordLeft"));
         assert!(kb.matches("shift+home", "tui.editor.selectLineStart"));
         assert!(kb.matches("shift+ctrl+home", "tui.editor.selectDocStart"));
+    }
+
+    /// Russian keyboard layout: Cyrillic codepoints normalize to their Latin
+    /// physical-key equivalents when a modifier is active, so keybindings match
+    /// regardless of the active layout. Plain text (no modifier) is unchanged.
+    #[test]
+    fn cyrillic_normalizes_to_latin_with_modifier() {
+        // ctrl+щ (Cyrillic 'o' position) -> ctrl+o
+        let ctrl_shch = KeyEvent::new(KeyCode::Char('щ'), KeyModifiers::CONTROL);
+        assert_eq!(key_event_to_id(&ctrl_shch).as_deref(), Some("ctrl+o"));
+
+        // alt+г (Cyrillic 'u' position) -> alt+u
+        let alt_g = KeyEvent::new(KeyCode::Char('г'), KeyModifiers::ALT);
+        assert_eq!(key_event_to_id(&alt_g).as_deref(), Some("alt+u"));
+
+        // super+с (Cyrillic 'c' position) -> super+c
+        let super_s = KeyEvent::new(KeyCode::Char('с'), KeyModifiers::SUPER);
+        assert_eq!(key_event_to_id(&super_s).as_deref(), Some("super+c"));
+
+        // ctrl+shift+Й (Cyrillic 'Q' position) -> shift+ctrl+q
+        let ctrl_shift_yo = KeyEvent::new(
+            KeyCode::Char('Й'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(
+            key_event_to_id(&ctrl_shift_yo).as_deref(),
+            Some("shift+ctrl+q")
+        );
+    }
+
+    /// Plain Cyrillic text (no modifier) passes through unchanged — the user's
+    /// Russian input is never altered.
+    #[test]
+    fn plain_cyrillic_passes_through_unchanged() {
+        let plain = KeyEvent::new(KeyCode::Char('щ'), KeyModifiers::NONE);
+        assert_eq!(key_event_to_id(&plain).as_deref(), Some("щ"));
+
+        let plain_shift = KeyEvent::new(KeyCode::Char('Щ'), KeyModifiers::SHIFT);
+        // Shift-only with an uppercase Cyrillic char: the char is the produced
+        // character, not a keybinding target. The id keeps the char.
+        assert_eq!(key_event_to_id(&plain_shift).as_deref(), Some("Щ"));
+    }
+
+    /// The normalized Cyrillic keybinding matches a real binding: ctrl+с
+    /// (Cyrillic 'c') matches the same action as ctrl+c.
+    #[test]
+    fn cyrillic_ctrl_c_matches_copy() {
+        let kb = crate::keybindings::KeybindingsManager::new();
+        // ctrl+c is a copy binding; ctrl+с (Cyrillic 'c') must match the same.
+        let cyrillic_c = KeyEvent::new(KeyCode::Char('с'), KeyModifiers::CONTROL);
+        let id = key_event_to_id(&cyrillic_c).expect("ctrl+с must produce an id");
+        assert_eq!(id, "ctrl+c");
+        assert!(kb.matches(&id, "tui.input.copy") || kb.matches(&id, "app.clear"));
     }
 }
