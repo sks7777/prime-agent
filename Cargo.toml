@@ -138,3 +138,13 @@ used_underscore_binding = "warn"
 lto = "thin"
 codegen-units = 4
 debug = "line-tables-only"
+
+# Dev-iteration profile: faster local builds at the cost of ~1-3% larger binary
+# and no LTO. Use: cargo build --profile fast-release --bin prime-agent
+[profile.fast-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = false
+incremental = true
+strip = true

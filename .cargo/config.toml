@@ -3,3 +3,10 @@
 # already set, so a test that needs it can still set its own value.
 [env]
 DO_NOT_TRACK = "1"
+
+# lld linker: rust-lld ships with rustc but clang can't find it by name.
+# To enable: ln -sf "$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/rust-lld" /usr/local/bin/ld64.lld
+# Then uncomment:
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
