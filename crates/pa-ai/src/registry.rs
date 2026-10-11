@@ -131,10 +131,29 @@ pub fn register_builtin_api_providers() {
     }
 }
 
-/// Clear then re-register built-ins (test helper parity with `resetApiProviders`).
+/// Clear then re-register built-ins, preserving dynamically registered providers
+/// (those with a `source_id`: faux test providers, extension providers, embedders).
+/// A bare `clear_api_providers` + `register_builtin_api_providers` would wipe
+/// every dynamic provider, breaking later turns with "No API provider registered
+/// for api: ...".
 pub fn reset_api_providers() {
+    let dynamic: Vec<(String, RegisteredProvider)> = {
+        let registry = registry().read().unwrap();
+        registry
+            .iter()
+            .filter(|(_, entry)| entry.source_id.is_some())
+            .map(|(api, entry)| (api.clone(), RegisteredProvider {
+                provider: entry.provider.clone(),
+                source_id: entry.source_id.clone(),
+            }))
+            .collect()
+    };
     clear_api_providers();
     register_builtin_api_providers();
+    let mut registry = registry().write().unwrap();
+    for (api, entry) in dynamic {
+        registry.insert(api, entry);
+    }
 }
 
 /// Ensure built-ins are present (idempotent; matches the TS import side effect).
@@ -178,5 +197,75 @@ impl ProviderRegistry {
     /// Clear then re-register built-ins.
     pub fn reset(&self) {
         reset_api_providers();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_stream::create_assistant_message_event_stream;
+
+    /// `reset_api_providers` preserves dynamically registered providers (those
+    /// with a `source_id`): a faux/extension provider must survive a reset that
+    /// reloads built-in transport wiring.
+    #[test]
+    fn reset_preserves_dynamic_providers() {
+        // Start from a clean state: only built-ins.
+        clear_api_providers();
+        register_builtin_api_providers();
+
+        // Register a dynamic provider with a source_id (like faux/extension).
+        struct DummyProvider;
+        impl Provider for DummyProvider {
+            fn api(&self) -> &str {
+                "test-dynamic-api"
+            }
+            fn stream(
+                &self,
+                _model: &Model,
+                _context: &Context,
+                _options: Option<&StreamOptions>,
+            ) -> AssistantMessageEventStream {
+                create_assistant_message_event_stream().1
+            }
+            fn stream_simple(
+                &self,
+                _model: &Model,
+                _context: &Context,
+                _options: Option<&SimpleStreamOptions>,
+            ) -> AssistantMessageEventStream {
+                create_assistant_message_event_stream().1
+            }
+        }
+        register_api_provider(Arc::new(DummyProvider), Some("test-source"));
+        assert!(
+            get_api_provider("test-dynamic-api").is_some(),
+            "dynamic provider registered"
+        );
+
+        // Reset: built-ins reloaded, dynamic provider must survive.
+        reset_api_providers();
+        assert!(
+            get_api_provider("test-dynamic-api").is_some(),
+            "dynamic provider must survive reset_api_providers"
+        );
+
+        // Cleanup.
+        unregister_api_providers("test-source");
+    }
+
+    /// `reset_api_providers` reloads built-in providers (the primary purpose).
+    #[test]
+    fn reset_reloads_builtins() {
+        clear_api_providers();
+        assert!(
+            get_api_provider("anthropic-messages").is_none(),
+            "no providers after clear"
+        );
+        reset_api_providers();
+        assert!(
+            get_api_provider("anthropic-messages").is_some(),
+            "builtins restored after reset"
+        );
     }
 }
