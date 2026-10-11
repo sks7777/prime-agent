@@ -13,7 +13,7 @@
 //! session driven headlessly — `/export` (HTML and JSONL) writes the file and
 //! reports the TS success row, and `/share` uploads through a stub `gh` on
 //! PATH and surfaces the share viewer URL.
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

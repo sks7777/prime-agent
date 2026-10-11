@@ -225,7 +225,10 @@ fn accept(listener: &UnixListener, what: &str) -> UnixStream {
     let deadline = std::time::Instant::now() + Duration::from_millis(ACCEPT_WAIT_MS);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).expect("blocking mock stream");
+                return stream;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
                     std::time::Instant::now() < deadline,

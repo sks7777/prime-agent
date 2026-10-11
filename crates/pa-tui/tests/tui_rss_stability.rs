@@ -2,7 +2,7 @@
 //! interactive loop must not grow memory monotonically; a sampler reads
 //! `/proc/self/statm` and asserts a plateau in the last quarter. Linux-only
 //! by construction (compiles to nothing elsewhere).
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 // Casts: structurally bounded terminal-layout arithmetic; guarded conversions add panic paths.
 #![allow(
     clippy::cast_possible_truncation,

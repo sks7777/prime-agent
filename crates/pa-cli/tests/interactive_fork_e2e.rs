@@ -15,7 +15,7 @@
 //! renders the copied transcript and takes new turns on the fork. The source
 //! stays hosted by a live worker for the whole run (TS parity: no
 //! daemon-active guard on the fork arm).
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
