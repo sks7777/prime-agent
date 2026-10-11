@@ -172,6 +172,7 @@ impl AgentCronSchedulerHooks for QueueHooks {
                     queue_visible: true,
                     policy: crate::worker::TurnPolicy::Injected,
                     forced_batch: false,
+                    resume_pending_user_message: None,
                 },
             );
         }

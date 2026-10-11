@@ -65,6 +65,7 @@ fn empty_prompt_input() -> pa_types::daemon::PromptInput {
         prefix_messages: None,
         admission_id: None,
         rlm_notice_nonce: None,
+        resume_pending_user_message: None,
     }
 }
 

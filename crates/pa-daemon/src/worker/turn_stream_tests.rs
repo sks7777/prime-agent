@@ -100,6 +100,7 @@ async fn turn_session_events(engine: Arc<dyn SessionEngine>) -> Vec<Value> {
                 queue_visible: true,
                 policy: TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             }],
         )
         .await;
@@ -233,6 +234,7 @@ async fn gate_sighting_events(
                 queue_visible: true,
                 policy: TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             }],
         )
         .await;
@@ -365,6 +367,7 @@ async fn a_turns_tool_executions_count_onto_the_summary() {
                 queue_visible: true,
                 policy: TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             }],
         )
         .await;
@@ -482,6 +485,7 @@ async fn model_transitions_reach_the_worker_owned_session_file() {
                     queue_visible: true,
                     policy: TurnPolicy::Queued,
                     forced_batch: false,
+                    resume_pending_user_message: None,
                 }],
             )
             .await;
@@ -560,6 +564,7 @@ async fn prompt_restore_boundary_is_supplied_only_for_file_backed_stores() {
                     queue_visible: true,
                     policy: TurnPolicy::Queued,
                     forced_batch: false,
+                    resume_pending_user_message: None,
                 }],
             )
             .await;

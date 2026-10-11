@@ -20,6 +20,9 @@ pub struct PromptRequest {
     /// (persisted and rendered) in order ahead of the model turn, and the
     /// loop context carries every row as one `agent.prompt` message list.
     pub batch: Vec<PromptBatchRow>,
+    /// Resume the dangling same-text user turn instead of appending a
+    /// duplicate (PRIME-55). Set by prompt-recovery re-issue.
+    pub resume_pending_user_message: Option<bool>,
 }
 
 /// One co-delivered user row of a batched prompt request.

@@ -263,18 +263,50 @@ pub fn expand_skill_command<'a>(text: &str, skills: &'a [Skill]) -> (String, Opt
     let Some((name, args)) = parse_slash_command(text) else {
         return (text.to_string(), None);
     };
-    let Some(skill_name) = name.strip_prefix("skill:") else {
+    // `/skill:<name>` — the explicit form.
+    if let Some(skill_name) = name.strip_prefix("skill:") {
+        let Some(skill) = skills.iter().find(|skill| skill.name == skill_name) else {
+            return (text.to_string(), None);
+        };
+        return expand_skill_body(skill, &args);
+    }
+    // Bare `/<skill-name>` — expand when the name matches a loaded skill
+    // exactly and no builtin slash command claims that name (PRIME-6).
+    // bb lists skills under their bare name and inserts `/<name>`, so
+    // this path lets bb invoke skills without the `skill:` prefix.
+    let registry = pa_types::slash_commands::SlashCommandRegistry::builtin_cached();
+    if registry.is_builtin(&name) {
+        return (text.to_string(), None);
+    }
+    let Some(skill) = skills.iter().find(|skill| skill.name == name) else {
         return (text.to_string(), None);
     };
-    let Some(skill) = skills.iter().find(|skill| skill.name == skill_name) else {
-        return (text.to_string(), None);
-    };
+    expand_skill_body(skill, &args)
+}
+
+/// Build the `<skill>` block from a resolved skill and optional args.
+fn expand_skill_body<'a>(skill: &'a Skill, args: &str) -> (String, Option<&'a Skill>) {
     let Ok(content) = std::fs::read_to_string(&skill.file_path) else {
-        return (text.to_string(), None);
+        return (
+            format!(
+                "/skill:{}{}",
+                skill.name,
+                if args.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {args}")
+                }
+            ),
+            None,
+        );
     };
     let body = frontmatter::strip_frontmatter(&content).trim().to_string();
     let block = format!(
-        "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
+        "<skill name=\"{}\" location=\"{}\">
+References are relative to {}.
+
+{}
+</skill>",
         skill.name,
         skill.file_path.display(),
         skill.base_dir.display(),
@@ -448,5 +480,45 @@ mod tests {
         assert!(formatted.contains("<name>web-search</name>"));
         assert!(formatted.contains("<type>markdown</type>"));
         assert!(formatted.contains("<description>Does web-search</description>"));
+    }
+
+    #[test]
+    fn bare_skill_name_expands_without_skill_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill = temp_skill("web-search", dir.path());
+        let skills = [skill];
+        let (expanded, used) = expand_skill_command("/web-search", &skills);
+        assert!(used.is_some(), "bare skill name must resolve");
+        assert!(expanded.contains("web-search"));
+    }
+
+    #[test]
+    fn bare_skill_name_with_args_expands() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill = temp_skill("web-search", dir.path());
+        let skills = [skill];
+        let (expanded, used) = expand_skill_command("/web-search find rust tuis", &skills);
+        assert!(used.is_some());
+        assert!(expanded.contains("find rust tuis"));
+    }
+
+    #[test]
+    fn bare_builtin_command_name_does_not_expand_as_skill() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill = temp_skill("web-search", dir.path());
+        let skills = [skill];
+        let (expanded, used) = expand_skill_command("/help", &skills);
+        assert!(used.is_none());
+        assert_eq!(expanded, "/help");
+    }
+
+    #[test]
+    fn bare_unknown_name_passes_through() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill = temp_skill("web-search", dir.path());
+        let skills = [skill];
+        let (expanded, used) = expand_skill_command("/definitely-not-a-command", &skills);
+        assert!(used.is_none());
+        assert_eq!(expanded, "/definitely-not-a-command");
     }
 }

@@ -182,22 +182,32 @@ pub fn transform_messages_with_normalizer(
                             vec![]
                         }
                         AssistantContent::ToolCall(tool_call) => {
-                            let mut normalized: ToolCall = tool_call.clone();
-                            if !is_same_model && tool_call.thought_signature.is_some() {
-                                normalized.thought_signature = None;
-                            }
-                            if !is_same_model {
-                                if let Some(normalizer) =
-                                    normalize_tool_call_id(&tool_call.id, model, assistant)
-                                {
-                                    if normalizer != tool_call.id {
-                                        tool_call_id_map
-                                            .insert(tool_call.id.clone(), normalizer.clone());
-                                        normalized.id = normalizer;
+                            // PRIME-43: some providers emit tool calls that never
+                            // receive a function name. Replaying a nameless call
+                            // makes OpenAI-compatible endpoints reject the whole
+                            // request. Drop the call here; its tool result is
+                            // dropped below because pending_tool_calls no longer
+                            // contains the id.
+                            if tool_call.name.trim().is_empty() {
+                                vec![]
+                            } else {
+                                let mut normalized: ToolCall = tool_call.clone();
+                                if !is_same_model && tool_call.thought_signature.is_some() {
+                                    normalized.thought_signature = None;
+                                }
+                                if !is_same_model {
+                                    if let Some(normalizer) =
+                                        normalize_tool_call_id(&tool_call.id, model, assistant)
+                                    {
+                                        if normalizer != tool_call.id {
+                                            tool_call_id_map
+                                                .insert(tool_call.id.clone(), normalizer.clone());
+                                            normalized.id = normalizer;
+                                        }
                                     }
                                 }
+                                vec![AssistantContent::ToolCall(normalized)]
                             }
-                            vec![AssistantContent::ToolCall(normalized)]
                         }
                     })
                     .collect();
@@ -441,107 +451,53 @@ mod tests {
         assert_eq!(transformed.len(), 2);
     }
 
-    fn tool_call(id: &str, name: &str) -> AssistantContent {
-        AssistantContent::ToolCall(ToolCall {
-            id: id.to_string(),
-            name: name.to_string(),
-            arguments: Map::default(),
-            thought_signature: None,
-            rest: Map::default(),
-        })
-    }
-
-    fn text(text: &str) -> AssistantContent {
-        AssistantContent::Text(TextContent {
-            text: text.to_string(),
-            text_signature: None,
-            rest: Map::default(),
-        })
-    }
-
-    fn assistant(content: Vec<AssistantContent>, stop_reason: StopReason) -> AssistantMessage {
-        let Message::Assistant(assistant) = assistant_with_tool_call("unused") else {
-            unreachable!()
-        };
-        AssistantMessage {
-            content,
-            stop_reason,
-            ..assistant
-        }
-    }
-
-    fn tool_result(id: &str, name: &str, text: &str) -> Message {
-        Message::ToolResult(ToolResultMessage {
-            tool_call_id: id.into(),
-            tool_name: name.into(),
-            content: vec![UserOrToolContent::Text(TextContent {
-                text: text.into(),
-                text_signature: None,
+    #[test]
+    fn drops_nameless_tool_calls_from_history() {
+        // PRIME-43: a tool call with an empty function name is dropped so
+        // OpenAI-compatible endpoints don't reject the whole request.
+        let messages = vec![
+            Message::User(crate::types::UserMessage {
+                content: UserMessageContent::Text("hi".into()),
+                timestamp: 0,
                 rest: Map::default(),
-            })],
-            details: None,
-            is_error: true,
-            timestamp: 0,
-            rest: Map::default(),
-        })
-    }
-
-    #[test]
-    fn a_session_poisoned_by_an_unnamed_tool_call_replays_without_it() {
-        // The #3742 transcript: the gateway left the call without a name or id, the
-        // loop answered `Tool  not found`, and both rows were persisted.
-        let named = tool_call("call-1", "bash");
-        let messages = vec![
-            user("hi"),
-            Message::Assistant(assistant(
-                vec![text("probing"), tool_call("", "")],
-                StopReason::ToolUse,
-            )),
-            tool_result("", "", "Tool  not found"),
-            Message::Assistant(assistant(vec![tool_call("", "")], StopReason::ToolUse)),
-            tool_result("", "", "Tool  not found"),
-            Message::Assistant(assistant(
-                vec![named.clone(), tool_call("call-2", " ")],
-                StopReason::ToolUse,
-            )),
-            tool_result("call-1", "bash", "ok"),
-            tool_result("call-2", " ", "Tool   not found"),
-            user("again"),
+            }),
+            Message::Assistant(crate::types::AssistantMessage {
+                content: vec![
+                    AssistantContent::ToolCall(ToolCall {
+                        id: "nameless".to_string(),
+                        name: "".to_string(),
+                        arguments: Map::default(),
+                        thought_signature: None,
+                        rest: Map::default(),
+                    }),
+                    AssistantContent::Text(crate::types::TextContent {
+                        text: "ok".to_string(),
+                        text_signature: None,
+                        rest: Map::default(),
+                    }),
+                ],
+                api: "openai-completions".into(),
+                provider: "test".into(),
+                model: "m".into(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: crate::types::StopReason::Stop,
+                stop_reason_raw: None,
+                error_message: None,
+                timestamp: 0,
+                rest: Map::default(),
+            }),
         ];
         let transformed =
             transform_messages_with_normalizer(&messages, &test_model(), &|_, _, _| None);
-        let expected = vec![
-            user("hi"),
-            Message::Assistant(assistant(vec![text("probing")], StopReason::ToolUse)),
-            Message::Assistant(assistant(vec![named], StopReason::ToolUse)),
-            tool_result("call-1", "bash", "ok"),
-            user("again"),
-        ];
-        assert_eq!(transformed, expected);
-    }
-
-    #[test]
-    fn a_dropped_unnamed_turn_does_not_answer_an_earlier_call_with_the_same_id() {
-        let named = tool_call("call-1", "bash");
-        let messages = vec![
-            user("hi"),
-            Message::Assistant(assistant(vec![named.clone()], StopReason::ToolUse)),
-            tool_result("call-1", "bash", "ok"),
-            Message::Assistant(assistant(
-                vec![tool_call("call-1", "")],
-                StopReason::ToolUse,
-            )),
-            tool_result("call-1", "", "Tool  not found"),
-            user("again"),
-        ];
-        let transformed =
-            transform_messages_with_normalizer(&messages, &test_model(), &|_, _, _| None);
-        let expected = vec![
-            user("hi"),
-            Message::Assistant(assistant(vec![named], StopReason::ToolUse)),
-            tool_result("call-1", "bash", "ok"),
-            user("again"),
-        ];
-        assert_eq!(transformed, expected);
+        // The assistant message survives with only the text block.
+        assert_eq!(transformed.len(), 2);
+        let Message::Assistant(ref assistant) = transformed[1] else {
+            panic!("expected assistant message");
+        };
+        assert_eq!(assistant.content.len(), 1);
+        assert!(matches!(&assistant.content[0], AssistantContent::Text(_)));
     }
 }

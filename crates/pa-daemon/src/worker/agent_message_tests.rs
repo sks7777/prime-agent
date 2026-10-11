@@ -291,6 +291,7 @@ async fn deliver_message_respects_the_pending_capacity() {
                 queue_visible: true,
                 policy: TurnPolicy::Injected,
                 forced_batch: false,
+                resume_pending_user_message: None,
             });
         }
     }

@@ -82,6 +82,10 @@ pub struct PrimeAgentSessionMeta {
     pub goal: Option<PrimeAgentGoalMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refinement: Option<PrimeAgentRefinementMeta>,
+    /// Provider auto-retry state: the session loop is waiting on a retry
+    /// timer, or has recovered/exhausted its retries (PRIME-55).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_retry: Option<PrimeAgentAutoRetryMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_message: Option<PrimeAgentAgentMessageMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,6 +120,32 @@ pub struct PrimeAgentRefinementMeta {
     pub changes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Provider auto-retry state surfaced as namespaced `_meta.autoRetry`
+/// (PRIME-55): the session loop is waiting on a retry timer, or has
+/// recovered / exhausted its retries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimeAgentAutoRetryMeta {
+    /// `"waiting"` while the retry timer runs, `"recovered"` on success,
+    /// `"exhausted"` when retries ran out.
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+    /// Server-requested or computed delay before the next attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restored_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 /// An agent-to-agent message sent from inside a kernel cell.
@@ -155,6 +185,16 @@ pub struct PrimeAgentSubagentMeta {
     pub token_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recap: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<u64>,
 }
 
 /// Autonomous-mode accounting surfaced with a turn's completion.

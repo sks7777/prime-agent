@@ -132,6 +132,9 @@ impl Worker {
                     TurnPolicy::Direct
                 },
                 forced_batch: false,
+                resume_pending_user_message: payload
+                    .get("resumePendingUserMessage")
+                    .and_then(Value::as_bool),
             };
             match lane {
                 Lane::Steering => enqueue_priority(&mut core.steering, item),
@@ -213,6 +216,7 @@ impl Worker {
             queue_visible: true,
             policy: TurnPolicy::Queued,
             forced_batch: false,
+            resume_pending_user_message: None,
         };
         match lane {
             Lane::Steering => enqueue_priority(&mut core.steering, item),
@@ -379,6 +383,7 @@ impl Worker {
                 queue_visible: true,
                 policy: TurnPolicy::Injected,
                 forced_batch: false,
+                resume_pending_user_message: None,
             };
             match lane {
                 Lane::Steering => enqueue_priority(&mut core.steering, item),
