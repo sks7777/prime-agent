@@ -1,0 +1,3 @@
+- Added ACP `usage_update` reporting so clients show context window usage on each assistant response.
+- Added ACP `session/load` to restore in-agent history when resuming a session from another process.
+- Added ACP `session/fork` to clone a session's history into a branched session for thread forks, with `_meta` `allowForeignCwd` opt-in for cross-workspace forks.
