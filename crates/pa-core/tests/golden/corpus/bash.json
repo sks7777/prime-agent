@@ -20,9 +20,10 @@
       "fixture": [],
       "command": "echo out; exit 3",
       "result": {
-        "ok": false,
-        "isError": true,
-        "error": "out\n\n\nCommand exited with code 3"
+        "ok": true,
+        "isError": false,
+        "text": "out\n\n\nCommand exited with code 3",
+        "details": null
       }
     },
     {
