@@ -755,6 +755,7 @@ impl SessionUi {
                     prefix_messages: None,
                     admission_id: None,
                     rlm_notice_nonce: None,
+                    resume_pending_user_message: None,
                 },
                 rest: Map::default(),
             };

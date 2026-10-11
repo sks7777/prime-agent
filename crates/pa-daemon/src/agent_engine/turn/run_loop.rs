@@ -22,6 +22,7 @@ impl AgentSessionEngine {
     pub(in crate::agent_engine) fn run_turns(
         &self,
         first: TurnPrompt,
+        initial_admission: TurnAdmission,
         aborted: &dyn Fn() -> bool,
         emit: &mut dyn FnMut(EngineEvent) -> bool,
     ) {
@@ -33,6 +34,10 @@ impl AgentSessionEngine {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.threshold_checks_enabled
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // The first turn's admission may be a resume instead of a fresh
+        // prompt: a recovery re-issue reuses the dangling transcript tail
+        // (PRIME-55).
+        let mut pending_admission = Some(initial_admission);
         // Whether a loop-boundary frame already passed in this item: the
         // worker's run-opening frames are the first run's, so the engine
         // forwards the later runs' opening frames.
@@ -60,12 +65,37 @@ impl AgentSessionEngine {
             // clears the slot as it reads it — a plain clear would be a dead store).
             let admission = if std::mem::take(&mut overflow_retry) {
                 TurnAdmission::Continue
+            } else if let Some(initial) = std::mem::take(&mut pending_admission) {
+                initial
             } else {
                 TurnAdmission::FreshPrompt
             };
             let turn = self.run_model_turn(admission, &prompt, &boundary_passed, aborted, emit);
             match turn {
-                TurnResult::Message(_assistant) => {
+                TurnResult::Message(assistant) => {
+                    // Plan-code tracking: the final assistant text may carry
+                    // `[DONE:n]` step markers; update the shared state so
+                    // `/todos` reflects actual progress (PRIME-63).
+                    let plan_text = assistant
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            pa_agent::types::AssistantContent::Text(text_content) => {
+                                Some(text_content.text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<&str>>()
+                        .join("\n");
+                    if !plan_text.is_empty() {
+                        let guard = self.session.blocking_lock();
+                        if let Some(core) = guard.as_deref() {
+                            core.plan_code
+                                .lock()
+                                .expect("plan-code state lock")
+                                .mark_completed(&plan_text);
+                        }
+                    }
                     // A settled non-error turn resets the overflow state and
                     // counts into the auto-refine review's turn line.
                     self.reset_overflow_recovery();

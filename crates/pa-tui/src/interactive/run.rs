@@ -138,6 +138,7 @@ async fn settled_sequence(
         prefix_messages: None,
         admission_id: None,
         rlm_notice_nonce: None,
+        resume_pending_user_message: None,
     };
     let waited = client
         .request_with_timeout(

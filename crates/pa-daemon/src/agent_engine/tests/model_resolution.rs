@@ -1005,6 +1005,7 @@ fn agent_engine_reports_model_resolution_failures() {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: None,
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {

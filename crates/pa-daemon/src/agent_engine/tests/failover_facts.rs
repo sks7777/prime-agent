@@ -101,6 +101,7 @@ fn failover_rebinds_model_facts_before_the_backup_can_restore_primary() {
             telemetry_disabled: Some(true),
             cron_store: None,
             queued_steering_probe: None,
+            plan_code_mode: None,
         })
         .unwrap(),
     );

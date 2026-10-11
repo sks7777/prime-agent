@@ -434,6 +434,7 @@ impl Worker {
                                 queue_visible: false,
                                 policy: TurnPolicy::Injected,
                                 forced_batch: false,
+                                resume_pending_user_message: None,
                             });
                         }
                         // The admission checkpoint: the continuation is admitted while the

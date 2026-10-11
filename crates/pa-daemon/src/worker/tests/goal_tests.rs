@@ -112,6 +112,7 @@ async fn compact_with_active_goal_and_parked_work_skips_the_mint() {
             queue_visible: true,
             policy: TurnPolicy::Queued,
             forced_batch: false,
+            resume_pending_user_message: None,
         });
     }
     let compact = worker

@@ -294,6 +294,7 @@ mod tests {
                 queue_visible: true,
                 policy: crate::worker::TurnPolicy::Injected,
                 forced_batch: false,
+                resume_pending_user_message: None,
             });
         }
         let queue = worker.dispatch("get_queue", &json!({})).await;
@@ -354,6 +355,7 @@ mod tests {
                 queue_visible: true,
                 policy: crate::worker::TurnPolicy::Injected,
                 forced_batch: false,
+                resume_pending_user_message: None,
             });
         }
         let expected = "Heartbeat prompt: [heartbeat: every 10m run#0]\n\nnudge the mission";
@@ -559,6 +561,7 @@ mod tests {
                 queue_visible: true,
                 policy: crate::worker::TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             });
         }
         let response = worker
@@ -625,6 +628,7 @@ mod tests {
                 queue_visible: true,
                 policy: crate::worker::TurnPolicy::Queued,
                 forced_batch: false,
+                resume_pending_user_message: None,
             });
 
         let replaced = worker

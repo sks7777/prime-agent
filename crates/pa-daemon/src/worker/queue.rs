@@ -163,6 +163,9 @@ pub(crate) struct QueuedItem {
     /// Membership of the one-shot forced steering batch: armed items co-deliver as
     /// one batched turn even under "one-at-a-time". Never journaled.
     pub(crate) forced_batch: bool,
+    /// Resume the dangling same-text user turn instead of appending a
+    /// duplicate (PRIME-55). Set by prompt-recovery re-issue.
+    pub(crate) resume_pending_user_message: Option<bool>,
 }
 
 /// Parse the wire `images` array: entries without payload data or a
@@ -404,6 +407,7 @@ pub(crate) fn restore_queue_snapshot(
                     queue_visible: record.queue_visible,
                     policy,
                     forced_batch: false,
+                    resume_pending_user_message: None,
                 }
             })
             .collect()
@@ -443,6 +447,7 @@ pub(crate) fn admit_autonomous_follow_up(
             queue_visible: false,
             policy: TurnPolicy::Injected,
             forced_batch: false,
+            resume_pending_user_message: None,
         });
     }
     // The admission checkpoint: a continuation admitted while idle is undelivered
@@ -498,6 +503,7 @@ pub(crate) fn admit_goal_follow_up(
             queue_visible: false,
             policy: TurnPolicy::Injected,
             forced_batch: false,
+            resume_pending_user_message: None,
         };
         match lane {
             Lane::Steering => enqueue_priority(&mut core.steering, item),
@@ -565,6 +571,7 @@ pub(crate) fn admit_kernel_notice(
             queue_visible,
             policy,
             forced_batch: false,
+            resume_pending_user_message: None,
         });
     }
     // The checkpoint re-locks the core (documented order: recovery lock

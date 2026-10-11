@@ -133,22 +133,32 @@ pub fn transform_messages_with_normalizer(
                         }
                         AssistantContent::Text(_) => vec![block.clone()],
                         AssistantContent::ToolCall(tool_call) => {
-                            let mut normalized: ToolCall = tool_call.clone();
-                            if !is_same_model && tool_call.thought_signature.is_some() {
-                                normalized.thought_signature = None;
-                            }
-                            if !is_same_model {
-                                if let Some(normalizer) =
-                                    normalize_tool_call_id(&tool_call.id, model, assistant)
-                                {
-                                    if normalizer != tool_call.id {
-                                        tool_call_id_map
-                                            .insert(tool_call.id.clone(), normalizer.clone());
-                                        normalized.id = normalizer;
+                            // PRIME-43: some providers emit tool calls that never
+                            // receive a function name. Replaying a nameless call
+                            // makes OpenAI-compatible endpoints reject the whole
+                            // request. Drop the call here; its tool result is
+                            // dropped below because pending_tool_calls no longer
+                            // contains the id.
+                            if tool_call.name.trim().is_empty() {
+                                vec![]
+                            } else {
+                                let mut normalized: ToolCall = tool_call.clone();
+                                if !is_same_model && tool_call.thought_signature.is_some() {
+                                    normalized.thought_signature = None;
+                                }
+                                if !is_same_model {
+                                    if let Some(normalizer) =
+                                        normalize_tool_call_id(&tool_call.id, model, assistant)
+                                    {
+                                        if normalizer != tool_call.id {
+                                            tool_call_id_map
+                                                .insert(tool_call.id.clone(), normalizer.clone());
+                                            normalized.id = normalizer;
+                                        }
                                     }
                                 }
+                                vec![AssistantContent::ToolCall(normalized)]
                             }
-                            vec![AssistantContent::ToolCall(normalized)]
                         }
                     })
                     .collect();
@@ -373,5 +383,55 @@ mod tests {
         let transformed =
             transform_messages_with_normalizer(&messages, &test_model(), &|_, _, _| None);
         assert_eq!(transformed.len(), 2);
+    }
+
+    #[test]
+    fn drops_nameless_tool_calls_from_history() {
+        // PRIME-43: a tool call with an empty function name is dropped so
+        // OpenAI-compatible endpoints don't reject the whole request.
+        let messages = vec![
+            Message::User(crate::types::UserMessage {
+                content: UserMessageContent::Text("hi".into()),
+                timestamp: 0,
+                rest: Map::default(),
+            }),
+            Message::Assistant(crate::types::AssistantMessage {
+                content: vec![
+                    AssistantContent::ToolCall(ToolCall {
+                        id: "nameless".to_string(),
+                        name: "".to_string(),
+                        arguments: Map::default(),
+                        thought_signature: None,
+                        rest: Map::default(),
+                    }),
+                    AssistantContent::Text(crate::types::TextContent {
+                        text: "ok".to_string(),
+                        text_signature: None,
+                        rest: Map::default(),
+                    }),
+                ],
+                api: "openai-completions".into(),
+                provider: "test".into(),
+                model: "m".into(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: crate::types::StopReason::Stop,
+                stop_reason_raw: None,
+                error_message: None,
+                timestamp: 0,
+                rest: Map::default(),
+            }),
+        ];
+        let transformed =
+            transform_messages_with_normalizer(&messages, &test_model(), &|_, _, _| None);
+        // The assistant message survives with only the text block.
+        assert_eq!(transformed.len(), 2);
+        let Message::Assistant(ref assistant) = transformed[1] else {
+            panic!("expected assistant message");
+        };
+        assert_eq!(assistant.content.len(), 1);
+        assert!(matches!(&assistant.content[0], AssistantContent::Text(_)));
     }
 }

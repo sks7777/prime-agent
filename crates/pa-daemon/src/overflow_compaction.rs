@@ -122,6 +122,17 @@ impl AgentSessionEngine {
         }
     }
 
+    /// Whether the transcript tail is the same single-text user message —
+    /// the dangling turn a recovery re-issue resumes (PRIME-55).
+    pub(crate) fn dangling_user_message_tail(&self, text: &str) -> bool {
+        let guard = self.session.blocking_lock();
+        let Some(engine) = guard.as_deref() else {
+            return false;
+        };
+        self.runtime
+            .block_on(async { engine.session.dangling_user_message_tail(text).await })
+    }
+
     /// Drop the failed continuation pair from the live loop context: the
     /// goal boundary consult calls this after reading the settled turn.
     pub(crate) async fn drop_failed_goal_continuation_pair(&self) {
