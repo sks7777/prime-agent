@@ -143,6 +143,8 @@ pub struct RlmSpawnRequest {
     pub model: Option<String>,
     /// Validated thinking level; the host checks model support.
     pub thinking: Option<String>,
+    /// Sampling temperature for the child's LLM calls (None = provider default).
+    pub temperature: Option<f64>,
     /// The parent's in-flight turn request the spawn anchors to (TS
     /// `spawnedByRequestId`): `None` for a spawn outside an active run.
     pub spawned_by_request_id: Option<String>,
@@ -644,7 +646,7 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
 fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmSpawnRequest> {
     const OPERATION: &str = "rlm.spawn";
     let kwargs = kwargs_from_payload(data);
-    reject_unsupported_kwargs(&kwargs, OPERATION, &["name", "model", "thinking"])?;
+    reject_unsupported_kwargs(&kwargs, OPERATION, &["name", "model", "thinking", "temperature"])?;
     let name = optional_string_kwarg(&kwargs, "name", OPERATION)?;
     let name = normalize_requested_rlm_subagent_session_name(name, OPERATION)?;
     if let Some(name) = &name {
@@ -655,11 +657,13 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
     let thinking =
         normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?.map(String::from);
+    let temperature = optional_f64_kwarg(&kwargs, "temperature", OPERATION)?;
     Ok(RlmSpawnRequest {
         prompt: prompt.to_string(),
         name,
         model,
         thinking,
+        temperature,
         spawned_by_request_id: None,
     })
 }
@@ -853,6 +857,27 @@ fn optional_string_kwarg<'a>(
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => Ok(Some(value)),
         Some(_) => anyhow::bail!("{operation} {key} must be a string"),
+    }
+}
+
+/// Present-but-non-number kwargs fail; the value must be finite.
+fn optional_f64_kwarg(
+    kwargs: &Map<String, Value>,
+    key: &str,
+    operation: &str,
+) -> anyhow::Result<Option<f64>> {
+    match kwargs.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => {
+            let value = n.as_f64().ok_or_else(|| {
+                anyhow::anyhow!("{operation} {key} must be a finite number")
+            })?;
+            if !value.is_finite() {
+                anyhow::bail!("{operation} {key} must be a finite number");
+            }
+            Ok(Some(value))
+        }
+        Some(_) => anyhow::bail!("{operation} {key} must be a number"),
     }
 }
 
@@ -1380,6 +1405,49 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.to_string(), "rlm.spawn name must be a string");
+
+        // Temperature kwarg: valid, absent, invalid type, non-finite.
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w", "temperature": 0.7 } }),
+        )
+        .await
+        .unwrap();
+        let requests = spawn_requests.lock().await;
+        assert_eq!(requests.last().unwrap().temperature, Some(0.7));
+        drop(requests);
+
+        let response = call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w" } }),
+        )
+        .await
+        .unwrap();
+        let requests = spawn_requests.lock().await;
+        assert_eq!(requests.last().unwrap().temperature, None);
+        drop(requests);
+
+        let error = call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w", "temperature": "hot" } }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "rlm.spawn temperature must be a number");
+
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w", "temperature": null } }),
+        )
+        .await
+        .unwrap();
+        let requests = spawn_requests.lock().await;
+        assert_eq!(requests.last().unwrap().temperature, None);
+        drop(requests);
     }
 
     #[tokio::test]
