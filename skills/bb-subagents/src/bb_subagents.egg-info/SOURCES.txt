@@ -1,0 +1,7 @@
+pyproject.toml
+src/bb_subagents/__init__.py
+src/bb_subagents.egg-info/PKG-INFO
+src/bb_subagents.egg-info/SOURCES.txt
+src/bb_subagents.egg-info/dependency_links.txt
+src/bb_subagents.egg-info/requires.txt
+src/bb_subagents.egg-info/top_level.txt

@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: bb-subagents
+Version: 0.10.0
+Summary: RLM subagents surfaced as real bb child threads (mirror threads)
+Requires-Python: >=3.11
+Requires-Dist: prime-agent-runtime

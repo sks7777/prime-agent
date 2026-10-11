@@ -131,8 +131,13 @@ pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     // SAFETY: writes the pid's executable path into `buffer` (at most its
     // size, NUL-terminated) and returns the byte count; 0 means the path
     // was not resolvable.
-    let written =
-        unsafe { libc::proc_pidpath(pid as libc::pid_t, buffer.as_mut_ptr().cast(), buffer_len) };
+    let written = unsafe {
+        libc::proc_pidpath(
+            pid.cast_signed() as libc::pid_t,
+            buffer.as_mut_ptr().cast(),
+            buffer_len,
+        )
+    };
     if written <= 0 {
         return None;
     }

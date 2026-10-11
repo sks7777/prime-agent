@@ -12,7 +12,7 @@
 //! End-to-end verifier for the clipboard/auth/update command group: a scripted
 //! daemon session driven headlessly — `/copy`, `/import`, `/traces`, `/login`,
 //! `/logout`, and `/update` through their composition-root hooks.
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
