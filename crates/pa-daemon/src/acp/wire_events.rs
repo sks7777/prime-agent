@@ -21,6 +21,11 @@ pub struct WireMappingState {
     next_assistant_message_sequence: u64,
     active_assistant_message_id: Option<String>,
     active_bash_run_id: Option<String>,
+    /// Context window of the session's current model, refreshed by the ACP
+    /// mode from connection state. Without it a completed assistant message
+    /// cannot be reported as an ACP `usage_update`, because the event carries
+    /// no model info.
+    pub context_window: Option<u64>,
 }
 
 impl WireMappingState {
@@ -63,6 +68,45 @@ pub fn assistant_stop(event: &Value) -> Option<AssistantStop> {
             .get("stopReason")
             .and_then(|value| pa_types::ai::StopReason::deserialize(value).ok()),
     })
+}
+
+/// ACP `usage_update` for one completed assistant response (TS `usageUpdate`).
+///
+/// `used` is the request's context size (`usage.totalTokens`, falling back to
+/// the explicit field sum), and `size` is the model's context window. Error
+/// and aborted responses carry no trustworthy usage, and without a known
+/// context window there is nothing to report against, so both cases emit
+/// nothing.
+fn usage_update(event: &Value, state: &WireMappingState) -> Option<AcpSessionUpdate> {
+    let message = event.get("message")?;
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    // Error and aborted responses carry no trustworthy usage.
+    let stop_reason = message.get("stopReason").and_then(Value::as_str);
+    if matches!(stop_reason, Some("error") | Some("aborted")) {
+        return None;
+    }
+    let usage = message.get("usage")?;
+    // `totalTokens` when available; otherwise the explicit field sum (input +
+    // output + cacheRead + cacheWrite), exactly like the session's own context
+    // estimate.
+    let used = usage
+        .get("totalTokens")
+        .and_then(Value::as_u64)
+        .filter(|&total| total > 0)
+        .unwrap_or_else(|| {
+            let input = usage.get("input").and_then(Value::as_u64).unwrap_or(0);
+            let output = usage.get("output").and_then(Value::as_u64).unwrap_or(0);
+            let cache_read = usage.get("cacheRead").and_then(Value::as_u64).unwrap_or(0);
+            let cache_write = usage.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0);
+            input + output + cache_read + cache_write
+        });
+    if used == 0 {
+        return None;
+    }
+    let size = state.context_window.filter(|&window| window > 0)?;
+    Some(AcpSessionUpdate::UsageUpdate { used, size })
 }
 
 /// Map one daemon session event to zero or more ACP updates.
@@ -117,13 +161,18 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
             }
         }
         "message_end" => {
-            if event
+            let is_assistant = event
                 .get("message")
                 .and_then(|message| message.get("role"))
                 .and_then(Value::as_str)
-                == Some("assistant")
-            {
+                == Some("assistant");
+            if is_assistant {
                 state.active_assistant_message_id = None;
+            }
+            if is_assistant {
+                if let Some(update) = usage_update(event, state) {
+                    return vec![update];
+                }
             }
             Vec::new()
         }
@@ -851,5 +900,118 @@ mod tests {
                 "deliveryStatus": "queued",
             })
         );
+    }
+
+    #[test]
+    fn message_end_reports_usage_update_for_completed_assistant_responses() {
+        let mut state = WireMappingState {
+            context_window: Some(200_000),
+            ..WireMappingState::default()
+        };
+        let updates = wire_updates(
+            &json!({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "usage": {
+                        "input": 1000,
+                        "output": 50,
+                        "cacheRead": 250,
+                        "cacheWrite": 0,
+                        "totalTokens": 1300,
+                    },
+                    "stopReason": "stop",
+                },
+            }),
+            &mut state,
+        );
+        assert_eq!(updates.len(), 1);
+        let value = serde_json::to_value(&updates[0]).unwrap();
+        assert_eq!(value["sessionUpdate"], "usage_update");
+        assert_eq!(value["used"], 1300);
+        assert_eq!(value["size"], 200_000);
+        // The streaming message id still resets on end.
+        assert!(state.active_assistant_message_id.is_none());
+    }
+
+    #[test]
+    fn message_end_omits_usage_update_without_a_context_window() {
+        let mut state = WireMappingState::default();
+        let updates = wire_updates(
+            &json!({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "usage": { "input": 10, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 10 },
+                    "stopReason": "stop",
+                },
+            }),
+            &mut state,
+        );
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn message_end_omits_usage_update_with_zero_usage() {
+        let mut state = WireMappingState {
+            context_window: Some(200_000),
+            ..WireMappingState::default()
+        };
+        let updates = wire_updates(
+            &json!({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0 },
+                    "stopReason": "stop",
+                },
+            }),
+            &mut state,
+        );
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn message_end_skips_usage_update_for_error_and_aborted_responses() {
+        let mut state = WireMappingState {
+            context_window: Some(200_000),
+            ..WireMappingState::default()
+        };
+        for stop_reason in ["error", "aborted"] {
+            let updates = wire_updates(
+                &json!({
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "usage": { "input": 100, "output": 10, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 110 },
+                        "stopReason": stop_reason,
+                    },
+                }),
+                &mut state,
+            );
+            assert!(updates.is_empty(), "stopReason={stop_reason} should emit no usage_update");
+        }
+    }
+
+    #[test]
+    fn message_end_usage_falls_back_to_field_sum_without_total_tokens() {
+        let mut state = WireMappingState {
+            context_window: Some(100_000),
+            ..WireMappingState::default()
+        };
+        let updates = wire_updates(
+            &json!({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "usage": { "input": 500, "output": 100, "cacheRead": 200, "cacheWrite": 50 },
+                    "stopReason": "stop",
+                },
+            }),
+            &mut state,
+        );
+        assert_eq!(updates.len(), 1);
+        let value = serde_json::to_value(&updates[0]).unwrap();
+        assert_eq!(value["used"], 850);
     }
 }
