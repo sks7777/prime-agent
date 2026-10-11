@@ -74,6 +74,7 @@ impl SupervisorChildSessionsInner {
         depth: u32,
         model: &str,
         thinking: Option<&str>,
+        temperature: Option<f64>,
         cwd: &str,
         session_dir: &Path,
         // The parent's in-flight turn request the child anchors to (TS
@@ -98,6 +99,9 @@ impl SupervisorChildSessionsInner {
         }
         if let Some(thinking) = thinking {
             config["thinking"] = json!(thinking);
+        }
+        if let Some(temperature) = temperature {
+            config["temperature"] = json!(temperature);
         }
         if let Some(parent_file) = &identity.session_file {
             config["parentSessionPath"] = json!(parent_file);
@@ -181,6 +185,7 @@ impl SupervisorChildSessionsInner {
                 depth,
                 model,
                 thinking,
+                None,
                 cwd,
                 session_dir,
                 /*spawned_by_request_id*/ None,

@@ -145,6 +145,8 @@ pub struct RlmSpawnRequest {
     pub thinking: Option<String>,
     /// Working directory; the host resolves relative paths against the session cwd.
     pub cwd: Option<String>,
+    /// Sampling temperature for the child's LLM calls (None = provider default).
+    pub temperature: Option<f64>,
     /// The parent's in-flight turn request the spawn anchors to (TS
     /// `spawnedByRequestId`): `None` for a spawn outside an active run.
     pub spawned_by_request_id: Option<String>,
@@ -675,7 +677,7 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     reject_unsupported_kwargs(
         &kwargs,
         OPERATION,
-        &["name", "model", "thinking", "cwd", "factory"],
+        &["name", "model", "thinking", "cwd", "temperature", "factory"],
     )?;
     let name = optional_string_kwarg(&kwargs, "name", OPERATION)?;
     let name = normalize_requested_rlm_subagent_session_name(name, OPERATION)?;
@@ -696,12 +698,14 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
             )
         })?),
     };
+    let temperature = optional_f64_kwarg(&kwargs, "temperature", OPERATION)?;
     Ok(RlmSpawnRequest {
         prompt: prompt.to_string(),
         name,
         model,
         thinking,
         cwd,
+        temperature,
         spawned_by_request_id: None,
         factory,
     })
@@ -916,6 +920,27 @@ fn cwd_kwarg(kwargs: &Map<String, Value>, operation: &str) -> anyhow::Result<Opt
         None => Ok(None),
         Some(Value::String(cwd)) if !cwd.trim().is_empty() => Ok(Some(cwd.trim().to_string())),
         Some(_) => anyhow::bail!("{operation} cwd must be a non-empty string"),
+    }
+}
+
+/// Present-but-non-number kwargs fail; the value must be finite.
+fn optional_f64_kwarg(
+    kwargs: &Map<String, Value>,
+    key: &str,
+    operation: &str,
+) -> anyhow::Result<Option<f64>> {
+    match kwargs.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => {
+            let value = n
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("{operation} {key} must be a finite number"))?;
+            if !value.is_finite() {
+                anyhow::bail!("{operation} {key} must be a finite number");
+            }
+            Ok(Some(value))
+        }
+        Some(_) => anyhow::bail!("{operation} {key} must be a number"),
     }
 }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import types
 from dataclasses import dataclass
@@ -242,6 +243,11 @@ async def _spawn(
     stateId}``), which the host records on the child's ledger spawn edge."""
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
+    if temperature is not None:
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+            raise TypeError(f"temperature must be a finite number, got {type(temperature).__name__}")
+        if not math.isfinite(float(temperature)):
+            raise ValueError("temperature must be a finite number")
     kwargs: dict[str, Any] = {"name": name}
     if model is not None:
         kwargs["model"] = model
