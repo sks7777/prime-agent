@@ -293,6 +293,7 @@ pub(crate) struct Termios {
     oflag: libc::tcflag_t,
     cflag: libc::tcflag_t,
     lflag: libc::tcflag_t,
+    #[cfg(target_os = "linux")]
     line: libc::cc_t,
     cc: [libc::cc_t; libc::NCCS],
 }
@@ -308,6 +309,7 @@ impl Termios {
             oflag: raw.c_oflag,
             cflag: raw.c_cflag,
             lflag: raw.c_lflag,
+            #[cfg(target_os = "linux")]
             line: raw.c_line,
             cc: raw.c_cc,
         }
@@ -318,8 +320,13 @@ impl Termios {
             && self.oflag == other.oflag
             && self.cflag == other.cflag
             && self.lflag == other.lflag
-            && self.line == other.line
             && self.cc == other.cc
+            && {
+                #[cfg(target_os = "linux")]
+                { self.line == other.line }
+                #[cfg(not(target_os = "linux"))]
+                { true }
+            }
     }
 
     pub(crate) fn describe(&self) -> String {

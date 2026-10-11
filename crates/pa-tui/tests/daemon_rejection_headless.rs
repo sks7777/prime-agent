@@ -132,6 +132,7 @@ impl MockSupervisor {
 /// One client connection's read loop, over the shared answers.
 impl SharedAnswers {
     fn serve_connection(self: std::sync::Arc<Self>, stream: UnixStream) {
+        stream.set_nonblocking(false).expect("blocking mock stream");
         let mut writer = stream.try_clone().expect("clone mock socket");
         let mut reader = BufReader::new(stream);
 

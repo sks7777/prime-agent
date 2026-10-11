@@ -16,7 +16,7 @@
 //! omission. `systemPrompt` presence is compared, not content (the layered
 //! prompt supersedes TS-prompt byte parity). The export runs through the
 //! daemon worker's `export_html` wire command; the TS daemon is ground truth.
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
