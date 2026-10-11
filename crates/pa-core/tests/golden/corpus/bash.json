@@ -224,7 +224,7 @@
       "result": {
         "ok": true,
         "isError": false,
-        "text": "HEAD is now at e33214d init\n",
+        "text": "HEAD is now at <HASH> init\n",
         "details": null
       }
     },

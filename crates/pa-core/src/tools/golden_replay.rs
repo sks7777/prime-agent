@@ -38,7 +38,11 @@ fn norm_string(s: &str, tmp: &str) -> String {
     let re = regex_lite(r"pi-(?:bash|output)-[0-9a-f]+\.log");
     let out = re.replace_all(&out, "pi-<ID>.log").into_owned();
     let re = regex_lite(r"tmp-stdout-[0-9A-Za-z_]+");
-    re.replace_all(&out, "tmp-stdout-<ID>").into_owned()
+    let out = re.replace_all(&out, "tmp-stdout-<ID>").into_owned();
+    // Git short hashes are environment-dependent (vary by git version, file
+    // timestamps, etc.): normalize "HEAD is now at <hash>" to a placeholder.
+    let re = regex_lite(r"HEAD is now at [0-9a-f]{7,}");
+    re.replace_all(&out, "HEAD is now at <HASH>").into_owned()
 }
 
 /// Deep-normalize all strings in a JSON value.
