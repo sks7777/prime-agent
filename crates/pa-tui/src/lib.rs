@@ -77,6 +77,7 @@ mod input;
 pub mod interactive;
 pub mod keybindings;
 pub mod keys;
+pub(crate) mod layout_normalize;
 pub mod markdown;
 pub mod markdown_table;
 pub mod mcp_view;
