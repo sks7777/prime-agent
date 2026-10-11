@@ -73,6 +73,8 @@ impl SupervisorChildSessionsInner {
         spawned_by_request_id: Option<&str>,
         runtime_metadata: Option<Value>,
         identity: &ParentIdentity,
+        // Sampling temperature override for the child (None = provider default).
+        temperature: Option<f64>,
     ) -> Result<CreatedChild> {
         let mut config = json!({
             "cwd": cwd,
@@ -88,6 +90,9 @@ impl SupervisorChildSessionsInner {
         }
         if let Some(thinking) = thinking {
             config["thinking"] = json!(thinking);
+        }
+        if let Some(temperature) = temperature {
+            config["temperature"] = json!(temperature);
         }
         if let Some(parent_file) = &identity.session_file {
             config["parentSessionPath"] = json!(parent_file);
@@ -175,6 +180,7 @@ impl SupervisorChildSessionsInner {
                 /*spawned_by_request_id*/ None,
                 runtime_metadata,
                 identity,
+                /*temperature*/ None,
             )
             .await?;
         // A failed prompt tears the just-created session down (TS kills the

@@ -117,6 +117,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         request.spawned_by_request_id.as_deref(),
                         Some(runtime_metadata),
                         &identity,
+                        request.temperature,
                     )
                     .await?;
                 let record = ChildRecord {
