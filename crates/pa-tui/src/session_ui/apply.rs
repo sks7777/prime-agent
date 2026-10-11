@@ -449,6 +449,10 @@ impl SessionUi {
                 // Stragglers never leak into the next run.
                 self.pending_tools.clear();
                 self.aborted_tools.clear();
+                // Terminal bell on a successful, idle turn end (notify extension
+                // replacement): ring only when there is no error and no queued
+                // messages, so the user is alerted that input is expected.
+                let ring_bell = error.is_none() && view.queued.is_empty();
                 // A provider failure already surfaced through the failed assistant message
                 // or the retry-exhausted banner; the turn result error is only a backstop.
                 if let (Some(error), false) = (error, self.turn_error_shown) {
@@ -456,6 +460,9 @@ impl SessionUi {
                         text: format!("turn failed: {error}"),
                         kind: StatusKind::Warning,
                     });
+                }
+                if ring_bell {
+                    let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x07");
                 }
             }
             TurnUpdate::AutoRetryStart {
