@@ -298,7 +298,10 @@ mod tests {
             superseded["event"]["assistantMessageEvent"]["type"],
             "thinking_delta"
         );
-        assert_eq!(superseded["event"]["assistantMessageEvent"]["delta"], "think");
+        assert_eq!(
+            superseded["event"]["assistantMessageEvent"]["delta"],
+            "think"
+        );
         let flushed = session_event_of(&rx.try_recv().unwrap());
         assert_eq!(
             flushed["event"]["assistantMessageEvent"]["type"],
@@ -344,7 +347,10 @@ mod tests {
             superseded["event"]["assistantMessageEvent"]["type"],
             "text_delta"
         );
-        assert_eq!(superseded["event"]["assistantMessageEvent"]["delta"], "tail");
+        assert_eq!(
+            superseded["event"]["assistantMessageEvent"]["delta"],
+            "tail"
+        );
         // The parked `toolcall_start` (empty delta) flushes before turn_end.
         let parked_start = session_event_of(&rx.try_recv().unwrap());
         assert_eq!(

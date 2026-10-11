@@ -306,7 +306,10 @@ async fn the_accumulated_text_delta_chunks_equal_the_final_message() {
                 .map(str::to_string)
         })
         .collect();
-    assert_eq!(accumulated, text, "the accumulated text_delta chunks must equal the final message text");
+    assert_eq!(
+        accumulated, text,
+        "the accumulated text_delta chunks must equal the final message text"
+    );
 }
 
 /// The client sees the full message without a tick wait and nothing lands out of order.
