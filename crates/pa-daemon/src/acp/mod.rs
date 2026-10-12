@@ -27,7 +27,7 @@ fn internal_error(id: &Value, details: &str) -> Value {
 /// Two paths are the same cwd when their canonical forms match, or when they
 /// are the same directory on disk (dev/inode) — the bind-mount and
 /// case-normalized-FS cases a lexical comparison misses.
-fn same_cwd(requested: &Path, actual: &Path) -> bool {
+pub(crate) fn same_cwd(requested: &Path, actual: &Path) -> bool {
     let canonical = |path: &Path| -> PathBuf {
         std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     };

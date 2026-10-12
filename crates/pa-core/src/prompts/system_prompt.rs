@@ -94,6 +94,9 @@ pub struct BuildSystemPromptOptions<'a> {
     /// daemonless print host or a daemon worker); a daemonless session
     /// without one cannot spawn at all.
     pub can_spawn: bool,
+    /// True inside a bb thread: delegation doctrine mentions auto-mirrored
+    /// children (PRIME-24).
+    pub inside_bb: Option<bool>,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
     /// Active plan-code mode (`None` = no mode). Injects the mode-specific
@@ -151,15 +154,9 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
     // it rides the tail (mode is session-specific state, not cacheable).
     if let Some(mode) = options.plan_code_mode {
         let (layer_name, layer_text) = match mode {
-            crate::plan_code::PlanCodeMode::Plan => {
-                ("plan-mode", layers::PLAN_MODE_LAYER)
-            }
-            crate::plan_code::PlanCodeMode::Code => {
-                ("code-mode", layers::CODE_MODE_LAYER)
-            }
-            crate::plan_code::PlanCodeMode::Debug => {
-                ("debug-mode", layers::DEBUG_MODE_LAYER)
-            }
+            crate::plan_code::PlanCodeMode::Plan => ("plan-mode", layers::PLAN_MODE_LAYER),
+            crate::plan_code::PlanCodeMode::Code => ("code-mode", layers::CODE_MODE_LAYER),
+            crate::plan_code::PlanCodeMode::Debug => ("debug-mode", layers::DEBUG_MODE_LAYER),
         };
         if !layer_text.is_empty() {
             segments.push(PromptSegment::dynamic_segment(
@@ -358,6 +355,12 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
                 "For long-running work, report brief progress with `await rlm.progress_note('...')` (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply.".to_string(),
             );
         }
+    }
+    // PRIME-24: delegation doctrine for bb depth-0 sessions.
+    if depth == 0 && options.inside_bb == Some(true) {
+        lines.push(
+            "Inside bb, spawned children appear automatically as mirror child threads in the bb thread list; pass `bb_mirror=False` to `rlm.spawn` to keep a child invisible.".to_string(),
+        );
     }
     lines.join("\n")
 }

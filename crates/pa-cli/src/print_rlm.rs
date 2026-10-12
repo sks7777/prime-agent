@@ -1067,6 +1067,8 @@ fn roster_entry(
         label: None,
         last_activity_at: Some(state.started_at_ms),
         activity_stale_ms: None,
+        auto_mirror_thread: None,
+        waiting_mirror_admission: None,
     }
 }
 
@@ -1277,6 +1279,8 @@ mod tests {
             model: None,
             thinking: None,
             spawned_by_request_id: None,
+            bb_mirror: None,
+            temperature: None,
         });
         std::future::poll_fn(|context| {
             assert!(spawn.as_mut().poll(context).is_pending());

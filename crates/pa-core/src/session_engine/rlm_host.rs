@@ -81,6 +81,13 @@ pub struct RlmSubagentEntry {
     pub last_activity_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_stale_ms: Option<u64>,
+    /// True while a bb-mirror child is parked waiting for its mirror
+    /// thread's first prompt (PRIME-11).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_mirror_admission: Option<bool>,
+    /// True when this child was auto-mirrored into a bb thread (PRIME-24).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_mirror_thread: Option<bool>,
 }
 
 /// Live child activity projected onto the roster row.
@@ -143,11 +150,14 @@ pub struct RlmSpawnRequest {
     pub model: Option<String>,
     /// Validated thinking level; the host checks model support.
     pub thinking: Option<String>,
-    /// Sampling temperature for the child's LLM calls (None = provider default).
-    pub temperature: Option<f64>,
     /// The parent's in-flight turn request the spawn anchors to (TS
     /// `spawnedByRequestId`): `None` for a spawn outside an active run.
     pub spawned_by_request_id: Option<String>,
+    pub temperature: Option<f64>,
+    /// bb mirror intent (PRIME-11/PRIME-24): `None` = auto-mirror (host
+    /// decides), `Some(true)` = explicit mirror (caller brings its own
+    /// thread), `Some(false)` = force plain headless child.
+    pub bb_mirror: Option<bool>,
 }
 
 /// Validated `rlm.create_session` request handed to the host.
@@ -646,7 +656,11 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
 fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmSpawnRequest> {
     const OPERATION: &str = "rlm.spawn";
     let kwargs = kwargs_from_payload(data);
-    reject_unsupported_kwargs(&kwargs, OPERATION, &["name", "model", "thinking", "temperature"])?;
+    reject_unsupported_kwargs(
+        &kwargs,
+        OPERATION,
+        &["name", "model", "thinking", "temperature", "bb_mirror"],
+    )?;
     let name = optional_string_kwarg(&kwargs, "name", OPERATION)?;
     let name = normalize_requested_rlm_subagent_session_name(name, OPERATION)?;
     if let Some(name) = &name {
@@ -658,13 +672,15 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     let thinking =
         normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?.map(String::from);
     let temperature = optional_f64_kwarg(&kwargs, "temperature", OPERATION)?;
+    let bb_mirror = optional_bool_kwarg(&kwargs, "bb_mirror", OPERATION)?;
     Ok(RlmSpawnRequest {
         prompt: prompt.to_string(),
         name,
         model,
         thinking,
-        temperature,
         spawned_by_request_id: None,
+        temperature,
+        bb_mirror,
     })
 }
 
@@ -869,15 +885,28 @@ fn optional_f64_kwarg(
     match kwargs.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Number(n)) => {
-            let value = n.as_f64().ok_or_else(|| {
-                anyhow::anyhow!("{operation} {key} must be a finite number")
-            })?;
+            let value = n
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("{operation} {key} must be a finite number"))?;
             if !value.is_finite() {
                 anyhow::bail!("{operation} {key} must be a finite number");
             }
             Ok(Some(value))
         }
         Some(_) => anyhow::bail!("{operation} {key} must be a number"),
+    }
+}
+
+/// Present-but-non-bool kwargs fail; `None`/`Null` → `None` (absent).
+fn optional_bool_kwarg(
+    kwargs: &Map<String, Value>,
+    key: &str,
+    operation: &str,
+) -> anyhow::Result<Option<bool>> {
+    match kwargs.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => anyhow::bail!("{operation} {key} must be a boolean"),
     }
 }
 
@@ -982,6 +1011,8 @@ mod tests {
                     label: Some("child agent".into()),
                     last_activity_at: Some(1_000),
                     activity_stale_ms: None,
+                    waiting_mirror_admission: None,
+                    auto_mirror_thread: None,
                 }])
             })
         }
@@ -1006,6 +1037,8 @@ mod tests {
                         label: None,
                         last_activity_at: None,
                         activity_stale_ms: None,
+                        waiting_mirror_admission: None,
+                        auto_mirror_thread: None,
                     },
                     outcome: Some("deleted"),
                 })
@@ -1448,6 +1481,49 @@ mod tests {
         let requests = spawn_requests.lock().await;
         assert_eq!(requests.last().unwrap().temperature, None);
         drop(requests);
+
+        // bb_mirror kwarg: true, false, absent, invalid type.
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w", "bb_mirror": true } }),
+        )
+        .await
+        .unwrap();
+        let requests = spawn_requests.lock().await;
+        assert_eq!(requests.last().unwrap().bb_mirror, Some(true));
+        drop(requests);
+
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w", "bb_mirror": false } }),
+        )
+        .await
+        .unwrap();
+        let requests = spawn_requests.lock().await;
+        assert_eq!(requests.last().unwrap().bb_mirror, Some(false));
+        drop(requests);
+
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w" } }),
+        )
+        .await
+        .unwrap();
+        let requests = spawn_requests.lock().await;
+        assert_eq!(requests.last().unwrap().bb_mirror, None);
+        drop(requests);
+
+        let error = call(
+            &wiring,
+            "rlm.run",
+            json!({ "prompt": "p", "kwargs": { "name": "w", "bb_mirror": "yes" } }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "rlm.spawn bb_mirror must be a boolean");
     }
 
     #[tokio::test]

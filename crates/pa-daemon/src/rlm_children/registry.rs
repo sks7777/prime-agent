@@ -44,19 +44,54 @@ impl SupervisorChildSessionsInner {
             .insert(deleted.rlm_child_id.clone(), deleted);
     }
 
+    /// Settle a parked mirror child's wait (PRIME-11): fires the waker
+    /// so the watcher task's `select!` resolves, or marks the wait settled
+    /// if the waker was already taken. Called from cancel and delete paths.
+    /// Returns `true` if this call settled the mirror wait.
+    pub(super) async fn resolve_waiting_mirror_run(
+        &self,
+        record: &Arc<Mutex<ChildRecord>>,
+        reason: &str,
+    ) -> bool {
+        let waker = {
+            let mut rec = record.lock().await;
+            if rec.mirror_wait_settled {
+                return false;
+            }
+            rec.mirror_wait_settled = true;
+            rec.waiting_mirror_admission = false;
+            if let Some(nonce) = rec.mirror_claim_nonce.take() {
+                crate::rlm_bb_mirror::remove_rlm_mirror_claim(&nonce, &self.agent_dir);
+            }
+            rec.mirror_admission_waker.take()
+        };
+        // Fire the waker so the watcher task unblocks. A `Send` error
+        // means the receiver was already dropped (the watcher task
+        // resolved via timeout or cancel concurrently).
+        if let Some(waker) = waker {
+            let _ = waker.send(());
+        }
+        let _ = reason;
+        true
+    }
+
     /// Abort one child's live run (see
     /// [`SupervisorChildSessions::cancel_child_run`]): claim the notice,
     /// settle the row as `cancelled`, then abort the worker's in-flight
     /// turn (best-effort; the registry is the user-visible state).
-    pub(super) async fn cancel_child_run(&self, child_id: &str) -> bool {
+    /// `skip_mirror=true` skips auto-mirror and parked mirror children
+    /// (PRIME-28): their lifecycle is owned by their bb threads, not the
+    /// parent turn.
+    pub(super) async fn cancel_child_run(&self, child_id: &str, skip_mirror: bool) -> bool {
         let children = self.children.lock().await.clone();
         for record in &children {
-            let (matched, running, active_session_id) = {
+            let (matched, running, active_session_id, is_mirror) = {
                 let record = record.lock().await;
                 (
                     record.rlm_child_id == child_id,
                     record.settled_status.is_none(),
                     record.active_session_id.clone(),
+                    record.auto_mirror_thread || record.waiting_mirror_admission,
                 )
             };
             // A fruitless match keeps walking: child ids are only
@@ -64,6 +99,18 @@ impl SupervisorChildSessionsInner {
             // elsewhere must stay reachable.
             if !matched || !running {
                 continue;
+            }
+            // PRIME-28: skip mirror children when the caller requests it
+            // (parent-turn abort, dispose). Their lifecycle is owned by
+            // their bb threads.
+            if skip_mirror && is_mirror {
+                continue;
+            }
+            // PRIME-11: settle a parked mirror child's wait before
+            // cancelling so the watcher task does not wedge.
+            if is_mirror {
+                self.resolve_waiting_mirror_run(record, "Cancelled by user")
+                    .await;
             }
             {
                 let mut record = record.lock().await;
@@ -132,6 +179,14 @@ impl SupervisorChildSessionsInner {
                 )
             };
             if running && !already_terminated {
+                // PRIME-11: settle a parked mirror child's wait before
+                // proceeding with the delete.
+                let is_mirror = record.lock().await.waiting_mirror_admission
+                    || record.lock().await.auto_mirror_thread;
+                if is_mirror {
+                    self.resolve_waiting_mirror_run(record, "Deleted by parent orchestrator")
+                        .await;
+                }
                 return Ok("running");
             }
             // Capture before the unlink: a deleted child's already-durable
@@ -188,6 +243,12 @@ impl SupervisorChildSessionsInner {
         let mut close_error = (!usage_persisted)
             .then(|| anyhow::anyhow!("RLM child usage remains owed after retirement; retry close"));
         for record in &children {
+            // PRIME-11: settle a parked mirror child's wait so the
+            // watcher task does not wedge.
+            if record.lock().await.waiting_mirror_admission {
+                self.resolve_waiting_mirror_run(record, "Parent session closed")
+                    .await;
+            }
             let rename_lock = record.lock().await.rename_lock.clone();
             let _guard = rename_lock.lock().await;
             if !self
@@ -208,10 +269,19 @@ impl SupervisorChildSessionsInner {
                 self.emit_child_usage(record).await;
                 let active_session_id = record.lock().await.active_session_id.clone();
                 if let Err(error) = self.kill_child(&active_session_id, reason).await {
-                    if unknown_session(&error).is_none() {
-                        close_error.get_or_insert(error);
+                    if unknown_session(&error).is_some() {
+                        // Already gone: the missing child is a no-op success.
+                        // The dead worker's file is frozen — the pre-kill walk
+                        // covered its rows; the registration drops with it.
+                        self.forget_child_usage(record).await;
+                        self.children
+                            .lock()
+                            .await
+                            .retain(|candidate| !Arc::ptr_eq(candidate, record));
                         continue;
                     }
+                    close_error.get_or_insert(error);
+                    continue;
                 }
                 self.retain_retired_usage(record, super::RetirementIntent::Close);
                 self.emit_child_usage(record).await;
@@ -540,6 +610,11 @@ fn ledger_child_records(
             emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             last_emitted_status: None,
             rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            waiting_mirror_admission: false,
+            auto_mirror_thread: false,
+            mirror_claim_nonce: None,
+            mirror_admission_waker: None,
+            mirror_wait_settled: false,
         });
     }
     records

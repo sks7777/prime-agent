@@ -594,6 +594,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             rlm_depth: config.rlm_depth,
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
+            inside_bb: (config.rlm_depth.unwrap_or(0) == 0
+                && std::env::var("BB_THREAD_ID").is_ok_and(|id| !id.is_empty())
+                && std::env::var("BB_PROJECT_ID").is_ok_and(|id| !id.is_empty()))
+            .then_some(true),
             generic_mcp_servers,
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
@@ -866,15 +870,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         crate::plan_code::PlanCodeState::default(),
     ));
     if let Some(initial_mode) = config.plan_code_mode {
-        plan_code.lock().expect("plan-code state lock").enter(initial_mode);
+        plan_code
+            .lock()
+            .expect("plan-code state lock")
+            .enter(initial_mode);
     }
     let plan_code_for_hook = std::sync::Arc::clone(&plan_code);
     agent.set_before_tool_call(Some(crate::plan_code::plan_mode_before_tool_call(
         plan_code_for_hook,
     )));
-    let plan_code_saved_tools = std::sync::Arc::new(std::sync::Mutex::new(
-        active_tool_names.clone(),
-    ));
+    let plan_code_saved_tools =
+        std::sync::Arc::new(std::sync::Mutex::new(active_tool_names.clone()));
 
     turn_boundary.bind(super::turn_boundary::TurnBoundaryRuntime {
         agent,

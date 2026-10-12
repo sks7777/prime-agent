@@ -285,6 +285,11 @@ pub(crate) struct HostedSession {
     /// The event mapping state lives and dies with the session, like TS.
     mapping: WireMappingState,
     observed_children: std::collections::HashSet<String>,
+    /// True once a mirror rebind has been attempted for this session
+    /// entry (PRIME-11/PRIME-28). A rebind fires at most once per
+    /// admitted entry; the claim's single-use + TTL block cross-process
+    /// replay.
+    mirror_rebind_attempted: bool,
 }
 
 struct ActiveTurn {
@@ -918,6 +923,10 @@ async fn stop_session_work(
 /// run one after another (TS `Promise.allSettled` is the declared
 /// divergence). A failed roster fetch or the first failed cancel fails the
 /// stop; every row still gets its cancel.
+///
+/// PRIME-11/PRIME-28: mirror children (`waitingMirrorAdmission` or
+/// `autoMirrorThread`) are skipped — their lifecycle is owned by their bb
+/// threads, not the parent turn.
 async fn cancel_outstanding_rlm_children(
     link: &Arc<DaemonLink>,
     daemon_session_id: &str,
@@ -925,6 +934,19 @@ async fn cancel_outstanding_rlm_children(
     let children = fetch_rlm_children(link, daemon_session_id).await?;
     let mut failure = None;
     for child in children {
+        // PRIME-11/PRIME-28: skip parked mirror children and auto-mirror
+        // children.
+        let is_mirror = child
+            .get("waitingMirrorAdmission")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || child
+                .get("autoMirrorThread")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        if is_mirror {
+            continue;
+        }
         let child_id = child
             .get("id")
             .and_then(Value::as_str)
@@ -943,6 +965,21 @@ async fn cancel_outstanding_rlm_children(
         }
     }
     failure.map_or(Ok(()), Err)
+}
+
+/// True when a settlement RPC failed because the settled session no longer
+/// exists in its worker (released by a parent-side abort, evicted, or
+/// killed). Such an error is terminal for the vanished session, not a
+/// settlement failure to poison the entry with (PRIME-28).
+fn is_session_gone_error(message: &str) -> bool {
+    message.starts_with("Unknown active session:")
+        || message.starts_with("Session is already active")
+        || message.starts_with("Daemon connection is closed")
+        || message.starts_with("Failed to recover from a")
+        || message.contains("worker returned an invalid")
+        || message.contains("Timed out connecting to daemon session worker")
+        || message.contains("Worker connection deadline elapsed")
+        || message.contains("Timed out waiting for daemon worker")
 }
 
 /// TS `cancel_prompt_admission` with `cancelOwned`: a committed prompt's
@@ -1216,6 +1253,7 @@ async fn handle_session_new(
             mapping
         },
         observed_children: std::collections::HashSet::new(),
+        mirror_rebind_attempted: false,
     };
     // The ACP MCP servers ride the wire command, not a local manager.
     let replace_skipped = resolved.is_empty() && state.lock().await.mcp_server_names.is_empty();
@@ -1554,6 +1592,7 @@ async fn handle_session_load(
             mapping
         },
         observed_children: std::collections::HashSet::new(),
+        mirror_rebind_attempted: false,
     };
     // MCP server replacement (same as session/new).
     let replace_skipped = resolved.is_empty() && state.lock().await.mcp_server_names.is_empty();
@@ -1934,6 +1973,7 @@ async fn handle_session_fork(
             mapping
         },
         observed_children: std::collections::HashSet::new(),
+        mirror_rebind_attempted: false,
     };
     // MCP server replacement (same as session/new).
     let replace_skipped = resolved.is_empty() && state.lock().await.mcp_server_names.is_empty();
@@ -2112,9 +2152,249 @@ async fn handle_session_prompt(
     socket_path: &Path,
     tx: producer::FrameSink,
 ) {
+    // PRIME-11/PRIME-28: mirror rebind — a frontend whose first prompt
+    // carries a `[rlm-mirror:<nonce>]` marker rebinds onto the claimed
+    // subagent session before the turn runs. The probe matches the first
+    // post-wrapper text block, so a leading `<system_instructions>`
+    // wrapper cannot hide the marker. The per-entry
+    // `mirror_rebind_attempted` flag blocks same-process replay (PRIME-28);
+    // the claim's single-use + TTL block cross-process replay.
+    let params = {
+        let prompt_params = types::PromptParams::parse(&params);
+        let split = types::split_acp_prompt_blocks(&prompt_params.prompt);
+        let probe_text = split.rest_texts.first().map(String::as_str).unwrap_or("");
+        let mirror = crate::rlm_bb_mirror::parse_rlm_mirror_marker(probe_text);
+
+        let should_rebind = {
+            let guard = state.lock().await;
+            guard
+                .session
+                .as_ref()
+                .is_some_and(|hosted| {
+                    hosted.acp_session_id == prompt_params.session_id
+                        && !hosted.cancelling
+                        && !hosted.mirror_rebind_attempted
+                })
+        };
+
+        if let Some(mirror) = &mirror {
+            if mirror.remaining.is_empty() {
+                // Marker-only prompt: ignore (no task to run).
+                return;
+            }
+        }
+
+        if let Some(mirror) = &mirror {
+            if should_rebind {
+                // Mark rebind attempted before the rebind runs.
+                {
+                    let mut guard = state.lock().await;
+                    if let Some(hosted) = guard.session.as_mut() {
+                        hosted.mirror_rebind_attempted = true;
+                    }
+                }
+                // Perform the rebind. On failure, degrade to a normal
+                // turn (the stripped prompt runs on the booted session).
+                if let Err(error) = rebind_to_rlm_mirror_session(
+                    &mirror.claim_nonce,
+                    &prompt_params.session_id,
+                    link,
+                    state,
+                )
+                .await
+                {
+                    eprintln!(
+                        "pa-daemon: ACP mirror rebind failed, degrading to normal turn: {error:#}"
+                    );
+                }
+                // Strip the marker from the prompt text.
+                let stripped_params = strip_mirror_marker_from_params(
+                    &params,
+                    &mirror.claim_nonce,
+                );
+                stripped_params
+            } else {
+                // Already attempted or wrong session: strip and run normally.
+                strip_mirror_marker_from_params(&params, &mirror.claim_nonce)
+            }
+        } else {
+            params
+        }
+    };
+
     let reply = prompt_turn(id, params, &admission_id, link, state, socket_path).await;
     release_turn_slot(state, &admission_id).await;
     let _ = tx.send(reply);
+}
+
+/// Strip the `[rlm-mirror:<nonce>]` marker line from the prompt blocks.
+fn strip_mirror_marker_from_params(params: &Value, nonce: &str) -> Value {
+    let mut params = params.clone();
+    if let Some(prompt) = params.get_mut("prompt").and_then(Value::as_array_mut) {
+        for block in prompt.iter_mut() {
+            if block.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(text_val) = block.get_mut("text") {
+                    if let Some(text) = text_val.as_str() {
+                        let stripped =
+                            crate::rlm_bb_mirror::strip_rlm_mirror_marker_line(text, nonce);
+                        *text_val = Value::String(stripped);
+                    }
+                }
+            }
+        }
+    }
+    params
+}
+
+/// Rebind the ACP session slot onto the claimed RLM subagent session
+/// (PRIME-11). Reads the claim, validates the target is an RLM subagent
+/// of the same cwd, attaches to it, re-admits under the same ACP session
+/// id, kills the draft session, and consumes the claim. On any failure
+/// the caller degrades to a normal turn.
+async fn rebind_to_rlm_mirror_session(
+    claim_nonce: &str,
+    _acp_session_id: &str,
+    link: &Arc<DaemonLink>,
+    state: &Arc<Mutex<DaemonAcpState>>,
+) -> anyhow::Result<()> {
+    // Determine the agent dir for claim resolution.
+    let agent_dir = std::env::var("PRIME_AGENT_CODING_AGENT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(
+                std::env::var("HOME")
+                    .map(|h| format!("{h}/.prime/agent"))
+                    .unwrap_or_else(|_| "~/.prime/agent".to_string()),
+            )
+        });
+
+    // Read and validate the claim.
+    let claim =
+        match crate::rlm_bb_mirror::read_rlm_mirror_claim(claim_nonce, &agent_dir) {
+            Some(claim) => claim,
+            None => {
+                // Stale/invalid claim: degrade silently.
+                return Ok(());
+            }
+        };
+
+    // Get the current (draft) session's state for the cwd match.
+    let draft_session_id = {
+        let guard = state.lock().await;
+        guard
+            .session
+            .as_ref()
+            .map(|h| h.daemon_active_session_id.clone())
+    };
+    let Some(draft_session_id) = draft_session_id else {
+        return Ok(());
+    };
+
+    // Validate the target: GetState on the target session.
+    let target_state = link
+        .request(DaemonCommand::GetState {
+            id: None,
+            active_session_id: claim.target.clone(),
+            rest: Map::default(),
+        })
+        .await;
+    let target_ok = match target_state {
+        Ok(response) if response.success => {
+            let data = response.data.unwrap_or(Value::Null);
+            // Get the draft session's cwd for comparison.
+            let draft_state = link
+                .request(DaemonCommand::GetState {
+                    id: None,
+                    active_session_id: draft_session_id.clone(),
+                    rest: Map::default(),
+                })
+                .await
+                .ok()
+                .and_then(|r| if r.success { r.data } else { None })
+                .unwrap_or(Value::Null);
+            let draft_cwd = draft_state
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(std::path::Path::new)
+                .unwrap_or_else(|| std::path::Path::new("/"));
+            crate::rlm_bb_mirror::is_rlm_mirror_target_summary(&data, draft_cwd)
+        }
+        _ => false,
+    };
+
+    if !target_ok {
+        // Consume the claim (it's invalid) and degrade.
+        crate::rlm_bb_mirror::consume_rlm_mirror_claim(claim_nonce, &agent_dir);
+        return Ok(());
+    }
+
+    // Fence: block concurrent session/new for the switch.
+    {
+        let mut guard = state.lock().await;
+        if guard.session_new_in_flight {
+            anyhow::bail!("ACP session is already switching; cannot rebind");
+        }
+        guard.session_new_in_flight = true;
+    }
+
+    // Attach to the target session.
+    let attach_result = link
+        .request(DaemonCommand::Attach {
+            id: None,
+            active_session_id: claim.target.clone(),
+            client_id: None,
+            capabilities: None,
+            resume_cursor: None,
+            telemetry_disabled: None,
+            recovery_config: None,
+            env: None,
+            launch_env: None,
+            rest: Map::default(),
+        })
+        .await;
+
+    if let Err(error) = attach_result {
+        // Rollback: re-attach to the draft session.
+        state.lock().await.session_new_in_flight = false;
+        let _ = link
+            .request(DaemonCommand::Attach {
+                id: None,
+                active_session_id: draft_session_id.clone(),
+                client_id: None,
+                capabilities: None,
+                resume_cursor: None,
+                telemetry_disabled: None,
+                recovery_config: None,
+                env: None,
+                launch_env: None,
+                rest: Map::default(),
+            })
+            .await;
+        return Err(error);
+    }
+
+    // Update the hosted session's daemon binding to the target.
+    {
+        let mut guard = state.lock().await;
+        if let Some(hosted) = guard.session.as_mut() {
+            hosted.daemon_active_session_id = claim.target.clone();
+        }
+        guard.session_new_in_flight = false;
+    }
+
+    // Consume the claim (single-use).
+    crate::rlm_bb_mirror::consume_rlm_mirror_claim(claim_nonce, &agent_dir);
+
+    // Kill the draft session (best-effort).
+    let _ = link
+        .request(DaemonCommand::Kill {
+            id: None,
+            active_session_id: draft_session_id,
+            rest: Map::default(),
+        })
+        .await;
+
+    Ok(())
 }
 
 /// Release this prompt's turn slot, after its stop sequence if it was
@@ -2604,10 +2884,29 @@ async fn prompt_turn(
     // telemetry (a child can publish a terminal status before its result
     // reaches the parent). A failed barrier or read errors the prompt; a
     // degraded status would spin the loop.
+    //
+    // PRIME-28: a session-gone error (the settled session vanished from
+    // its worker — a parent-side abort released an attached mirror child,
+    // a worker eviction) degrades to a clean terminal release instead of
+    // poisoning the entry: the error would make every later prompt throw
+    // "ACP lifecycle reconciliation failed", surfacing as a permanent
+    // thread failure for a session that no longer exists.
     let settled_status = loop {
         let status = match fetch_autonomous_status(link, &hosted_daemon_session_id, true).await {
             Ok(status) => status,
             Err(error) => {
+                let message = error.to_string();
+                if is_session_gone_error(&message) {
+                    // Degrade to a clean terminal release.
+                    producer.finish_prompt(turn_id).await;
+                    return jsonrpc::response(
+                        &id,
+                        &serde_json::to_value(types::AcpStopReasonResponse {
+                            stop_reason: types::AcpStopReason::EndTurn,
+                        })
+                        .expect("serializes"),
+                    );
+                }
                 producer.finish_prompt(turn_id).await;
                 return super::internal_error(
                     &id,
@@ -2622,6 +2921,17 @@ async fn prompt_turn(
         let children = match fetch_rlm_children(link, &hosted_daemon_session_id).await {
             Ok(children) => children,
             Err(error) => {
+                let message = error.to_string();
+                if is_session_gone_error(&message) {
+                    producer.finish_prompt(turn_id).await;
+                    return jsonrpc::response(
+                        &id,
+                        &serde_json::to_value(types::AcpStopReasonResponse {
+                            stop_reason: types::AcpStopReason::EndTurn,
+                        })
+                        .expect("serializes"),
+                    );
+                }
                 producer.finish_prompt(turn_id).await;
                 return super::internal_error(
                     &id,
@@ -2994,6 +3304,7 @@ mod tests {
             assistant_stop_reason: None,
             mapping: WireMappingState::default(),
             observed_children: std::collections::HashSet::new(),
+            mirror_rebind_attempted: false,
         }
     }
 

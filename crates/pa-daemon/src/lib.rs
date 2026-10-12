@@ -76,6 +76,7 @@ pub(crate) mod recovery_pacing;
 pub mod registration;
 pub(crate) mod registry;
 mod revival_gate;
+pub mod rlm_bb_mirror;
 pub mod rlm_child_model;
 pub mod rlm_child_usage;
 pub mod rlm_children;

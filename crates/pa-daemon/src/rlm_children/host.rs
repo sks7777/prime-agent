@@ -3,15 +3,22 @@
 //! `collect`, `rename`) over the supervisor's child-sessions registry,
 //! with the spawn-admission helpers only this surface uses.
 use super::{
-    assert_thinking_supported, bail, create_default_rlm_subagent_session_name,
-    create_rlm_child_terminal_notice, json, now_ms, resolve_child_model, rlm_child_label,
-    spawn_name_unavailable, Arc, ChildCloseReason, ChildRecord, Context, DaemonCommand, Duration,
-    Instant, Mutex, Path, PathBuf, Result, RlmChildResult, RlmChildTerminalNotice,
-    RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture,
-    RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
+    assert_thinking_supported, bail, create_default_rlm_subagent_session_name, json, now_ms,
+    resolve_child_model, rlm_child_label, rlm_depth_limit_error, spawn_name_unavailable_error, Arc,
+    ChildCloseReason, ChildObservationSource, ChildRecord, Context, DaemonCommand, Duration,
+    Instant, Mutex, Path, PathBuf, Result, RlmChildResult, RlmCreateSessionHandle,
+    RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle,
+    RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
     SupervisorChildSessions, SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS,
     RENAME_TIMEOUT_MS,
 };
+use crate::rlm_bb_mirror::{
+    bb_mirror_env_from_process, build_rlm_mirror_prompt, mirror_thread_title,
+    new_mirror_claim_nonce, remove_rlm_mirror_claim, resolve_child_active_session_id,
+    should_auto_mirror_rlm_child, spawn_bb_mirror_thread, BbMirrorSpawnOptions, BbSpawnFailed,
+    BB_MIRROR_WAIT_TIMEOUT_MS, RLM_MIRROR_ROSTER_TIMEOUT_MS,
+};
+use serde_json::Map;
 
 /// Resolve the child model with the daemon `allowedModels` allowlist enforced, refusing loudly with
 /// the typed error and the `model refused` event; the settings read runs on the blocking pool.
@@ -51,17 +58,42 @@ async fn resolve_child_model_allowlisted(
     }
 }
 
+/// The `rlm.create_session` launch env (TS `createRlmRootSession`'s
+/// minimal map: `collectDaemonLaunchEnv({ PATH })` plus the provider's
+/// env API-key var plus `PRIME_TEAM_ID` for prime-inference).
+fn create_session_launch_env(model: &str) -> std::collections::BTreeMap<String, String> {
+    let mut env = std::collections::BTreeMap::new();
+    if let Ok(path) = std::env::var("PATH") {
+        env.insert("PATH".to_string(), path);
+    }
+    let provider = model
+        .split_once('/')
+        .map_or(model, |(provider, _)| provider);
+    if let Some(env_key) =
+        pa_ai::env_api_keys::find_env_keys(provider).and_then(|keys| keys.first().cloned())
+    {
+        if let Ok(value) = std::env::var(&env_key) {
+            env.insert(env_key, value);
+        }
+    }
+    if provider == "prime-inference" {
+        if let Ok(team) = std::env::var("PRIME_TEAM_ID") {
+            env.insert("PRIME_TEAM_ID".to_string(), team);
+        }
+    }
+    env
+}
+
 impl RlmSubagentHost for SupervisorChildSessions {
     fn spawn(&self, request: RlmSpawnRequest) -> RlmHostFuture<RlmSpawnHandle> {
         let this = Arc::clone(&self.inner);
         Box::pin(async move {
             let identity = this.identity.lock().expect("identity lock").clone();
             if identity.rlm_depth >= identity.rlm_max_depth {
-                bail!(
-                    "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
+                bail!(rlm_depth_limit_error(
                     identity.rlm_depth,
                     identity.rlm_max_depth
-                );
+                ));
             }
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
             let name = request.name.clone().unwrap_or_else(|| {
@@ -75,7 +107,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 .is_some()
                 .then(|| {
                     if !this.reserve_spawn_name(&name) {
-                        return Err(spawn_name_unavailable(&name, identity.rlm_depth + 1));
+                        return Err(spawn_name_unavailable_error(&name, identity.rlm_depth + 1));
                     }
                     Ok(SpawnNameReservationGuard {
                         inner: Arc::clone(&this),
@@ -117,7 +149,12 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         request.spawned_by_request_id.as_deref(),
                         Some(runtime_metadata),
                         &identity,
-                        request.temperature,
+                        // TS runs `rlm.spawn` children in-process
+                        // inside the parent worker, so they share its
+                        // env; the Rust child is a separate worker
+                        // process, so the spawn forwards the parent
+                        // worker's env (filtered) instead.
+                        Some(pa_types::daemon::launch_env::collect_process_launch_env()),
                     )
                     .await?;
                 let record = ChildRecord {
@@ -132,19 +169,34 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     settled_status: None,
                     settled: false,
                     answer_preview: None,
+                    answer_text: None,
                     answer_captured: false,
                     replied_since_task: false,
+                    progress_note: None,
+                    tool_use_count: None,
+                    live_observation: None,
+                    direct_observation: Arc::new(Mutex::new(())),
                     notice_delivered: false,
                     prompt_admitted: false,
                     error: None,
                     closed_by_parent: false,
+                    retirement_finished: false,
+                    retirement_notified: false,
+                    retirement_roster_emitted: false,
+                    usage_registration_forgotten: false,
                     session_file: created.session_file.clone(),
                     attributed_rows: Some(0),
+                    pending_usage_report: None,
                     usage_watch_live: false,
                     usage_rearm: false,
                     emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                     last_emitted_status: None,
                     rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                    waiting_mirror_admission: false,
+                    auto_mirror_thread: false,
+                    mirror_claim_nonce: None,
+                    mirror_admission_waker: None,
+                    mirror_wait_settled: false,
                 };
                 let record = Arc::new(Mutex::new(record));
                 this.children.lock().await.push(Arc::clone(&record));
@@ -154,6 +206,125 @@ impl RlmSubagentHost for SupervisorChildSessions {
             }
             .await;
             let (record, created, model) = admission?;
+
+            // PRIME-11/PRIME-24: determine bb mirror intent.
+            // `bb_mirror=None` → auto-mirror if inside bb depth-0.
+            // `bb_mirror=Some(true)` → explicit mirror (caller brings thread).
+            // `bb_mirror=Some(false)` → plain headless child.
+            let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+            let auto_mirror_requested = request.bb_mirror.is_none()
+                && should_auto_mirror_rlm_child(identity.rlm_depth, &env);
+            let bb_mirror = request.bb_mirror == Some(true) || auto_mirror_requested;
+
+            // For a mirror child: create the deferred-admission waker and
+            // mark the record as waiting. The watcher task will wait for
+            // the waker (fired when the mirror thread's first prompt
+            // reaches the child) or a timeout/cancel.
+            let waker_rx = if bb_mirror {
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                {
+                    let mut rec = record.lock().await;
+                    rec.waiting_mirror_admission = true;
+                    rec.mirror_admission_waker = Some(tx);
+                }
+                Some(rx)
+            } else {
+                None
+            };
+
+            // PRIME-24 auto-mirror: spawn the bb thread right after
+            // admission. A definitive bb failure (proven no thread exists)
+            // degrades to a plain headless child; an ambiguous failure
+            // parks on the deadline.
+            let mut runtime_mirror_failed: Option<String> = None;
+            if auto_mirror_requested {
+                let bb_env = bb_mirror_env_from_process(&env);
+                if let Some(bb_env) = bb_env {
+                    // Resolve the child's active session id from the roster.
+                    let child_id_for_resolve = child_id.clone();
+                    let session_name_for_resolve = record.lock().await.session_name.clone();
+                    let roster_this = Arc::clone(&this);
+                    let active_session_id = resolve_child_active_session_id(
+                        async move || {
+                            let cmd = DaemonCommand::GetRlmChildren {
+                                id: None,
+                                active_session_id: roster_this.parent_active_session_id.clone(),
+                                rest: Map::default(),
+                            };
+                            let response = roster_this.command(&cmd, 30_000).await?;
+                            let children = response
+                                .get("children")
+                                .and_then(|c| c.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            Ok(children)
+                        },
+                        &child_id_for_resolve,
+                        &session_name_for_resolve,
+                        RLM_MIRROR_ROSTER_TIMEOUT_MS,
+                    )
+                    .await;
+                    match active_session_id {
+                        Ok(_active_id) => {
+                            // Write the claim and spawn the bb thread.
+                            let nonce = new_mirror_claim_nonce();
+                            {
+                                let mut rec = record.lock().await;
+                                rec.auto_mirror_thread = true;
+                                rec.mirror_claim_nonce = Some(nonce.clone());
+                            }
+                            let mirror_prompt = build_rlm_mirror_prompt(&nonce, &request.prompt);
+                            let title = mirror_thread_title(
+                                &record.lock().await.session_name,
+                                &request.prompt,
+                            );
+                            let spawn_result = spawn_bb_mirror_thread(BbMirrorSpawnOptions {
+                                project_id: bb_env.project_id,
+                                environment_id: bb_env.environment_id,
+                                title,
+                                prompt: mirror_prompt,
+                                bb_command: bb_env.bb_cli,
+                                timeout_ms: None,
+                            })
+                            .await;
+                            if let Err(error) = &spawn_result {
+                                let failed = error.downcast_ref::<BbSpawnFailed>();
+                                let definitive = failed.is_some_and(|f| f.definitive());
+                                if definitive {
+                                    // Drop the claim: no thread will consume it.
+                                    remove_rlm_mirror_claim(&nonce, &this.agent_dir);
+                                    runtime_mirror_failed = Some(error.to_string());
+                                    // Degrade: clear mirror flags.
+                                    let mut rec = record.lock().await;
+                                    rec.waiting_mirror_admission = false;
+                                    rec.auto_mirror_thread = false;
+                                    rec.mirror_admission_waker.take();
+                                    rec.mirror_claim_nonce = None;
+                                }
+                                // Ambiguous failure: park (keep claim, wait
+                                // for timeout). The watcher task handles it.
+                            }
+                        }
+                        Err(error) => {
+                            runtime_mirror_failed = Some(error.to_string());
+                            // Degrade: clear mirror flags and prompt normally.
+                            let mut rec = record.lock().await;
+                            rec.waiting_mirror_admission = false;
+                            rec.auto_mirror_thread = false;
+                            rec.mirror_admission_waker.take();
+                        }
+                    }
+                } else {
+                    // No bb env: degrade to plain child.
+                    runtime_mirror_failed =
+                        Some("bb mirror spawn requires BB_THREAD_ID/BB_PROJECT_ID".to_string());
+                    let mut rec = record.lock().await;
+                    rec.waiting_mirror_admission = false;
+                    rec.auto_mirror_thread = false;
+                    rec.mirror_admission_waker.take();
+                }
+            }
+
             // The task prompt runs detached from the spawn admission: the
             // handle returns at registration and the child's first turn
             // starts after the parent's continuation request is in flight.
@@ -202,6 +373,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
             // admission happens mid-turn, so the parent's continuation
             // request reaches the provider first (see `wait_turn_done`).
             let turn_generation = *this.turn_done.subscribe().borrow();
+            let mirror_failed = runtime_mirror_failed.clone();
             tokio::spawn(async move {
                 watcher_this.wait_turn_done(turn_generation).await;
                 // The parent closed before the prompt admitted: the
@@ -210,7 +382,73 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 if watcher_record.lock().await.closed_by_parent {
                     return;
                 }
-                watcher_record.lock().await.prompt_admitted = true;
+
+                // PRIME-11: for a bb-mirror child that is still waiting
+                // for its mirror thread's first prompt, defer the kickoff.
+                // Wait for the waker (mirror thread rebinds and prompts),
+                // a timeout (10 min), or a cancel settle.
+                let still_waiting = watcher_record.lock().await.waiting_mirror_admission;
+                if still_waiting && mirror_failed.is_none() {
+                    if let Some(waker_rx) = waker_rx {
+                        let timeout =
+                            tokio::time::sleep(Duration::from_millis(BB_MIRROR_WAIT_TIMEOUT_MS));
+                        tokio::pin!(timeout);
+                        tokio::select! {
+                            _ = waker_rx => {
+                                // Mirror thread prompted the child: the
+                                // admission turn arrived from the mirror
+                                // thread's ACP frontend. Mark admitted and
+                                // settle-watch.
+                                let settled = {
+                                    let mut rec = watcher_record.lock().await;
+                                    if rec.mirror_wait_settled {
+                                        return;
+                                    }
+                                    rec.mirror_wait_settled = true;
+                                    rec.waiting_mirror_admission = false;
+                                    rec.prompt_admitted = true;
+                                    // Drop the claim: the rebind consumed it.
+                                    if let Some(nonce) = rec.mirror_claim_nonce.take() {
+                                        remove_rlm_mirror_claim(&nonce, &watcher_this.agent_dir);
+                                    }
+                                    rec.closed_by_parent
+                                };
+                                if settled {
+                                    return;
+                                }
+                                watcher_this.watch_child_settle(&watcher_record).await;
+                                return;
+                            }
+                            _ = &mut timeout => {
+                                // Timeout: the mirror thread never prompted.
+                                // Settle as failed.
+                                let already_settled = {
+                                    let mut rec = watcher_record.lock().await;
+                                    if rec.mirror_wait_settled {
+                                        return;
+                                    }
+                                    rec.mirror_wait_settled = true;
+                                    rec.waiting_mirror_admission = false;
+                                    if let Some(nonce) = rec.mirror_claim_nonce.take() {
+                                        remove_rlm_mirror_claim(&nonce, &watcher_this.agent_dir);
+                                    }
+                                    rec.settled_status.is_some()
+                                };
+                                if !already_settled {
+                                    watcher_this
+                                        .settle_failed(
+                                            &watcher_record,
+                                            "bb-mirror child was never prompted".to_string(),
+                                        )
+                                        .await;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // Plain child (or degraded mirror): prompt normally.
                 if let Err(error) = watcher_this
                     .prompt_child(
                         &child_active_session_id,
@@ -246,15 +484,14 @@ impl RlmSubagentHost for SupervisorChildSessions {
                             .kill_child(&child_active_session_id, ChildCloseReason::Killed)
                             .await;
                         watcher_this
-                            .settle_failed(
-                                &watcher_record,
-                                format!("{retry_error:#}"),
-                                super::lifecycle::FailedArm::Prompt,
-                            )
+                            .settle_failed(&watcher_record, format!("{retry_error:#}"))
                             .await;
                         return;
                     }
                 }
+                // The worker accepted the task: from here an idle read is a
+                // finished run, never the pre-prompt idle worker.
+                watcher_record.lock().await.prompt_admitted = true;
                 watcher_this.watch_child_settle(&watcher_record).await;
             });
             Ok(RlmSpawnHandle {
@@ -307,6 +544,9 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     &sessions_dir,
                     None,
                     &identity,
+                    // The TS minimal map for a depth-0 root (the
+                    // env-key heuristic is stated in the PR).
+                    Some(create_session_launch_env(&model)),
                 )
                 .await?;
             // The TS create-path summary validation: a resident depth-0
@@ -334,10 +574,49 @@ impl RlmSubagentHost for SupervisorChildSessions {
         let this = Arc::clone(&self.inner);
         Box::pin(async move {
             let records = this.children.lock().await.clone();
+            // The children's live note and tool count join from the
+            // supervisor's pushed roster: one in-memory read, never a busy
+            // child worker round trip. A failed read keeps the last values
+            // each record observed; the settle watcher owns worker refreshes.
+            let request_order = this
+                .observation_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(peers) = this.child_roster_rows(&records).await {
+                for record in &records {
+                    let (rlm_child_id, active_session_id) = {
+                        let record = record.lock().await;
+                        (
+                            record.rlm_child_id.clone(),
+                            record.active_session_id.clone(),
+                        )
+                    };
+                    let live = peers
+                        .iter()
+                        .find(|row| {
+                            row.get("rlmChildId").and_then(Value::as_str)
+                                == Some(rlm_child_id.as_str())
+                        })
+                        .or_else(|| {
+                            peers.iter().find(|row| {
+                                row.get("activeSessionId").and_then(Value::as_str)
+                                    == Some(active_session_id.as_str())
+                            })
+                        });
+                    if let Some(live) = live {
+                        this.observe_live_state(
+                            record,
+                            live,
+                            request_order,
+                            ChildObservationSource::Roster,
+                        )
+                        .await;
+                    }
+                }
+            }
             let mut entries = Vec::with_capacity(records.len());
             for record in &records {
-                // The settle watcher owns worker refreshes. A roster read is a
-                // snapshot and must not queue behind a long supervisor request.
+                // A roster read is a snapshot: the rows serve the records'
+                // last observed state without another round trip.
                 let record = record.lock().await;
                 entries.push(SupervisorChildSessions::entry(&record));
             }
@@ -348,14 +627,68 @@ impl RlmSubagentHost for SupervisorChildSessions {
     fn delete_subagent(&self, target: String) -> RlmHostFuture<RlmDeleteSubagentResult> {
         let this = Arc::clone(&self.inner);
         Box::pin(async move {
+            if !this.replay_retired_usage(Some(&target)).await {
+                bail!("RLM child usage remains owed after retirement; retry deletion");
+            }
             // Selector errors surface unwrapped (the TS message is the
             // product surface); only the kill below gets a delete context.
-            let record = this.resolve_record(&target, "subagent").await?;
+            let record = match this.resolve_record(&target, "subagent").await {
+                Ok(record) => record,
+                Err(miss) => {
+                    // Retirement is idempotent (the M5 class): a selector
+                    // whose delete receipt already returned answers from
+                    // the tombstone instead of erroring, so a re-delete of
+                    // a settled child (an operator retire, the factory's
+                    // cancel pass) never reports the slot as still held.
+                    let matches = this
+                        .deleted_children
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .values()
+                        .filter(|deleted| deleted.matches(&target))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    match matches.len() {
+                        0 => return Err(miss),
+                        1 => {
+                            let deleted = &matches[0];
+                            return Ok(RlmDeleteSubagentResult {
+                                subagent: RlmSubagentEntry {
+                                    rlm_child_id: deleted.rlm_child_id.clone(),
+                                    active_session_id: Some(deleted.active_session_id.clone()),
+                                    session_id: deleted.session_id.clone(),
+                                    session_name: deleted.session_name.clone(),
+                                    session_dir: deleted.session_dir.clone(),
+                                    status: deleted.status,
+                                    activity: None,
+                                    tool_use_count: None,
+                                    duration_ms: Some(
+                                        now_ms().saturating_sub(deleted.started_at_ms),
+                                    ),
+                                    answer_preview: deleted.answer_preview.clone(),
+                                    replied_since_task: None,
+                                    progress_note: None,
+                                    label: None,
+                                    last_activity_at: Some(deleted.started_at_ms),
+                                    activity_stale_ms: None,
+                                    auto_mirror_thread: None,
+                                    waiting_mirror_admission: None,
+                                },
+                                outcome: Some("deleted"),
+                            });
+                        }
+                        _ => bail!(
+                            "RLM subagent selector \"{target}\" is ambiguous in the current parent session"
+                        ),
+                    }
+                }
+            };
             let rename_lock = record.lock().await.rename_lock.clone();
             let _rename_guard = rename_lock.lock().await;
+            let already_terminated = this.has_retired_usage(&record);
             let no_longer_matches = {
                 let record = record.lock().await;
-                record.closed_by_parent || !record.matches(&target)
+                (record.closed_by_parent && !already_terminated) || !record.matches(&target)
             };
             if no_longer_matches {
                 bail!("No direct RLM subagent matches \"{target}\" in the current parent session");
@@ -377,83 +710,28 @@ impl RlmSubagentHost for SupervisorChildSessions {
             let was_running = record.lock().await.settled_status.is_none();
             // Capture before the kill: a deleted running child's durable
             // rows are its last observable spend on the parent side.
-            this.emit_child_usage(&record).await;
-            this.command(&command, KILL_TIMEOUT_MS)
-                .await
-                .with_context(|| format!("kill RLM child \"{target}\""))?;
-            // Rows can land between the pre-kill capture and the kill
-            // reaching the worker: the post-kill walk is the LAST observation
-            // (the cursor keeps it free of double-billing).
-            this.emit_child_usage(&record).await;
-            // The final observation landed: the registration drops.
-            this.forget_child_usage(&record).await;
-            // The watcher owns an Arc to this record; deleting the roster
-            // row alone cannot stop its polling loop.
-            {
-                let mut record = record.lock().await;
-                record.closed_by_parent = true;
-                if was_running {
-                    record.settled_status = Some("cancelled");
-                    record.error = Some("Deleted by parent orchestrator".to_string());
-                }
+            if !already_terminated {
+                this.emit_child_usage(&record).await;
+                this.command(&command, KILL_TIMEOUT_MS)
+                    .await
+                    .with_context(|| format!("kill RLM child \"{target}\""))?;
+                this.retain_retired_usage(&record, super::RetirementIntent::Delete { was_running });
+                // Observe any rows that landed before the acknowledged kill.
+                this.emit_child_usage(&record).await;
             }
+            // The final observation landed: the registration drops.
+            let usage_persisted = this.forget_child_usage(&record).await;
+            this.finish_retirement(&record).await;
             let entry = {
                 let record = record.lock().await;
                 SupervisorChildSessions::entry(&record)
             };
-            // The tombstone keeps the identity behind the registry so a
-            // just-deleted selector still answers `collect`.
-            {
-                let record = record.lock().await;
-                this.remember_deleted_child(&record);
+            if usage_persisted {
+                this.remove_retired_usage(&record);
             }
-            if was_running {
-                this.emit_child_update(&record).await;
-            } else {
-                this.emit_child_removal(&record).await;
+            if !usage_persisted {
+                bail!("RLM child usage remains owed after retirement; retry deletion");
             }
-            // The deletion commits BEFORE the best-effort terminal
-            // notice: the notice's supervisor delivery can ride its full
-            // timeout, and a deleted child must leave the registry and the
-            // cached context tree immediately, not after it.
-            this.children
-                .lock()
-                .await
-                .retain(|candidate| !Arc::ptr_eq(candidate, &record));
-            // A deleted subagent leaves `/context` immediately (the
-            // background refresh would otherwise resurrect it).
-            if let Some(notify) = this
-                .delete_notifier
-                .lock()
-                .expect("delete notifier lock")
-                .clone()
-            {
-                notify(&entry.rlm_child_id);
-            }
-            // A still-running child was cut short by the delete: the
-            // parent receives the cancelled terminal notice.
-            if was_running {
-                let notice = {
-                    let mut record = record.lock().await;
-                    let claimed = !record.notice_delivered;
-                    record.notice_delivered = true;
-                    claimed.then(|| RlmChildTerminalNotice::Cancelled {
-                        child_id: record.rlm_child_id.clone(),
-                        session_name: record.session_name.clone(),
-                        reason: Some("Deleted by parent orchestrator".to_string()),
-                    })
-                };
-                if let Some(notice) = notice {
-                    this.deliver_terminal_notice(create_rlm_child_terminal_notice(
-                        &notice,
-                        now_ms(),
-                    ))
-                    .await;
-                }
-            }
-            // The deletion settles the run: a parked barrier re-reads a removed
-            // record as settled.
-            this.fire_settle_hook(&record).await;
             Ok(RlmDeleteSubagentResult {
                 subagent: entry,
                 outcome: Some("deleted"),
@@ -489,11 +767,8 @@ impl RlmSubagentHost for SupervisorChildSessions {
                             .collect::<Vec<_>>();
                         match matches.len() {
                             0 => return Err(miss),
-                            1 => deleted_results.push(
-                                SupervisorChildSessions::deleted_collect_result(
-                                    &matches[0],
-                                ),
-                            ),
+                            1 => deleted_results
+                                .push(SupervisorChildSessions::deleted_collect_result(&matches[0])),
                             _ => bail!(
                                 "RLM child selector \"{target}\" is ambiguous in the current parent session"
                             ),
@@ -599,7 +874,9 @@ impl RlmSubagentHost for SupervisorChildSessions {
             };
             if let Some(record) = &record {
                 if record.lock().await.closed_by_parent {
-                    bail!("rlm.rename can only rename the current session or one of its direct children");
+                    bail!(
+                        "rlm.rename can only rename the current session or one of its direct children"
+                    );
                 }
             }
             // The rename itself is daemon-owned: the supervisor's live

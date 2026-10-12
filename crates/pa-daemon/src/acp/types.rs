@@ -301,6 +301,113 @@ pub fn parse_prompt_blocks(
     Ok((texts.join("\n"), images))
 }
 
+/// The split of ACP prompt blocks into instruction-wrapper text,
+/// remaining text blocks, and images.
+#[allow(dead_code)]
+pub struct AcpPromptSplit {
+    /// Leading instruction-wrapper texts, joined. Empty when absent.
+    pub instructions_text: String,
+    /// Text blocks after the instruction wrapper, in order.
+    pub rest_texts: Vec<String>,
+    /// Image blocks from the prompt.
+    pub images: Vec<ImageBlock>,
+}
+
+/// Split ACP prompt blocks into the instruction wrapper and the rest.
+///
+/// The first text block may be a whole `<system_instructions>` wrapper
+/// or a merged wrapper+text block (some clients send them in one block).
+/// The marker probe searches `rest_texts[0]` so a leading wrapper cannot
+/// hide it.
+pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
+    let mut instruction_texts: Vec<String> = Vec::new();
+    let mut rest_texts: Vec<String> = Vec::new();
+    let mut images: Vec<ImageBlock> = Vec::new();
+
+    for block in prompt {
+        let Some(object) = block.as_object() else {
+            continue;
+        };
+        let kind = object.get("type").and_then(Value::as_str);
+        match kind {
+            Some("text") => {
+                let Some(text) = object.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                let trimmed = text.trim();
+                // A whole wrapper block.
+                if rest_texts.is_empty()
+                    && regex_safe_match_whole(trimmed)
+                {
+                    instruction_texts.push(text.to_string());
+                    continue;
+                }
+                // A merged wrapper+text block: split it.
+                if rest_texts.is_empty() && instruction_texts.is_empty() {
+                    if let Some((wrapper, rest)) = split_acp_instruction_prefix(trimmed) {
+                        instruction_texts.push(wrapper);
+                        rest_texts.push(rest);
+                        continue;
+                    }
+                }
+                rest_texts.push(text.to_string());
+            }
+            Some("image") => {
+                let data = object.get("data").and_then(Value::as_str);
+                let mime_type = object.get("mimeType").and_then(Value::as_str);
+                if let (Some(data), Some(mime_type)) = (data, mime_type) {
+                    images.push(ImageBlock {
+                        data: data.to_string(),
+                        mime_type: mime_type.to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    AcpPromptSplit {
+        instructions_text: instruction_texts.join("
+"),
+        rest_texts,
+        images,
+    }
+}
+
+/// Check whether text is a whole `<system_instructions>` wrapper.
+fn regex_safe_match_whole(text: &str) -> bool {
+    // Manual check instead of regex: starts with <system_instructions>,
+    // ends with </system_instructions>, and the closing tag is the last
+    // non-whitespace.
+    let trimmed = text.trim();
+    if !trimmed.starts_with("<system_instructions>") {
+        return false;
+    }
+    if !trimmed.ends_with("</system_instructions>") {
+        return false;
+    }
+    // The content between tags can be anything.
+    true
+}
+
+/// Split a merged wrapper+text block: `<system_instructions>...</system_instructions>rest`.
+fn split_acp_instruction_prefix(text: &str) -> Option<(String, String)> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("<system_instructions>") {
+        return None;
+    }
+    // Find the closing tag.
+    let close_tag = "</system_instructions>";
+    let close_pos = trimmed.find(close_tag)?;
+    let after_close = close_pos + close_tag.len();
+    let wrapper = trimmed[..after_close].to_string();
+    let rest = trimmed[after_close..].trim().to_string();
+    if rest.is_empty() {
+        return None;
+    }
+    Some((wrapper, rest))
+}
+
 /// An image block admitted into a prompt.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageBlock {
@@ -607,5 +714,43 @@ mod tests {
         assert_eq!(value["status"], "completed");
         assert_eq!(value["content"][0]["type"], "content");
         assert_eq!(value["content"][0]["content"]["text"], "42");
+    }
+
+    #[test]
+    fn split_acp_prompt_blocks_separates_wrapper_and_rest() {
+        let prompt = json!([
+            { "type": "text", "text": "<system_instructions>some instructions</system_instructions>" },
+            { "type": "text", "text": "[rlm-mirror:abcdef0123456789abcdef0123456789]
+[task from parent]
+
+Do work" },
+        ]);
+        let split = split_acp_prompt_blocks(prompt.as_array().unwrap());
+        assert!(split.instructions_text.contains("system_instructions"));
+        assert_eq!(split.rest_texts.len(), 1);
+        assert!(split.rest_texts[0].starts_with("[rlm-mirror:"));
+    }
+
+    #[test]
+    fn split_acp_prompt_blocks_handles_merged_wrapper_and_text() {
+        let prompt = json!([
+            { "type": "text", "text": "<system_instructions>instructions</system_instructions>[rlm-mirror:abcdef0123456789abcdef0123456789]
+body" },
+        ]);
+        let split = split_acp_prompt_blocks(prompt.as_array().unwrap());
+        assert!(split.instructions_text.contains("system_instructions"));
+        assert_eq!(split.rest_texts.len(), 1);
+        assert!(split.rest_texts[0].starts_with("[rlm-mirror:"));
+    }
+
+    #[test]
+    fn split_acp_prompt_blocks_no_wrapper() {
+        let prompt = json!([
+            { "type": "text", "text": "plain text prompt" },
+        ]);
+        let split = split_acp_prompt_blocks(prompt.as_array().unwrap());
+        assert!(split.instructions_text.is_empty());
+        assert_eq!(split.rest_texts.len(), 1);
+        assert_eq!(split.rest_texts[0], "plain text prompt");
     }
 }
