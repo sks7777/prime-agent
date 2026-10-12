@@ -355,7 +355,7 @@ pub(crate) fn is_our_worker_socket(path: &str, supervisor_socket: &Path) -> bool
     let Some(name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let key = crate::paths::hash_key(&supervisor_socket.to_string_lossy(), 12);
+    let key = crate::paths::hash_key(&supervisor_socket.to_string_lossy(), 6);
     normalize_socket_spelling(Path::new(path).parent().unwrap_or(Path::new(path)))
         == normalize_socket_spelling(&crate::platform::socket_dir())
         && name.starts_with(&format!("worker-{key}-"))
@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn our_worker_socket_names_only() {
         let supervisor = Path::new("/tmp/prime-agent-1000/daemon.sock");
-        let key = crate::paths::hash_key(&supervisor.to_string_lossy(), 12);
+        let key = crate::paths::hash_key(&supervisor.to_string_lossy(), 6);
         let dir = crate::platform::socket_dir().to_string_lossy().to_string();
         let ours = format!("{dir}/worker-{key}-abcdef123456.sock");
         assert!(

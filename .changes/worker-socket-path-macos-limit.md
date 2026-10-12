@@ -1,0 +1,1 @@
+- Worker daemon socket names now fit the AF_UNIX path limit under the stock macOS per-user TMPDIR, so bb-launched Rust agents start sessions instead of timing out on the daemon create.

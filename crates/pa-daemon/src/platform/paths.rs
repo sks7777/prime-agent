@@ -37,11 +37,16 @@ pub fn default_daemon_socket_path() -> PathBuf {
 }
 
 /// Worker endpoint next to the supervisor's: hashed supervisor key plus the
-/// worker id prefix (TS `workerSocketPath`).
+/// worker id prefix (TS `workerSocketPath` layout `worker-${key}-${id}.sock`).
+/// The key is 6 hex chars, one short of the TS 7: TS binds through libuv,
+/// which passes the exact sockaddr length and tolerates a 104-char path under
+/// the stock macOS per-user TMPDIR, while Rust std requires the path to fit
+/// with a NUL terminator (SUN_LEN), capping it at 103 chars. With the 12-char
+/// key the path overruns even the 107-byte Linux limit.
 #[cfg(unix)]
 #[must_use]
 pub fn worker_socket_path(supervisor_socket_path: &Path, worker_id: &str) -> PathBuf {
-    let key = hash_key(&supervisor_socket_path.to_string_lossy(), 12);
+    let key = hash_key(&supervisor_socket_path.to_string_lossy(), 6);
     socket_dir().join(format!(
         "worker-{key}-{}.sock",
         &worker_id[..12.min(worker_id.len())]
@@ -51,7 +56,7 @@ pub fn worker_socket_path(supervisor_socket_path: &Path, worker_id: &str) -> Pat
 #[cfg(not(unix))]
 #[must_use]
 pub fn worker_socket_path(supervisor_socket_path: &Path, worker_id: &str) -> PathBuf {
-    let key = hash_key(&supervisor_socket_path.to_string_lossy(), 12);
+    let key = hash_key(&supervisor_socket_path.to_string_lossy(), 6);
     PathBuf::from(format!(
         r"\\.\pipe\prime-agent-worker-{key}-{}",
         &worker_id[..12.min(worker_id.len())]
@@ -98,6 +103,33 @@ mod tests {
 
     /// The Windows endpoint names (TS win32 arms): the fixed daemon pipe
     /// name and the hashed worker pipe name in the `\\.\\pipe\\` namespace.
+    /// The worker name rides a per-user TMPDIR prefix that reaches 72 chars
+    /// on the stock macOS layout (`/var/folders/.../T/prime-agent-<uid>/`).
+    /// macOS `bind` requires the whole path to fit with a NUL terminator
+    /// (103 chars), so the name must stay within 31. The pre-fix name used a
+    /// 12-char supervisor hash (37 chars) and the worker could not bind,
+    /// hanging every bb launch on the daemon create.
+    #[test]
+    #[cfg(unix)]
+    fn worker_socket_name_fits_the_unix_path_limit() {
+        let supervisor = Path::new("/tmp/prime-agent-1/daemon.sock");
+        let name = worker_socket_path(supervisor, "abcdef123456")
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("worker socket name")
+            .to_string();
+        assert!(
+            name.len() <= 31,
+            "worker socket name must fit 72-char TMPDIR prefix + 103-char unix limit, got {name}"
+        );
+        let key = name
+            .strip_prefix("worker-")
+            .and_then(|rest| rest.split('-').next())
+            .expect("worker socket key");
+        assert_eq!(key.len(), 6, "the supervisor hash stays 6 chars");
+        assert!(name.ends_with("-abcdef123456.sock"));
+    }
+
     #[test]
     #[cfg(windows)]
     fn windows_endpoints_are_the_ts_pipe_names() {
