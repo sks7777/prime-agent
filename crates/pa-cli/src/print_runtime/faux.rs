@@ -175,6 +175,7 @@ pub(crate) async fn build_faux_engine_with(
             queued_steering_probe: None,
             should_stop_after_turn: None,
             image_model_router: None,
+            plan_code_mode: None,
         },
     )
     .await

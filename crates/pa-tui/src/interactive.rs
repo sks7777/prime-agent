@@ -298,6 +298,8 @@ pub struct InteractiveOptions {
     /// suffixes — that ride the create config's `models` field; the daemon resolves them into
     /// the session's scoped list. `None` leaves the scope unset.
     pub models: Option<Vec<String>>,
+    /// `--plan-code <plan|code|debug>`: start in a specific mode.
+    pub plan_code: Option<String>,
     /// Create without a session file (`--no-session`).
     pub no_session: bool,
     pub session: SessionSelection,
@@ -426,6 +428,9 @@ impl InteractiveOptions {
         // `telemetryDisabled` rides the runtime config: a resume's create reads it back.
         if self.telemetry_disabled == Some(true) {
             config["telemetryDisabled"] = json!(true);
+        }
+        if let Some(plan_code) = &self.plan_code {
+            config["planCode"] = json!(plan_code);
         }
         if let SessionSelection::NewChild {
             parent_session_file,

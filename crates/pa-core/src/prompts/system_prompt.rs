@@ -96,6 +96,9 @@ pub struct BuildSystemPromptOptions<'a> {
     pub can_spawn: bool,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
+    /// Active plan-code mode (`None` = no mode). Injects the mode-specific
+    /// behavioral prompt layer into the system prompt.
+    pub plan_code_mode: Option<crate::plan_code::PlanCodeMode>,
 }
 
 /// Build the system prompt (assembled text only).
@@ -141,6 +144,29 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
                     extras.to_string(),
                 ));
             }
+        }
+    }
+
+    // Plan-code mode behavioral layer: injected after the static prefix so
+    // it rides the tail (mode is session-specific state, not cacheable).
+    if let Some(mode) = options.plan_code_mode {
+        let (layer_name, layer_text) = match mode {
+            crate::plan_code::PlanCodeMode::Plan => {
+                ("plan-mode", layers::PLAN_MODE_LAYER)
+            }
+            crate::plan_code::PlanCodeMode::Code => {
+                ("code-mode", layers::CODE_MODE_LAYER)
+            }
+            crate::plan_code::PlanCodeMode::Debug => {
+                ("debug-mode", layers::DEBUG_MODE_LAYER)
+            }
+        };
+        if !layer_text.is_empty() {
+            segments.push(PromptSegment::dynamic_segment(
+                layer_name,
+                layers::layer_source(layer_name).unwrap_or_default(),
+                layer_text.trim().to_string(),
+            ));
         }
     }
     let cached_prefix_len = segments

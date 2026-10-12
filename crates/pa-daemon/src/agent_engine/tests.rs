@@ -37,6 +37,7 @@ fn bare_engine(dir: &std::path::Path) -> AgentSessionEngine {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        plan_code_mode: None,
     })
     .unwrap()
 }
@@ -107,6 +108,7 @@ pub(crate) fn faux_engine_with_settings(
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        plan_code_mode: None,
     })
     .unwrap();
     (engine, dir)
@@ -336,6 +338,7 @@ fn run_prompts(
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        plan_code_mode: None,
     })
     .unwrap();
     let engine = std::sync::Arc::new(engine);

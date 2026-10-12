@@ -64,6 +64,7 @@ pub mod kernel;
 pub mod mcp;
 pub mod models;
 pub mod packages;
+pub mod plan_code;
 pub mod platform;
 pub mod prompts;
 pub mod refinement;
