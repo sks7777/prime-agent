@@ -45,6 +45,7 @@ fn recovery_rebuild_rehydrates_the_goal_from_the_session_file() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            plan_code_mode: None,
         })
         .unwrap(),
     );
@@ -122,6 +123,7 @@ fn goal_start_keeps_the_prompt_images_on_the_context_row() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            plan_code_mode: None,
         })
         .unwrap(),
     );
@@ -141,6 +143,7 @@ fn goal_start_keeps_the_prompt_images_on_the_context_row() {
             source: "user".to_string(),
             agent_message_id: None,
             custom_message: None,
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {
@@ -250,6 +253,7 @@ fn recovered_engine_compaction_walk_sees_the_durable_history() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        plan_code_mode: None,
     })
     .unwrap();
     let engine = std::sync::Arc::new(engine);
@@ -503,6 +507,7 @@ fn goal_turn_end_mints_the_loop_until_the_goal_completes() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            plan_code_mode: None,
         })
         .unwrap(),
     );
@@ -754,6 +759,7 @@ fn running_children_owe_the_continuation_and_settle_delivers_it() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            plan_code_mode: None,
         })
         .unwrap(),
     );
@@ -1026,6 +1032,7 @@ fn active_goal_aborted_turn_row_broadcasts_and_goal_accounting_skips_it() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        plan_code_mode: None,
     })
     .unwrap();
     let engine = std::sync::Arc::new(engine);

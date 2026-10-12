@@ -407,6 +407,7 @@ impl Worker {
                         telemetry_disabled: config.telemetry_disabled,
                         cron_store: Some(kernel_cron_wiring(&scheduled)),
                         queued_steering_probe: queued_steering_probe.clone(),
+                        plan_code_mode: None,
                     }) {
                         Ok(engine) => {
                             let concrete = std::sync::Arc::new(engine);
@@ -437,6 +438,7 @@ impl Worker {
                         telemetry_disabled: config.telemetry_disabled,
                         cron_store: Some(kernel_cron_wiring(&scheduled)),
                         queued_steering_probe: queued_steering_probe.clone(),
+                        plan_code_mode: None,
                     }) {
                         Ok(engine) => {
                             let concrete = std::sync::Arc::new(engine);
