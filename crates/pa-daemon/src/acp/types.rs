@@ -388,7 +388,9 @@ pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
                 };
                 let trimmed = text.trim();
                 // A whole wrapper block.
-                if rest_texts.is_empty() && regex_safe_match_whole(trimmed) {
+                if rest_texts.is_empty()
+                    && regex_safe_match_whole(trimmed)
+                {
                     instruction_texts.push(text.to_string());
                     continue;
                 }
@@ -417,10 +419,8 @@ pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
     }
 
     AcpPromptSplit {
-        instructions_text: instruction_texts.join(
-            "
-",
-        ),
+        instructions_text: instruction_texts.join("
+"),
         rest_texts,
         images,
     }
@@ -812,7 +812,7 @@ Do work" },
     fn split_acp_prompt_blocks_handles_merged_wrapper_and_text() {
         let prompt = json!([
             { "type": "text", "text": "<system_instructions>instructions</system_instructions>[rlm-mirror:abcdef0123456789abcdef0123456789]
-        body" },
+body" },
         ]);
         let split = split_acp_prompt_blocks(prompt.as_array().unwrap());
         assert!(split.instructions_text.contains("system_instructions"));

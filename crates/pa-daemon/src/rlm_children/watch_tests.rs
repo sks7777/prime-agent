@@ -177,21 +177,6 @@ async fn spawn_fake_supervisor(
                             })),
                         ),
                         "prompt" => {
-                            if matches!(child, FakeChild::FinalTurnFails) {
-                                use super::lifecycle::exit_capture_tests::{
-                                    assistant_row_ending, retry_outcome_row,
-                                };
-                                let failed_call = assistant_row_ending(
-                                    "",
-                                    pa_types::ai::StopReason::Error,
-                                    Some("429 Provider returned error"),
-                                );
-                                std::fs::write(
-                                    &*child_session_file,
-                                    format!("{failed_call}\n{}\n", retry_outcome_row(false)),
-                                )
-                                .unwrap();
-                            }
                             if let Some(gate) = child_subagents
                                 .prompt_gate
                                 .as_ref()
@@ -265,18 +250,6 @@ async fn spawn_fake_supervisor(
                                     command_type,
                                     Some(json!({ "text": "the child final answer" })),
                                 )
-                            }
-                        }
-                        "abort" => {
-                            if child_subagents.abort_fails.load(Ordering::SeqCst) {
-                                response_failure(
-                                    Some(&id),
-                                    command_type,
-                                    "abort refused by the fake supervisor",
-                                    None,
-                                )
-                            } else {
-                                response_success(Some(&id), command_type, None)
                             }
                         }
                         "kill" => {
@@ -357,9 +330,6 @@ struct FakeChildSubagents {
     running: AtomicBool,
     quiescent_waits: std::sync::atomic::AtomicUsize,
     answer_reads: AtomicU32,
-    /// The fake answers `abort` with a real refusal (the cancel path's
-    /// failed-abort lane).
-    abort_fails: AtomicBool,
     live_state: std::sync::Mutex<Option<Value>>,
     peer_gate: Option<Arc<FakePeerGate>>,
     /// Holds the task `prompt` in flight: the worker has not accepted it yet.
@@ -428,12 +398,56 @@ async fn spawn_child(sessions: &SupervisorChildSessions) -> RlmSpawnHandle {
             name: Some("f20-worker".to_string()),
             model: None,
             thinking: None,
-            cwd: None,
             spawned_by_request_id: None,
-            factory: None,
+            temperature: None,
+            bb_mirror: None,
         })
         .await
         .expect("spawn must succeed against the fake supervisor")
+}
+
+/// [`sessions_with_fake_supervisor`] whose fake answers `list_agent_peers`
+/// from `peers`: the supervisor's pushed worker roster that the live roster
+/// read joins each child row onto.
+async fn sessions_with_roster_peers(
+    peers: Arc<std::sync::Mutex<Vec<Value>>>,
+    idle_delay_ms: u64,
+) -> (SupervisorChildSessions, mpsc::UnboundedReceiver<Value>) {
+    let socket = std::env::temp_dir().join(format!(
+        "pa-rlm-peers-{}.sock",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let (kill_tx, kill_rx) = mpsc::unbounded_channel();
+    spawn_fake_supervisor(
+        socket.clone(),
+        mpsc::unbounded_channel().0,
+        idle_delay_ms,
+        kill_tx,
+        FakeSupervisorScript {
+            kill: FakeKill::Success,
+            child: FakeChild::Healthy,
+            child_subagents: Arc::new(FakeChildSubagents::default()),
+            peers,
+        },
+    )
+    .await;
+    let link = Arc::new(crate::supervisor_link::SupervisorLink::new(socket));
+    let sessions = SupervisorChildSessions::new(
+        link,
+        std::env::temp_dir(),
+        "parent-live".to_string(),
+        std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
+            std::env::temp_dir(),
+            /*telemetry_disabled*/ true,
+        )),
+        String::new(),
+    );
+    sessions.set_identity(ParentIdentity {
+        model: Some("mock/mock-1".to_string()),
+        cwd: Some(std::env::temp_dir().to_string_lossy().to_string()),
+        ..ParentIdentity::with_default_depth()
+    });
+    (sessions, kill_rx)
 }
 
 #[tokio::test]
@@ -831,63 +845,6 @@ async fn a_settled_child_without_a_reply_delivers_the_terminal_notice() {
     let extra =
         tokio::time::timeout(std::time::Duration::from_millis(300), follow_up_rx.recv()).await;
     assert!(extra.is_err(), "no second notice may arrive");
-}
-
-/// A spawn admitted while the parent is idle (a background kernel task: a
-/// factory run resumed or advanced between turns) has no turn to wait
-/// for: the task prompt goes out at once and the run settles.
-#[tokio::test]
-async fn a_child_spawned_while_the_parent_is_idle_runs_without_a_turn_boundary() {
-    let (follow_up_tx, mut follow_up_rx) = mpsc::unbounded_channel();
-    let (sessions, _kill_rx) =
-        sessions_with_fake_supervisor(follow_up_tx, 0, FakeKill::Success, FakeChild::Healthy).await;
-    spawn_child(&sessions).await;
-
-    let notice = tokio::time::timeout(Duration::from_secs(10), follow_up_rx.recv())
-        .await
-        .expect("an idle parent's child must not wait for a parent turn boundary")
-        .expect("the follow_up channel stays open");
-    assert_eq!(
-        notice["customMessage"]["customType"],
-        "rlm_child_terminal_notice"
-    );
-}
-
-/// A spawn admitted mid-turn holds its task prompt until that parent turn
-/// completes, so the parent's continuation request reaches the provider
-/// before the child's first turn.
-#[tokio::test]
-async fn a_child_spawned_mid_turn_prompts_after_the_parent_turn_completes() {
-    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
-    let gate = Arc::new(FakePeerGate {
-        armed: AtomicBool::new(true),
-        ..FakePeerGate::default()
-    });
-    let (sessions, _kill_rx) = sessions_with_fake_child_subagents(
-        follow_up_tx,
-        0,
-        FakeKill::Success,
-        FakeChild::Healthy,
-        Arc::new(FakeChildSubagents {
-            prompt_gate: Some(Arc::clone(&gate)),
-            ..FakeChildSubagents::default()
-        }),
-    )
-    .await;
-    sessions.notify_turn_started();
-    spawn_child(&sessions).await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(300), gate.copied.notified())
-            .await
-            .is_err(),
-        "the task prompt must wait for the spawning turn"
-    );
-
-    sessions.notify_turn_done();
-    tokio::time::timeout(Duration::from_secs(10), gate.copied.notified())
-        .await
-        .expect("the turn boundary releases the task prompt");
-    gate.release.notify_one();
 }
 
 /// A `collect` that lands while the task prompt is still in flight reads
@@ -2782,7 +2739,6 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         prompt_admitted: true,
         error: None,
         closed_by_parent: false,
-        retiring: false,
         retirement_finished: false,
         retirement_notified: false,
         retirement_roster_emitted: false,
@@ -2795,6 +2751,11 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         last_emitted_status: None,
         rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        waiting_mirror_admission: false,
+        auto_mirror_thread: false,
+        mirror_claim_nonce: None,
+        mirror_admission_waker: None,
+        mirror_wait_settled: false,
     };
     // A running child that goes unreachable is the error class.
     assert!(super::lifecycle::should_mark_error(&base()));
@@ -2852,11 +2813,9 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         live_observation: None,
         direct_observation: Arc::new(Mutex::new(())),
         notice_delivered: false,
-        factory: false,
         prompt_admitted: true,
         error: None,
         closed_by_parent: false,
-        retiring: false,
         retirement_finished: false,
         retirement_notified: false,
         retirement_roster_emitted: false,
@@ -2877,6 +2836,11 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         last_emitted_status: None,
         rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        waiting_mirror_admission: false,
+        auto_mirror_thread: false,
+        mirror_claim_nonce: None,
+        mirror_admission_waker: None,
+        mirror_wait_settled: false,
     }));
     let claimed = sessions
         .inner

@@ -97,8 +97,6 @@ pub(crate) struct RlmMirrorClaim {
     pub(crate) target: String,
     #[serde(rename = "createdAtMs")]
     pub(crate) created_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) parent_session_id: Option<String>,
 }
 
 /// True when this session runs inside a bb thread (the ACP plugin injects
@@ -152,31 +150,6 @@ pub fn build_rlm_mirror_prompt(nonce: &str, prompt: &str) -> String {
     format!("[rlm-mirror:{nonce}]\n{RLM_MIRROR_TASK_FRAME}\n\n{prompt}")
 }
 
-/// Map a daemon thinking-level wire name to the bb `--reasoning-level` value.
-///
-/// bb accepts `low`, `medium`, `high`, `xhigh`, `max` (and provider-specific ids).
-/// `off` and `minimal` have no bb equivalent: return `None` so the flag is
-/// omitted and bb falls back to its default (no reasoning).
-pub fn bb_reasoning_level_from_thinking(thinking: Option<&str>) -> Option<String> {
-    match thinking? {
-        "off" | "minimal" => None,
-        level @ ("low" | "medium" | "high" | "xhigh" | "max") => Some(level.to_string()),
-        // A provider-specific id passes through unchanged.
-        other => Some(other.to_string()),
-    }
-}
-
-/// The id part of a resolved `provider/id` model selector, or the full
-/// selector when it has no `/`. Used as the bb `--model` value (the
-/// `--provider` flag carries the bridge id, not the LLM provider).
-pub fn bb_model_id_from_selector(selector: &str) -> String {
-    selector
-        .split_once('/')
-        .map(|(_, id)| id)
-        .unwrap_or(selector)
-        .to_string()
-}
-
 /// The claims directory under the agent dir.
 fn mirror_claims_dir(agent_dir: &Path) -> PathBuf {
     agent_dir.join(RLM_MIRROR_CLAIMS_DIR)
@@ -184,19 +157,13 @@ fn mirror_claims_dir(agent_dir: &Path) -> PathBuf {
 
 /// Write the single-use claim the mirror thread's ACP frontend consumes on
 /// boot.
-pub fn write_rlm_mirror_claim(
-    nonce: &str,
-    target: &str,
-    agent_dir: &Path,
-    parent_session_id: Option<&str>,
-) -> Result<()> {
+pub fn write_rlm_mirror_claim(nonce: &str, target: &str, agent_dir: &Path) -> Result<()> {
     let claims_dir = mirror_claims_dir(agent_dir);
     std::fs::create_dir_all(&claims_dir)
         .with_context(|| format!("create mirror claims dir {}", claims_dir.display()))?;
     let claim = RlmMirrorClaim {
         target: target.to_string(),
         created_at_ms: crate::util::now_ms(),
-        parent_session_id: parent_session_id.map(str::to_string),
     };
     let path = claims_dir.join(format!("{nonce}.json"));
     let content =
@@ -219,12 +186,10 @@ pub(crate) fn read_rlm_mirror_claim(nonce: &str, agent_dir: &Path) -> Option<Rlm
     let content = std::fs::read_to_string(&path).ok()?;
     let claim: RlmMirrorClaim = serde_json::from_str(&content).ok()?;
     if claim.target.is_empty() {
-        let _ = std::fs::remove_file(&path);
         return None;
     }
     let now = crate::util::now_ms();
     if now.saturating_sub(claim.created_at_ms) > RLM_MIRROR_CLAIM_TTL_MS {
-        let _ = std::fs::remove_file(&path);
         return None;
     }
     Some(claim)
@@ -358,13 +323,6 @@ pub struct BbMirrorSpawnOptions {
     /// bb binary override; defaults to `BB_CLI` or "bb".
     pub bb_command: Option<String>,
     pub timeout_ms: Option<u64>,
-    /// Model id for the bb thread's `--model` flag (id part only, not
-    /// `provider/id`); `None` falls back to the project's default.
-    pub model: Option<String>,
-    /// Reasoning level wire name (`low`/`medium`/`high`/`xhigh`/`max`)
-    /// for the bb thread's `--reasoning-level` flag; `None` (or an
-    /// unsupported level like `off`/`minimal`) omits the flag.
-    pub reasoning_level: Option<String>,
 }
 
 /// Spawn the mirror bb thread via the bb CLI and parse the thread id.
@@ -397,19 +355,12 @@ pub async fn spawn_bb_mirror_thread(options: BbMirrorSpawnOptions) -> Result<BbM
         "--prompt-file",
         "-",
     ]);
-    if let Some(model) = &options.model {
-        cmd.args(["--model", model]);
-    }
-    if let Some(level) = &options.reasoning_level {
-        cmd.args(["--reasoning-level", level]);
-    }
     if let Some(env_id) = &options.environment_id {
         cmd.args(["--environment", env_id]);
     }
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|error| BbSpawnFailed {
         kind: BbSpawnFailureKind::SpawnError,
         message: format!("bb thread spawn failed: {error}"),
@@ -451,8 +402,9 @@ pub async fn spawn_bb_mirror_thread(options: BbMirrorSpawnOptions) -> Result<BbM
         Ok(Ok(outcome)) => Ok(outcome),
         Ok(Err(error)) => Err(anyhow!(error)),
         Err(_) => {
-            // The timeout elapsed. `kill_on_drop(true)` on the Command
-            // ensures the process is killed when the Child is dropped.
+            // The timeout elapsed: kill the child process. `wait_with_output`
+            // already consumed `child`, so we rely on the process being
+            // killed by the timeout drop.
             Err(anyhow!(BbSpawnFailed {
                 kind: BbSpawnFailureKind::Timeout,
                 message: format!("bb thread spawn timed out after {timeout_ms}ms"),
@@ -473,11 +425,10 @@ fn parse_bb_spawn_outcome(stdout_text: &str) -> BbMirrorSpawnOutcome {
             }
         }
     }
-    // Unparseable output: treat as ambiguous failure (no thread id, not
-    // confirmed created) so the caller parks instead of assuming success.
+    // The thread exists but bb printed nothing parsable.
     BbMirrorSpawnOutcome {
         thread_id: None,
-        thread_created: false,
+        thread_created: true,
     }
 }
 
@@ -588,7 +539,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let nonce = new_mirror_claim_nonce();
         assert_eq!(nonce.len(), 32);
-        write_rlm_mirror_claim(&nonce, "session-123", &dir, None).unwrap();
+        write_rlm_mirror_claim(&nonce, "session-123", &dir).unwrap();
         let claim = read_rlm_mirror_claim(&nonce, &dir).unwrap();
         assert_eq!(claim.target, "session-123");
         consume_rlm_mirror_claim(&nonce, &dir);
@@ -704,50 +655,6 @@ mod tests {
             &summary,
             Path::new("/some/path")
         ));
-    }
-
-    #[test]
-    fn bb_model_id_from_selector_returns_id_part() {
-        assert_eq!(
-            bb_model_id_from_selector("anthropic/claude-sonnet-4"),
-            "claude-sonnet-4"
-        );
-        assert_eq!(
-            bb_model_id_from_selector("claude-sonnet-4"),
-            "claude-sonnet-4"
-        );
-    }
-
-    #[test]
-    fn bb_reasoning_level_from_thinking_maps_levels() {
-        assert_eq!(bb_reasoning_level_from_thinking(Some("off")), None);
-        assert_eq!(bb_reasoning_level_from_thinking(Some("minimal")), None);
-        assert_eq!(bb_reasoning_level_from_thinking(None), None);
-        assert_eq!(
-            bb_reasoning_level_from_thinking(Some("low")),
-            Some("low".to_string())
-        );
-        assert_eq!(
-            bb_reasoning_level_from_thinking(Some("medium")),
-            Some("medium".to_string())
-        );
-        assert_eq!(
-            bb_reasoning_level_from_thinking(Some("high")),
-            Some("high".to_string())
-        );
-        assert_eq!(
-            bb_reasoning_level_from_thinking(Some("xhigh")),
-            Some("xhigh".to_string())
-        );
-        assert_eq!(
-            bb_reasoning_level_from_thinking(Some("max")),
-            Some("max".to_string())
-        );
-        // A provider-specific id passes through unchanged.
-        assert_eq!(
-            bb_reasoning_level_from_thinking(Some("acp-level-3")),
-            Some("acp-level-3".to_string())
-        );
     }
 
     #[test]

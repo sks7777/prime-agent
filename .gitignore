@@ -11,4 +11,3 @@ tests-*.log
 test-compile-*.log
 
 *.egg-info/
-plans/

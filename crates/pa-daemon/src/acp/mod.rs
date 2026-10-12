@@ -68,15 +68,12 @@ fn turn_failure_error(id: &Value, failure: &str, details: &str) -> Value {
 /// are the same directory on disk (dev/inode) — the bind-mount and
 /// case-normalized-FS cases a lexical comparison misses.
 pub(crate) fn same_cwd(requested: &Path, actual: &Path) -> bool {
-    let requested = std::fs::canonicalize(requested).unwrap_or_else(|_| requested.to_path_buf());
-    same_canonical_cwd(&requested, actual)
-}
-
-/// Same as `same_cwd` but the `requested` path is already canonicalized.
-/// Lets callers canonicalize once and reuse across many entries.
-pub(crate) fn same_canonical_cwd(canonical_requested: &Path, actual: &Path) -> bool {
-    let actual = std::fs::canonicalize(actual).unwrap_or_else(|_| actual.to_path_buf());
-    if canonical_requested == actual {
+    let canonical = |path: &Path| -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    };
+    let requested = canonical(requested);
+    let actual = canonical(actual);
+    if requested == actual {
         return true;
     }
     #[cfg(unix)]
