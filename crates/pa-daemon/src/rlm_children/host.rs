@@ -6,11 +6,17 @@ use super::{
     assert_thinking_supported, bail, create_default_rlm_subagent_session_name,
     create_rlm_child_terminal_notice, json, now_ms, resolve_child_model, rlm_child_label,
     spawn_name_unavailable, Arc, ChildCloseReason, ChildRecord, Context, DaemonCommand, Duration,
-    Instant, Mutex, Path, PathBuf, Result, RlmChildResult, RlmChildTerminalNotice,
+    Instant, Map, Mutex, Path, PathBuf, Result, RlmChildResult, RlmChildTerminalNotice,
     RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture,
     RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
     SupervisorChildSessions, SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS,
     RENAME_TIMEOUT_MS,
+};
+use crate::rlm_bb_mirror::{
+    bb_mirror_env_from_process, build_rlm_mirror_prompt, mirror_thread_title,
+    new_mirror_claim_nonce, remove_rlm_mirror_claim, resolve_child_active_session_id,
+    should_auto_mirror_rlm_child, spawn_bb_mirror_thread, BbMirrorSpawnOptions,
+    BbSpawnFailed, BB_MIRROR_WAIT_TIMEOUT_MS, RLM_MIRROR_ROSTER_TIMEOUT_MS,
 };
 
 /// Resolve the child model with the daemon `allowedModels` allowlist enforced, refusing loudly with
@@ -145,6 +151,11 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                     last_emitted_status: None,
                     rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                    waiting_mirror_admission: false,
+                    auto_mirror_thread: false,
+                    mirror_claim_nonce: None,
+                    mirror_admission_waker: None,
+                    mirror_wait_settled: false,
                 };
                 let record = Arc::new(Mutex::new(record));
                 this.children.lock().await.push(Arc::clone(&record));
@@ -154,6 +165,126 @@ impl RlmSubagentHost for SupervisorChildSessions {
             }
             .await;
             let (record, created, model) = admission?;
+
+            // PRIME-11/PRIME-24: determine bb mirror intent.
+            // `bb_mirror=None` → auto-mirror if inside bb depth-0.
+            // `bb_mirror=Some(true)` → explicit mirror (caller brings thread).
+            // `bb_mirror=Some(false)` → plain headless child.
+            let env: std::collections::HashMap<String, String> =
+                std::env::vars().collect();
+            let auto_mirror_requested = request.bb_mirror.is_none()
+                && should_auto_mirror_rlm_child(identity.rlm_depth, &env);
+            let bb_mirror = request.bb_mirror == Some(true) || auto_mirror_requested;
+
+            // For a mirror child: create the deferred-admission waker and
+            // mark the record as waiting. The watcher task will wait for
+            // the waker (fired when the mirror thread's first prompt
+            // reaches the child) or a timeout/cancel.
+            let waker_rx = if bb_mirror {
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                {
+                    let mut rec = record.lock().await;
+                    rec.waiting_mirror_admission = true;
+                    rec.mirror_admission_waker = Some(tx);
+                }
+                Some(rx)
+            } else {
+                None
+            };
+
+            // PRIME-24 auto-mirror: spawn the bb thread right after
+            // admission. A definitive bb failure (proven no thread exists)
+            // degrades to a plain headless child; an ambiguous failure
+            // parks on the deadline.
+            let mut runtime_mirror_failed: Option<String> = None;
+            if auto_mirror_requested {
+                let bb_env = bb_mirror_env_from_process(&env);
+                if let Some(bb_env) = bb_env {
+                    // Resolve the child's active session id from the roster.
+                    let child_id_for_resolve = child_id.clone();
+                    let session_name_for_resolve = record.lock().await.session_name.clone();
+                    let roster_this = Arc::clone(&this);
+                    let active_session_id = resolve_child_active_session_id(
+                        async move || {
+                            let cmd = DaemonCommand::GetRlmChildren {
+                                id: None,
+                                active_session_id: roster_this.parent_active_session_id.clone(),
+                                rest: Map::default(),
+                            };
+                            let response = roster_this.command(&cmd, 30_000).await?;
+                            let children = response
+                                .get("children")
+                                .and_then(|c| c.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            Ok(children)
+                        },
+                        &child_id_for_resolve,
+                        &session_name_for_resolve,
+                        RLM_MIRROR_ROSTER_TIMEOUT_MS,
+                    )
+                    .await;
+                    match active_session_id {
+                        Ok(_active_id) => {
+                            // Write the claim and spawn the bb thread.
+                            let nonce = new_mirror_claim_nonce();
+                            {
+                                let mut rec = record.lock().await;
+                                rec.auto_mirror_thread = true;
+                                rec.mirror_claim_nonce = Some(nonce.clone());
+                            }
+                            let mirror_prompt = build_rlm_mirror_prompt(&nonce, &request.prompt);
+                            let title = mirror_thread_title(
+                                &record.lock().await.session_name,
+                                &request.prompt,
+                            );
+                            let spawn_result = spawn_bb_mirror_thread(BbMirrorSpawnOptions {
+                                project_id: bb_env.project_id,
+                                environment_id: bb_env.environment_id,
+                                title,
+                                prompt: mirror_prompt,
+                                bb_command: bb_env.bb_cli,
+                                timeout_ms: None,
+                            })
+                            .await;
+                            if let Err(error) = &spawn_result {
+                                let failed = error.downcast_ref::<BbSpawnFailed>();
+                                let definitive = failed.is_some_and(|f| f.definitive());
+                                if definitive {
+                                    // Drop the claim: no thread will consume it.
+                                    remove_rlm_mirror_claim(&nonce, &this.agent_dir);
+                                    runtime_mirror_failed = Some(error.to_string());
+                                    // Degrade: clear mirror flags.
+                                    let mut rec = record.lock().await;
+                                    rec.waiting_mirror_admission = false;
+                                    rec.auto_mirror_thread = false;
+                                    rec.mirror_admission_waker.take();
+                                    rec.mirror_claim_nonce = None;
+                                }
+                                // Ambiguous failure: park (keep claim, wait
+                                // for timeout). The watcher task handles it.
+                            }
+                        }
+                        Err(error) => {
+                            runtime_mirror_failed = Some(error.to_string());
+                            // Degrade: clear mirror flags and prompt normally.
+                            let mut rec = record.lock().await;
+                            rec.waiting_mirror_admission = false;
+                            rec.auto_mirror_thread = false;
+                            rec.mirror_admission_waker.take();
+                        }
+                    }
+                } else {
+                    // No bb env: degrade to plain child.
+                    runtime_mirror_failed =
+                        Some("bb mirror spawn requires BB_THREAD_ID/BB_PROJECT_ID".to_string());
+                    let mut rec = record.lock().await;
+                    rec.waiting_mirror_admission = false;
+                    rec.auto_mirror_thread = false;
+                    rec.mirror_admission_waker.take();
+                }
+            }
+
             // The task prompt runs detached from the spawn admission: the
             // handle returns at registration and the child's first turn
             // starts after the parent's continuation request is in flight.
@@ -202,6 +333,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
             // admission happens mid-turn, so the parent's continuation
             // request reaches the provider first (see `wait_turn_done`).
             let turn_generation = *this.turn_done.subscribe().borrow();
+            let mirror_failed = runtime_mirror_failed.clone();
             tokio::spawn(async move {
                 watcher_this.wait_turn_done(turn_generation).await;
                 // The parent closed before the prompt admitted: the
@@ -210,6 +342,75 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 if watcher_record.lock().await.closed_by_parent {
                     return;
                 }
+
+                // PRIME-11: for a bb-mirror child that is still waiting
+                // for its mirror thread's first prompt, defer the kickoff.
+                // Wait for the waker (mirror thread rebinds and prompts),
+                // a timeout (10 min), or a cancel settle.
+                let still_waiting = watcher_record.lock().await.waiting_mirror_admission;
+                if still_waiting && mirror_failed.is_none() {
+                    if let Some(waker_rx) = waker_rx {
+                        let timeout = tokio::time::sleep(Duration::from_millis(
+                            BB_MIRROR_WAIT_TIMEOUT_MS,
+                        ));
+                        tokio::pin!(timeout);
+                        tokio::select! {
+                            _ = waker_rx => {
+                                // Mirror thread prompted the child: the
+                                // admission turn arrived from the mirror
+                                // thread's ACP frontend. Mark admitted and
+                                // settle-watch.
+                                let settled = {
+                                    let mut rec = watcher_record.lock().await;
+                                    if rec.mirror_wait_settled {
+                                        return;
+                                    }
+                                    rec.mirror_wait_settled = true;
+                                    rec.waiting_mirror_admission = false;
+                                    rec.prompt_admitted = true;
+                                    // Drop the claim: the rebind consumed it.
+                                    if let Some(nonce) = rec.mirror_claim_nonce.take() {
+                                        remove_rlm_mirror_claim(&nonce, &watcher_this.agent_dir);
+                                    }
+                                    rec.closed_by_parent
+                                };
+                                if settled {
+                                    return;
+                                }
+                                watcher_this.watch_child_settle(&watcher_record).await;
+                                return;
+                            }
+                            _ = &mut timeout => {
+                                // Timeout: the mirror thread never prompted.
+                                // Settle as failed.
+                                let already_settled = {
+                                    let mut rec = watcher_record.lock().await;
+                                    if rec.mirror_wait_settled {
+                                        return;
+                                    }
+                                    rec.mirror_wait_settled = true;
+                                    rec.waiting_mirror_admission = false;
+                                    if let Some(nonce) = rec.mirror_claim_nonce.take() {
+                                        remove_rlm_mirror_claim(&nonce, &watcher_this.agent_dir);
+                                    }
+                                    rec.settled_status.is_some()
+                                };
+                                if !already_settled {
+                                    watcher_this
+                                        .settle_failed(
+                                            &watcher_record,
+                                            "bb-mirror child was never prompted".to_string(),
+                                            super::lifecycle::FailedArm::Prompt,
+                                        )
+                                        .await;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // Plain child (or degraded mirror): prompt normally.
                 watcher_record.lock().await.prompt_admitted = true;
                 if let Err(error) = watcher_this
                     .prompt_child(

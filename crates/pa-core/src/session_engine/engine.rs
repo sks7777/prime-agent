@@ -494,6 +494,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             // A spawned child's prompt must read "depth: N (not root)" with
             // the child-agent reply doctrine, never the root identity.
             rlm_depth: config.rlm_depth,
+            inside_bb: (config.rlm_depth.unwrap_or(0) == 0
+                && std::env::var("BB_THREAD_ID").is_ok_and(|id| !id.is_empty())
+                && std::env::var("BB_PROJECT_ID").is_ok_and(|id| !id.is_empty()))
+            .then_some(true),
             generic_mcp_servers,
             prompt_guidelines: Some(prompt_guidelines),
             ..Default::default()

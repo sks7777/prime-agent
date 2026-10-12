@@ -178,6 +178,21 @@ struct ChildRecord {
     last_emitted_status: Option<&'static str>,
     /// Serializes parent-directed rename and delete for this child.
     rename_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// True while a bb-mirror child is parked waiting for its mirror
+    /// thread's first prompt (PRIME-11).
+    waiting_mirror_admission: bool,
+    /// True when this child was auto-mirrored into a bb thread (PRIME-24).
+    auto_mirror_thread: bool,
+    /// Claim nonce for the runtime-written mirror claim, removed when the
+    /// mirror wait settles (PRIME-24).
+    mirror_claim_nonce: Option<String>,
+    /// Waker for a deferred-admission mirror child: fired when the mirror
+    /// thread's first prompt reaches the child worker (PRIME-11). `None`
+    /// for plain children and after the wait settles.
+    mirror_admission_waker: Option<tokio::sync::oneshot::Sender<()>>,
+    /// True once the mirror wait settled (timeout, cancel, or waker fired);
+    /// prevents a double settle (PRIME-11 hardening, `6f613caef`).
+    mirror_wait_settled: bool,
 }
 
 impl ChildRecord {
@@ -204,6 +219,12 @@ impl ChildRecord {
         }
         if let Some(error) = &self.error {
             snapshot["error"] = json!(error);
+        }
+        if self.waiting_mirror_admission {
+            snapshot["waitingMirrorAdmission"] = json!(true);
+        }
+        if self.auto_mirror_thread {
+            snapshot["autoMirrorThread"] = json!(true);
         }
         snapshot
     }
@@ -664,6 +685,11 @@ impl SupervisorChildSessions {
                 emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 last_emitted_status: None,
                 rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                waiting_mirror_admission: false,
+                auto_mirror_thread: false,
+                mirror_claim_nonce: None,
+                mirror_admission_waker: None,
+                mirror_wait_settled: false,
             })));
     }
 
@@ -693,8 +719,14 @@ impl SupervisorChildSessions {
 
     /// Cancel one live child run: abort the worker's in-flight turn and
     /// claim the terminal notice. `false` for an unknown or settled id.
+    /// `skip_mirror=true` skips bb-mirror children (PRIME-28).
     pub async fn cancel_child_run(&self, child_id: &str) -> bool {
-        self.inner.cancel_child_run(child_id).await
+        self.inner.cancel_child_run(child_id, false).await
+    }
+
+    /// Cancel one live child run with mirror-skip control (PRIME-28).
+    pub async fn cancel_child_run_skip_mirror(&self, child_id: &str) -> bool {
+        self.inner.cancel_child_run(child_id, true).await
     }
 
     /// Delete one inactive child by id: `"running"` while work is in flight,
@@ -730,6 +762,8 @@ impl SupervisorChildSessions {
             label: (!record.label.is_empty()).then(|| record.label.clone()),
             last_activity_at: Some(record.started_at_ms),
             activity_stale_ms: None,
+            waiting_mirror_admission: record.waiting_mirror_admission.then_some(true),
+            auto_mirror_thread: record.auto_mirror_thread.then_some(true),
         }
     }
 

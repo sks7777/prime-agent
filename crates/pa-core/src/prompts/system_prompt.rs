@@ -88,6 +88,9 @@ pub struct BuildSystemPromptOptions<'a> {
     pub rlm_depth: Option<u32>,
     /// Human-readable parent name or id for child communication doctrine.
     pub rlm_parent_agent: Option<&'a str>,
+    /// True inside a bb thread: delegation doctrine mentions auto-mirrored
+    /// children (PRIME-24).
+    pub inside_bb: Option<bool>,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
     /// Active plan-code mode (`None` = no mode). Injects the mode-specific
@@ -351,6 +354,12 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
                 "For long-running work, report brief progress with `await rlm.progress_note('...')` (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply.".to_string(),
             );
         }
+    }
+    // PRIME-24: delegation doctrine for bb depth-0 sessions.
+    if depth == 0 && options.inside_bb == Some(true) {
+        lines.push(
+            "Inside bb, spawned children appear automatically as mirror child threads in the bb thread list; pass `bb_mirror=False` to `rlm.spawn` to keep a child invisible.".to_string(),
+        );
     }
     lines.join("\n")
 }

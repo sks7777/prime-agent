@@ -302,6 +302,7 @@ async fn spawn_child(sessions: &SupervisorChildSessions) -> RlmSpawnHandle {
             temperature: None,
             cell_source_code: None,
             spawned_by_request_id: None,
+            bb_mirror: None,
         })
         .await
         .expect("spawn must succeed against the fake supervisor")
@@ -1047,6 +1048,11 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         last_emitted_status: None,
         rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        waiting_mirror_admission: false,
+        auto_mirror_thread: false,
+        mirror_claim_nonce: None,
+        mirror_admission_waker: None,
+        mirror_wait_settled: false,
     };
     // A running child that goes unreachable is the error class.
     assert!(super::lifecycle::should_mark_unreachable_error(&base()));

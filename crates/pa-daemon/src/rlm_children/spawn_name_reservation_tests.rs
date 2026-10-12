@@ -162,6 +162,7 @@ fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
         temperature: None,
         cell_source_code: None,
         spawned_by_request_id: None,
+        bb_mirror: None,
     }
 }
 

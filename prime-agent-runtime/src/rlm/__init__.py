@@ -175,6 +175,7 @@ async def spawn(
     model: str | None = None,
     thinking: str | None = None,
     temperature: float | None = None,
+    bb_mirror: bool | None = None,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -184,6 +185,13 @@ async def spawn(
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
     ``temperature`` sets the child's sampling temperature (a finite number);
     defaults to the provider default when omitted.
+    ``bb_mirror`` controls bb mirror threads (PRIME-11/PRIME-24). ``None`` (the
+    default) lets the host decide: inside a bb depth-0 session the runtime
+    mirrors the child into the bb thread list automatically and degrades to a
+    plain child when bb is unavailable. ``False`` forces a plain, invisible
+    child. ``True`` defers the admission prompt: the child waits for its task
+    from a bb mirror thread the caller brings itself (the thread's prompt is the
+    task with a leading ``[rlm-mirror:<claim-nonce>]`` marker line).
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -199,6 +207,8 @@ async def spawn(
         kwargs["thinking"] = thinking
     if temperature is not None:
         kwargs["temperature"] = float(temperature)
+    if bb_mirror is not None:
+        kwargs["bb_mirror"] = bool(bb_mirror)
     # Wire type stays "rlm.run" so kernels and hosts of different versions stay compatible.
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
@@ -641,8 +651,9 @@ class _RLMNamespace:
         model: str | None = None,
         thinking: str | None = None,
         temperature: float | None = None,
+        bb_mirror: bool | None = None,
     ) -> RLMSpawnHandle:
-        return await spawn(prompt, name=name, model=model, thinking=thinking, temperature=temperature)
+        return await spawn(prompt, name=name, model=model, thinking=thinking, temperature=temperature, bb_mirror=bb_mirror)
 
     async def create_session(
         self,

@@ -52,6 +52,11 @@ fn record_with_file(child_id: &str, session_file: &Path) -> Arc<Mutex<ChildRecor
         emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         last_emitted_status: None,
         rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        waiting_mirror_admission: false,
+        auto_mirror_thread: false,
+        mirror_claim_nonce: None,
+        mirror_admission_waker: None,
+        mirror_wait_settled: false,
     }))
 }
 

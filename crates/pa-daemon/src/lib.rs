@@ -77,6 +77,7 @@ pub(crate) mod registry;
 mod revival_gate;
 pub mod rlm_child_model;
 pub mod rlm_child_usage;
+pub mod rlm_bb_mirror;
 pub mod rlm_children;
 pub mod rlm_ledger;
 pub(crate) mod rlm_roster;
