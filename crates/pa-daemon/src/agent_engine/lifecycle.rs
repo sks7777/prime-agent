@@ -979,6 +979,17 @@ impl AgentSessionEngine {
                 wiring.binding = self.kernel_cron_binding().or(wiring.binding);
                 wiring
             }),
+            plan_code_mode: self
+                .config
+                .plan_code_mode
+                .or_else(|| {
+                    self.create_resources
+                        .read()
+                        .expect("create resources lock")
+                        .plan_code
+                        .as_deref()
+                        .and_then(pa_core::plan_code::PlanCodeMode::from_flag)
+                }),
         })
         .await
         .inspect(|engine| {

@@ -606,6 +606,10 @@ async fn build_headless_engine_with(
             queued_goal_context_purge: None,
             queued_steering_probe: None,
             image_model_router: Some(image_model_router),
+            plan_code_mode: config
+                .plan_code
+                .as_deref()
+                .and_then(pa_core::plan_code::PlanCodeMode::from_flag),
         },
     )
     .await
@@ -1525,6 +1529,7 @@ async fn build_faux_engine_with(
             queued_goal_context_purge: None,
             queued_steering_probe: None,
             image_model_router: None,
+            plan_code_mode: None,
         },
     )
     .await

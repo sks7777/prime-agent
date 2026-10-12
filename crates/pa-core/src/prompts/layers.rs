@@ -7,6 +7,9 @@ pub const CORE_LAYER: &str = include_str!("layers/core.md");
 pub const USAGE_LAYER: &str = include_str!("layers/usage.md");
 pub const OPINIONATED_LAYER: &str = include_str!("layers/opinionated.md");
 pub const PER_MODEL_MAP: &str = include_str!("layers/per_model.md");
+pub const PLAN_MODE_LAYER: &str = include_str!("layers/plan_mode.md");
+pub const CODE_MODE_LAYER: &str = include_str!("layers/code_mode.md");
+pub const DEBUG_MODE_LAYER: &str = include_str!("layers/debug_mode.md");
 
 /// Layer names, in assembly order, for breakdown rendering.
 pub const LAYER_NAMES: [&str; 4] = ["core", "usage", "opinionated", "per-model"];
@@ -19,6 +22,9 @@ pub fn layer_source(name: &str) -> Option<&'static str> {
         "usage" => Some("prompts/layers/usage.md"),
         "opinionated" => Some("prompts/layers/opinionated.md"),
         "per-model" => Some("prompts/layers/per_model.md"),
+        "plan-mode" => Some("prompts/layers/plan_mode.md"),
+        "code-mode" => Some("prompts/layers/code_mode.md"),
+        "debug-mode" => Some("prompts/layers/debug_mode.md"),
         _ => None,
     }
 }

@@ -45,3 +45,35 @@ async fn session_commands_never_reach_the_model() {
     assert!(provider.calls().is_empty());
     assert!(engine.entries().await.is_empty());
 }
+
+#[tokio::test]
+async fn plan_code_commands_are_session_commands() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    let options = AgentOptions {
+        initial_state: AgentInitialState {
+            model: Some(test_model()),
+            ..Default::default()
+        },
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    };
+    let agent = Agent::new(options);
+    let tmp = tempfile::tempdir().unwrap();
+    let session = SessionManager::in_memory(tmp.path());
+    let engine = AgentSession::new(Arc::new(agent), session, vec![])
+        .await
+        .unwrap();
+    for cmd in &["/plan", "/code", "/dbg", "/exit", "/todos"] {
+        let outcome = engine.prompt(cmd, PromptOptions::default()).await.unwrap();
+        match &outcome {
+            PromptOutcome::SessionCommand(command) => {
+                assert!(
+                    ["plan", "code", "dbg", "exit", "todos"].contains(&command.name),
+                    "{cmd} should resolve to a plan-code session command, got {}",
+                    command.name
+                );
+            }
+            PromptOutcome::Prompt => panic!("{cmd} should be a session command, not a prompt"),
+        }
+    }
+}

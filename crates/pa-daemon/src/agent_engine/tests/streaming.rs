@@ -78,6 +78,7 @@ fn assistant_updates_stream_live_while_the_turn_runs() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        plan_code_mode: None,
     })
     .unwrap();
     let start = std::time::Instant::now();
@@ -154,6 +155,7 @@ fn agent_engine_streams_updates_and_final_message() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        plan_code_mode: None,
     })
     .unwrap();
     let mut events: Vec<EngineEvent> = Vec::new();

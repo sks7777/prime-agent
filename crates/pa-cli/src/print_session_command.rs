@@ -354,6 +354,7 @@ mod tests {
                     image_model_router: None,
                     steering_mode: None,
                     follow_up_mode: None,
+                    plan_code_mode: None,
                 },
             )
             .await

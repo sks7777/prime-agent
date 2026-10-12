@@ -319,7 +319,10 @@ struct AgentInner {
     transform_context: Option<TransformContextFn>,
     stream_fn: Option<StreamFn>,
     get_api_key: Option<crate::agent_loop::GetApiKeyFn>,
-    before_tool_call: Option<BeforeToolCallFn>,
+    /// Settable after construction so the session engine can install the
+    /// plan-mode tool-call gate. A plain mutex: cloned at run-config build,
+    /// never held across an await.
+    before_tool_call: Mutex<Option<BeforeToolCallFn>>,
     after_tool_call: Option<AfterToolCallFn>,
     should_stop_after_turn: Option<ShouldStopAfterTurnFn>,
     should_stop_before_turn: Option<ShouldStopBeforeTurnFn>,
@@ -543,7 +546,11 @@ impl AgentInner {
         config.get_follow_up_messages = Some(follow_up);
         config.get_continuation_messages = continuation;
         config.tool_execution = self.tool_execution;
-        config.before_tool_call.clone_from(&self.before_tool_call);
+        config.before_tool_call = self
+            .before_tool_call
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         config.after_tool_call.clone_from(&self.after_tool_call);
         config
     }
@@ -760,7 +767,7 @@ impl Agent {
             transform_context: options.transform_context,
             stream_fn: options.stream_fn,
             get_api_key: options.get_api_key,
-            before_tool_call: options.before_tool_call,
+            before_tool_call: Mutex::new(options.before_tool_call),
             after_tool_call: options.after_tool_call,
             should_stop_after_turn: options.should_stop_after_turn,
             should_stop_before_turn: options.should_stop_before_turn,
@@ -864,6 +871,16 @@ impl Agent {
 
     pub async fn set_tools(&self, tools: Vec<Arc<dyn AgentTool>>) {
         self.inner.shared.lock().await.state.tools = tools;
+    }
+
+    /// Install or replace the before-tool-call hook (used by plan-code mode
+    /// to gate tool execution in plan mode). Settable after construction.
+    pub fn set_before_tool_call(&self, hook: Option<BeforeToolCallFn>) {
+        *self
+            .inner
+            .before_tool_call
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = hook;
     }
 
     pub async fn set_messages(&self, messages: Vec<AgentMessage>) {
