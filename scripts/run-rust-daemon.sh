@@ -2,11 +2,11 @@
 # Rust-демон prime-agent v0.10 для bb (провайдер acp-prime-agent-rust).
 #
 # Что делает:
-#   1. собирает бинарник (release по умолчанию — его запускает bb-враппер);
+#   1. собирает бинарник (fast-release по умолчанию — его запускает bb-враппер);
 #   2. останавливает старый демон на изолированном сокете;
-#   3. по умолчанию открывает интерактивный TUI на сокете
-#      /tmp/prime-agent-rust/daemon.sock с конфиг-диром ~/.prime-v0.10/agent
-#      (та же изоляция, что у bb-клиентов); TUI сам поднимает демон, и демон
+#   3. по умолчанию открывает интерактивный TUI на дефолтном сокете
+#      /tmp/prime-agent-<uid>/daemon.sock с конфиг-диром ~/.prime/agent
+#      (те же пути, что у bb-клиентов); TUI сам поднимает демон, и демон
 #      остаётся жить после выхода из TUI — bb-клиенты подключаются к нему же.
 #
 # bb ничего дополнительно не требует: клиент ~/bin/prime-agent-rust-bb
@@ -16,11 +16,12 @@
 #   ./scripts/run-rust-daemon.sh [аргументы TUI]       # TUI поверх демона (по умолчанию)
 #   TUI=0 ./scripts/run-rust-daemon.sh                 # только демон в фоне + проверка готовности
 #   FOREGROUND=1 TUI=0 ./scripts/run-rust-daemon.sh    # демон в этом терминале (логи видны)
-#   PROFILE=fast-release ./scripts/run-rust-daemon.sh  # быстрый инкрементальный профиль
+#   PROFILE=release ./scripts/run-rust-daemon.sh       # release-профиль (медленнее сборка, стабильнее)
 #
-# TMPDIR сознательно не переопределяется: после фикса длины имени воркер-сокета
-# (6-символьный хеш) пути укладываются в лимит AF_UNIX на macOS, и окружение
-# демона совпадает с окружением bb-клиентов.
+# TMPDIR сознательно не переопределяется: дефолтный сокет-дир /tmp/prime-agent-<uid>
+# совпадает с тем, что bb-клиенты используют через resolve_daemon_socket_path.
+# После фикса длины имени воркер-сокета (6-символьный хеш) пути укладываются
+# в лимит AF_UNIX на macOS, и окружение демона совпадает с окружением bb-клиентов.
 
 set -euo pipefail
 
@@ -35,10 +36,10 @@ done < <(env)
 unset PRIME_AGENT_KERNEL_OWNER_PID PRIME_AGENT_SESSION_DIR 2>/dev/null || true
 
 WORKTREE="$HOME/Development/prime-agent-v0.10"
-CONFIG_DIR="$HOME/.prime-v0.10/agent"
-SOCKET_DIR="/tmp/prime-agent-rust"
+CONFIG_DIR="$HOME/.prime/agent"
+SOCKET_DIR="/tmp/prime-agent-$(id -u)"
 SOCKET="$SOCKET_DIR/daemon.sock"
-PROFILE="${PROFILE:-release}"
+PROFILE="${PROFILE:-fast-release}"
 FOREGROUND="${FOREGROUND:-0}"
 TUI="${TUI:-1}"
 
@@ -65,8 +66,8 @@ if command -v sccache >/dev/null 2>&1; then
 else
   "${BUILD[@]}"
 fi
-if [ "$PROFILE" != "release" ]; then
-  echo "ВНИМАНИЕ: bb-враппер ~/bin/prime-agent-rust-bb запускает target/release/prime-agent."
+if [ "$PROFILE" != "fast-release" ]; then
+  echo "ВНИМАНИЕ: bb-враппер ~/bin/prime-agent-rust-bb и ~/bin/prime-agent запускают target/fast-release/prime-agent."
 fi
 
 echo ""

@@ -13,12 +13,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::session_store::session_file_name;
+
 use serde::{Deserialize, Serialize};
 
 /// The registry file name, placed inside the session directory.
 const ACP_SESSION_REGISTRY_FILENAME: &str = "acp-session-registry.json";
 /// Entries older than this are pruned on every read/write (7 days).
-const ACP_SESSION_REGISTRY_MAX_AGE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+const ACP_SESSION_REGISTRY_MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// One registered ACP session: the protocol-level id (registry map key),
 /// the runtime session id, the session file at registration time, the cwd,
@@ -56,13 +58,19 @@ fn now_millis() -> u64 {
 /// invalid JSON, non-object).
 fn read_registry(session_dir: &Path) -> AcpSessionRegistry {
     let path = registry_path(session_dir);
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return HashMap::new();
+    let read_once = || -> Option<AcpSessionRegistry> {
+        let content = std::fs::read_to_string(&path).ok()?;
+        if content.is_empty() {
+            return None;
+        }
+        serde_json::from_str::<AcpSessionRegistry>(&content).ok()
     };
-    match serde_json::from_str::<AcpSessionRegistry>(&content) {
-        Ok(registry) => registry,
-        Err(_) => HashMap::new(),
+    // Retry once after a brief delay to handle a concurrent atomic rename.
+    if let Some(registry) = read_once() {
+        return registry;
     }
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    read_once().unwrap_or_default()
 }
 
 /// Write the registry to disk as pretty-printed JSON; best-effort (a
@@ -72,7 +80,12 @@ fn write_registry(session_dir: &Path, registry: &AcpSessionRegistry) {
     let path = registry_path(session_dir);
     let mut content = serde_json::to_string_pretty(registry).unwrap_or_default();
     content.push('\n');
-    let _ = std::fs::write(&path, content);
+    // Atomic write: write to a temp file, then rename. This prevents
+    // concurrent readers from seeing a partially-written (empty) file.
+    let temp = path.with_extension("json.tmp");
+    if std::fs::write(&temp, &content).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
+    }
 }
 
 /// Drop entries older than the max age.
@@ -139,6 +152,26 @@ pub fn resolve_session(session_dir: &Path, session_id: &str) -> Option<ResolvedS
                 entry,
                 session_file: Some(found),
             });
+        }
+        // The session may have been archived (moved to sessions-archive/ by
+        // the daemon's periodic sweep). Restore it from the archive before
+        // giving up — the archive is a sibling of the sessions directory.
+        if let Some(archive_dir) = session_dir
+            .parent()
+            .map(|parent| parent.join(crate::session_archive::ARCHIVE_DIR_NAME))
+        {
+            if archive_dir.is_dir() {
+                let archive_file = archive_dir.join(session_file_name(runtime_id));
+                if archive_file.is_file() {
+                    let dest = session_dir.join(session_file_name(runtime_id));
+                    if !dest.exists() && std::fs::rename(&archive_file, &dest).is_ok() {
+                        return Some(ResolvedSession {
+                            entry,
+                            session_file: Some(dest),
+                        });
+                    }
+                }
+            }
         }
     }
     Some(ResolvedSession {
