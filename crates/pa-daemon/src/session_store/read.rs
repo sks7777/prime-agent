@@ -187,6 +187,75 @@ impl SessionFile {
         Ok(file)
     }
 
+    /// Strip a leading `<system_instructions>` wrapper from the first user
+    /// message in the loaded entries. The wrapper is bb-bridge metadata
+    /// (thread relocation instructions), not conversation content: leaving
+    /// it in the context window pollutes the LLM prompt and breaks prefix
+    /// caching on session resume. In-memory only — the file on disk is
+    /// not modified.
+    pub(crate) fn strip_instructions_wrapper(&mut self) {
+        for entry in &mut self.entries {
+            if entry.type_ != "message" {
+                continue;
+            }
+            // The message is in `fields["message"]`.
+            let message = match entry.fields.get_mut("message") {
+                Some(msg) => msg,
+                None => continue,
+            };
+            let role = message.get("role").and_then(Value::as_str);
+            if role != Some("user") {
+                continue;
+            }
+            // The content is an array of blocks: [{"type":"text","text":"..."}]
+            let content = match message.get_mut("content").and_then(Value::as_array_mut) {
+                Some(c) => c,
+                None => continue,
+            };
+            if content.is_empty() {
+                continue;
+            }
+            // Check the first text block.
+            let first = &mut content[0];
+            let text = match first.get("text").and_then(Value::as_str) {
+                Some(t) => t,
+                None => continue,
+            };
+            let trimmed = text.trim();
+            // Case 1: the whole block is a <system_instructions> wrapper → drop it.
+            if trimmed.starts_with("<system_instructions>")
+                && trimmed.ends_with("</system_instructions>")
+            {
+                content.remove(0);
+                // If the content is now empty, leave a minimal placeholder
+                // so the message is not empty (some providers reject empty).
+                if content.is_empty() {
+                    content.push(serde_json::json!({"type":"text","text":""}));
+                }
+                return;
+            }
+            // Case 2: a merged wrapper+text block → split, keep the rest.
+            if trimmed.starts_with("<system_instructions>") {
+                let close_tag = "</system_instructions>";
+                if let Some(close_pos) = trimmed.find(close_tag) {
+                    let after_close = close_pos + close_tag.len();
+                    let rest = trimmed[after_close..].trim();
+                    if !rest.is_empty() {
+                        first["text"] = Value::String(rest.to_string());
+                    } else {
+                        content.remove(0);
+                        if content.is_empty() {
+                            content.push(serde_json::json!({"type":"text","text":""}));
+                        }
+                    }
+                    return;
+                }
+            }
+            // Not a wrapper — no stripping needed.
+            return;
+        }
+    }
+
     /// Load the verified compacted context without decoding old message bodies.
     ///
     /// # Errors

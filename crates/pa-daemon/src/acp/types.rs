@@ -193,10 +193,7 @@ pub enum AcpSessionUpdate {
     /// the model's context window. bb maps these to the thread context
     /// window ring and popover.
     #[serde(rename = "usage_update")]
-    UsageUpdate {
-        used: u64,
-        size: u64,
-    },
+    UsageUpdate { used: u64, size: u64 },
 }
 
 impl AcpSessionUpdate {
@@ -336,9 +333,7 @@ pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
                 };
                 let trimmed = text.trim();
                 // A whole wrapper block.
-                if rest_texts.is_empty()
-                    && regex_safe_match_whole(trimmed)
-                {
+                if rest_texts.is_empty() && regex_safe_match_whole(trimmed) {
                     instruction_texts.push(text.to_string());
                     continue;
                 }
@@ -367,8 +362,10 @@ pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
     }
 
     AcpPromptSplit {
-        instructions_text: instruction_texts.join("
-"),
+        instructions_text: instruction_texts.join(
+            "
+",
+        ),
         rest_texts,
         images,
     }
@@ -425,8 +422,32 @@ pub struct AdmittedPrompt {
 impl AdmittedPrompt {
     pub fn parse(prompt: &[Value]) -> Result<AdmittedPrompt, PromptBlockError> {
         let (text, images) = parse_prompt_blocks(prompt)?;
+        // Strip a leading `<system_instructions>` wrapper from the
+        // admitted text. The wrapper is bb-bridge metadata (thread
+        // relocation instructions), not conversation content: storing
+        // it in the session file pollutes the LLM context window and
+        // breaks prefix caching on session resume.
+        let text = strip_leading_instructions_wrapper(&text);
         Ok(AdmittedPrompt { text, images })
     }
+}
+
+/// Strip a leading `<system_instructions>` wrapper from joined prompt text.
+/// Handles both a whole-wrapper text and a merged wrapper+text prefix.
+fn strip_leading_instructions_wrapper(text: &str) -> String {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("<system_instructions>") {
+        return text.to_string();
+    }
+    // Use the existing split function: it returns (wrapper, rest).
+    if let Some((_wrapper, rest)) = split_acp_instruction_prefix(trimmed) {
+        return rest;
+    }
+    // The whole text is a wrapper with no trailing content → empty prompt.
+    if regex_safe_match_whole(trimmed) {
+        return String::new();
+    }
+    text.to_string()
 }
 
 /// The `session/new` request params.
@@ -735,7 +756,7 @@ Do work" },
     fn split_acp_prompt_blocks_handles_merged_wrapper_and_text() {
         let prompt = json!([
             { "type": "text", "text": "<system_instructions>instructions</system_instructions>[rlm-mirror:abcdef0123456789abcdef0123456789]
-body" },
+        body" },
         ]);
         let split = split_acp_prompt_blocks(prompt.as_array().unwrap());
         assert!(split.instructions_text.contains("system_instructions"));
