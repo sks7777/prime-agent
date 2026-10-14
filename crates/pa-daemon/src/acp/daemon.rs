@@ -1533,14 +1533,18 @@ async fn handle_session_load(
             .await;
         match switch {
             Ok(response) if !response.success => {
-                state.lock().await.session_new_in_flight = false;
-                let _ = tx.send(super::internal_error(
-                    &id,
-                    &response
-                        .error
-                        .unwrap_or_else(|| "session switch failed".to_string()),
-                ));
-                return;
+                let switch_err = response
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "session switch failed".to_string());
+                // "Session is already active" means the target session file
+                // is already loaded in the current worker — the switch is a
+                // no-op, not a failure. Fall through to the admit logic.
+                if !switch_err.starts_with("Session is already active") {
+                    state.lock().await.session_new_in_flight = false;
+                    let _ = tx.send(super::internal_error(&id, &switch_err));
+                    return;
+                }
             }
             Err(error) => {
                 state.lock().await.session_new_in_flight = false;

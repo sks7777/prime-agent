@@ -270,6 +270,12 @@ impl SessionNavigation {
         }
         let mut file = SessionFile::open(std::path::Path::new(path))
             .map_err(|error| response_failure(None, command, &error.to_string(), None))?;
+        // Strip the bb-bridge `<system_instructions>` wrapper from the first
+        // user message so it does not pollute the LLM context window or break
+        // prefix caching on session resume. In-memory only.
+        if command == "switch_session" || command == "fork" {
+            file.strip_instructions_wrapper();
+        }
         file.lease = lease;
         let cwd =
             cwd_override.or_else(|| (!file.header.cwd.is_empty()).then(|| file.header.cwd.clone()));

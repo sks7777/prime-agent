@@ -424,8 +424,32 @@ pub struct AdmittedPrompt {
 impl AdmittedPrompt {
     pub fn parse(prompt: &[Value]) -> Result<AdmittedPrompt, PromptBlockError> {
         let (text, images) = parse_prompt_blocks(prompt)?;
+        // Strip a leading `<system_instructions>` wrapper from the
+        // admitted text. The wrapper is bb-bridge metadata (thread
+        // relocation instructions), not conversation content: storing
+        // it in the session file pollutes the LLM context window and
+        // breaks prefix caching on session resume.
+        let text = strip_leading_instructions_wrapper(&text);
         Ok(AdmittedPrompt { text, images })
     }
+}
+
+/// Strip a leading `<system_instructions>` wrapper from joined prompt text.
+/// Handles both a whole-wrapper text and a merged wrapper+text prefix.
+fn strip_leading_instructions_wrapper(text: &str) -> String {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("<system_instructions>") {
+        return text.to_string();
+    }
+    // Use the existing split function: it returns (wrapper, rest).
+    if let Some((_wrapper, rest)) = split_acp_instruction_prefix(trimmed) {
+        return rest;
+    }
+    // The whole text is a wrapper with no trailing content → empty prompt.
+    if regex_safe_match_whole(trimmed) {
+        return String::new();
+    }
+    text.to_string()
 }
 
 /// The `session/new` request params.
