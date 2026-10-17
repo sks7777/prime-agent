@@ -295,6 +295,14 @@ export function acpUpdatesForSessionEvent(
 				},
 			];
 
+		case "mode_changed":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({ mode: event.mode }),
+				},
+			];
+
 		default:
 			return [];
 	}

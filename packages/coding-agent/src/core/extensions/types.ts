@@ -1111,6 +1111,8 @@ export interface ExtensionAPI {
 
 	/** Set thinking level (clamped to model capabilities). */
 	setThinkingLevel(level: ThinkingLevel): void;
+	/** Set the current extension mode (e.g. "plan", "code", "dbg"). Pass undefined to clear. */
+	setSessionMode(mode: string | undefined): void;
 	/**
 	 * Register or override a model provider.
 	 *
@@ -1305,6 +1307,8 @@ export type GetThinkingLevelHandler = () => ThinkingLevel;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
+export type SetSessionModeHandler = (mode: string | undefined) => void;
+
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
 /**
@@ -1356,6 +1360,7 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	setSessionMode: SetSessionModeHandler;
 }
 
 /**

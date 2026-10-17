@@ -372,7 +372,8 @@ export type AgentSessionEvent =
 			runId?: string;
 	  }
 	| { type: "refine_complete"; result: RefinementResult }
-	| { type: "refine_failed"; error: string };
+	| { type: "refine_failed"; error: string }
+	| { type: "mode_changed"; mode: string | undefined };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
@@ -1118,6 +1119,7 @@ export class AgentSession {
 	private _cwd: string;
 	private _agentDir?: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
+	private _sessionMode: string | undefined;
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _includeGoals: boolean;
@@ -4170,6 +4172,10 @@ export class AgentSession {
 		return this._retryAttempt;
 	}
 
+	get sessionMode(): string | undefined {
+		return this._sessionMode;
+	}
+
 	getActiveToolNames(): string[] {
 		return this.agent.state.tools.map((t) => t.name);
 	}
@@ -7168,6 +7174,12 @@ export class AgentSession {
 		return serviceTier === "priority" && (!this.model || !supportsFastMode(this.model)) ? "default" : serviceTier;
 	}
 
+	setSessionMode(mode: string | undefined): void {
+		if (this._sessionMode === mode) return;
+		this._sessionMode = mode;
+		this._emit({ type: "mode_changed", mode });
+	}
+
 	private _getServiceTierForModelSwitch(): ServiceTier {
 		return this._serviceTierPreference;
 	}
@@ -8795,6 +8807,7 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				setSessionMode: (mode) => this.setSessionMode(mode),
 			},
 			{
 				getModel: () => this.model,

@@ -1454,6 +1454,9 @@ class DaemonAttachTerminal {
 			case "thinking_level_changed":
 				this.writeLine(chalk.dim(`Thinking: ${event.level}`));
 				return;
+			case "mode_changed":
+				this.writeLine(chalk.dim(`Mode: ${event.mode ?? "(none)"}`));
+				return;
 			case "compaction_start":
 				this.writeLine(chalk.dim(`Compaction started: ${event.reason}`));
 				return;

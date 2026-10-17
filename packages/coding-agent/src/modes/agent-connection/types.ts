@@ -351,6 +351,8 @@ export interface AgentConnectionState {
 	contextUsage: SessionStats["contextUsage"];
 	/** One-line recent-work recap for the prompt UI. */
 	recap?: string;
+	/** Current extension mode (e.g. "plan", "code", "dbg"), if an extension set one. */
+	mode?: string;
 }
 
 export interface AgentConnectionSlashCommand {
@@ -608,7 +610,8 @@ export type AgentConnectionSessionEvent =
 			runId?: string;
 	  }
 	| { type: "refine_complete"; result: RefinementResult }
-	| { type: "refine_failed"; error: string };
+	| { type: "refine_failed"; error: string }
+	| { type: "mode_changed"; mode: string | undefined };
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }

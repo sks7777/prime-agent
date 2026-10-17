@@ -1,0 +1,1 @@
+- Added session mode tracking so extension modes (e.g. /plan, /code, /dbg) are visible in bb via ACP `_meta` and `AgentConnectionState`.

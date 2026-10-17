@@ -75,6 +75,8 @@ export interface SessionSummary {
 	diagnostics?: AgentSessionRuntimeDiagnostic[];
 	/** One-line background summary of what the agent is doing or just did. */
 	summary?: string;
+	/** Current extension mode (e.g. "plan", "code", "dbg"), if an extension set one. */
+	mode?: string;
 	/** Completion verdict for an idle session; absent while working or unjudged. */
 	taskState?: AgentTaskState;
 	/** Resident session-host process state, populated by the global supervisor. */
@@ -228,6 +230,7 @@ export function summaryForActiveSession(
 		cwd: session.sessionManager.getCwd(),
 		model: session.model as Model<Api> | undefined,
 		thinkingLevel: session.thinkingLevel,
+		mode: session.sessionMode,
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
 		isBashRunning: session.isBashRunning,

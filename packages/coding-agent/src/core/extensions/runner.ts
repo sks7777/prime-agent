@@ -296,6 +296,7 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.setSessionMode = actions.setSessionMode;
 
 		this.getModel = contextActions.getModel;
 		this.isIdleFn = contextActions.isIdle;

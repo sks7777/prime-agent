@@ -124,6 +124,8 @@ export interface PrimeAgentSessionMeta {
 	/** Observed subagent and autonomous-continuation counts at completion. */
 	quiescence?: PrimeAgentQuiescenceMeta;
 	ipython?: PrimeAgentIpythonMeta;
+	/** Current extension mode (e.g. "plan", "code", "dbg"), if an extension set one. */
+	mode?: string;
 }
 
 /** Wrap a prime-agent payload in its reverse-domain `_meta` envelope. */

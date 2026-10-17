@@ -818,9 +818,17 @@ export async function runAcpModeWithConnection(
 				// ready, so a failed setup cannot leave it occupied and unusable.
 				entry.unsubscribe = unsubscribe;
 				session = entry;
+				const sessionMode = (await connection.getState().catch(() => undefined))?.mode;
 				const response = {
 					sessionId,
-					...(cwdMismatch ? { _meta: primeAgentMeta({ cwd: cwdMismatch }) } : {}),
+					...(cwdMismatch || sessionMode
+						? {
+								_meta: primeAgentMeta({
+									...(cwdMismatch ? { cwd: cwdMismatch } : {}),
+									...(sessionMode ? { mode: sessionMode } : {}),
+								}),
+							}
+						: {}),
 				};
 				// The stream wrapper commits this gate after this exact response has
 				// written. Buffered subscription updates retain producer order.

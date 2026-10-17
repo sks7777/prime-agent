@@ -2690,6 +2690,9 @@ export class InteractiveMode {
 			case "goal_update":
 				this.patchConnectionState({ goal: event.goal });
 				break;
+			case "mode_changed":
+				this.patchConnectionState({ mode: event.mode });
+				break;
 			case "bash_start":
 				this.patchConnectionState({ isBashRunning: true });
 				break;
@@ -5384,6 +5387,11 @@ export class InteractiveMode {
 				break;
 
 			case "service_tier_changed":
+				this.footer.invalidate();
+				this.subagentSummaryLine.invalidate();
+				break;
+
+			case "mode_changed":
 				this.footer.invalidate();
 				this.subagentSummaryLine.invalidate();
 				break;
