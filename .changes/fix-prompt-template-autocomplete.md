@@ -1,0 +1,1 @@
+- Fixed prompt templates (e.g. /local-review) not appearing in the slash-command autocomplete menu; the TUI now surfaces prompt-template commands from the daemon's get_commands response alongside skill commands.
