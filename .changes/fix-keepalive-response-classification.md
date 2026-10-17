@@ -1,0 +1,1 @@
+- Fixed proxy "keepalive" responses (e.g. omnirouter with no available upstream) being classified as stream_drop instead of overloaded, producing a clearer error message that names the real cause.
