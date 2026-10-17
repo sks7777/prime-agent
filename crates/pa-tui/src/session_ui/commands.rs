@@ -848,6 +848,7 @@ impl SessionUi {
         // immediately — a rebind never offers stale cross-session commands.
         let _ = self.command_updates.send(CommandCatalogUpdate {
             epoch,
+            prompt_commands: Vec::new(),
             skill_commands: Vec::new(),
         });
         let updates = self.command_updates.clone();
@@ -864,13 +865,17 @@ impl SessionUi {
                 client.request_ok(request),
             )
             .await;
-            let skill_commands = match fetched {
-                Ok(Ok(data)) => crate::autocomplete::skill_command_entries(&data),
+            let (prompt_commands, skill_commands) = match fetched {
+                Ok(Ok(data)) => (
+                    crate::autocomplete::prompt_command_entries(&data),
+                    crate::autocomplete::skill_command_entries(&data),
+                ),
                 // The catalog clears on failure.
-                Ok(Err(_)) | Err(_) => Vec::new(),
+                Ok(Err(_)) | Err(_) => (Vec::new(), Vec::new()),
             };
             let _ = updates.send(CommandCatalogUpdate {
                 epoch,
+                prompt_commands,
                 skill_commands,
             });
         });
@@ -888,6 +893,7 @@ impl SessionUi {
         }
         // The cache keeps the raw fetch (the toggle re-applies it under the
         // setting's new value); the default applies when no settings seam exists.
+        self.prompt_commands_cache = update.prompt_commands;
         self.skill_commands_cache = update.skill_commands;
         let skills = if self
             .client_settings
@@ -898,6 +904,7 @@ impl SessionUi {
         } else {
             Vec::new()
         };
+        view.editor.set_autocomplete_prompt_commands(self.prompt_commands_cache.clone());
         view.editor.set_autocomplete_skill_commands(skills);
         self.dirty = true;
     }

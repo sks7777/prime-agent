@@ -84,6 +84,9 @@ pub trait AutocompleteProvider: Send {
     /// Replace the session's `skill:` commands. A default no-op for
     /// providers without command listings.
     fn set_skill_commands(&mut self, _skills: Vec<SlashCommandEntry>) {}
+    /// Replace the session's prompt-template commands. A default no-op for
+    /// providers without command listings.
+    fn set_prompt_commands(&mut self, _prompts: Vec<SlashCommandEntry>) {}
     /// Replace one command's argument completions; a default no-op for
     /// providers without argument completions.
     fn set_argument_completions(&mut self, _command: &'static str, _items: Vec<CompletionItem>) {}
@@ -724,10 +727,47 @@ pub fn skill_command_entries(commands: &serde_json::Value) -> Vec<SlashCommandEn
         .collect()
 }
 
+/// The prompt-template commands of a daemon `get_commands` response: the name
+/// is the template's file stem (e.g. `local-review`), surfaced as `/local-review`.
+/// `takes_argument` follows the template's `argument-hint` frontmatter.
+pub fn prompt_command_entries(commands: &serde_json::Value) -> Vec<SlashCommandEntry> {
+    let Some(entries) = commands
+        .get("commands")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter(|entry| entry.get("source").and_then(serde_json::Value::as_str) == Some("prompt"))
+        .filter_map(|entry| {
+            let name = entry.get("name").and_then(serde_json::Value::as_str)?;
+            let argument_hint = entry
+                .get("argumentHint")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            Some(SlashCommandEntry {
+                name: name.to_string(),
+                aliases: Vec::new(),
+                description: entry
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                takes_argument: argument_hint.is_some(),
+                argument_hint,
+                source_tag: entry.get("sourceInfo").and_then(autocomplete_source_label),
+            })
+        })
+        .collect()
+}
+
 /// The installed provider: fuzzy-filtered slash-command completion from
 /// the builtin registry plus file/path completion.
 pub struct CombinedAutocompleteProvider {
     commands: Vec<SlashCommandEntry>,
+    /// The session's prompt-template commands (e.g. `/local-review`):
+    /// appended after the builtins, replaced whole on every catalog refresh.
+    prompt_commands: Vec<SlashCommandEntry>,
     /// The session's `skill:<name>` commands: appended after the
     /// builtins, replaced whole on every catalog refresh.
     skill_commands: Vec<SlashCommandEntry>,
@@ -768,6 +808,7 @@ impl CombinedAutocompleteProvider {
     pub fn new(commands: Vec<SlashCommandEntry>, base: std::path::PathBuf) -> Self {
         Self {
             commands,
+            prompt_commands: Vec::new(),
             skill_commands: Vec::new(),
             hidden: HashSet::default(),
             arguments: HashMap::default(),
@@ -787,6 +828,12 @@ impl CombinedAutocompleteProvider {
         self.skill_commands = skills;
     }
 
+    /// Replace the session's prompt-template commands; the fetch replaces the
+    /// whole list, never merges.
+    pub fn set_prompt_commands(&mut self, prompts: Vec<SlashCommandEntry>) {
+        self.prompt_commands = prompts;
+    }
+
     /// Replace one command's argument completions (TS
     /// `command.getArgumentCompletions`, e.g. the `/tier` tier choices).
     pub fn set_argument_completions(&mut self, command: &'static str, items: Vec<CompletionItem>) {
@@ -800,6 +847,7 @@ impl CombinedAutocompleteProvider {
         let commands: Vec<&SlashCommandEntry> = self
             .commands
             .iter()
+            .chain(self.prompt_commands.iter())
             .chain(self.skill_commands.iter())
             .filter(|command| !self.hidden.contains(&command.name))
             .collect();
@@ -845,6 +893,7 @@ impl CombinedAutocompleteProvider {
         let takes_argument = self
             .commands
             .iter()
+            .chain(self.prompt_commands.iter())
             .chain(self.skill_commands.iter())
             .find(|command| command.name == item.value)
             .is_some_and(|command| command.takes_argument);
@@ -878,6 +927,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
 
     fn set_skill_commands(&mut self, skills: Vec<SlashCommandEntry>) {
         CombinedAutocompleteProvider::set_skill_commands(self, skills);
+    }
+
+    fn set_prompt_commands(&mut self, prompts: Vec<SlashCommandEntry>) {
+        CombinedAutocompleteProvider::set_prompt_commands(self, prompts);
     }
 
     fn set_argument_completions(&mut self, command: &'static str, items: Vec<CompletionItem>) {
@@ -966,6 +1019,7 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             && self
                 .commands
                 .iter()
+                .chain(self.prompt_commands.iter())
                 .chain(self.skill_commands.iter())
                 .any(|command| command.name == item.value)
         {

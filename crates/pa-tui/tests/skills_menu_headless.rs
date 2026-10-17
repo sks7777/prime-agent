@@ -95,7 +95,8 @@ impl MockSupervisor {
                 }
                 "get_commands" => {
                     // TS `createAgentConnectionCommands`: the skills ride the command catalog as
-                    // `skill:<name>` entries with their description and source info.
+                    // `skill:<name>` entries with their description and source info; prompt
+                    // templates ride as `source: "prompt"` entries.
                     write_json(
                         &mut writer,
                         &json!({
@@ -115,6 +116,19 @@ impl MockSupervisor {
                                             "scope": "user",
                                             "origin": "top-level",
                                             "baseDir": "/tmp/skills/web-search",
+                                        },
+                                    },
+                                    {
+                                        "name": "local-review",
+                                        "description": "local review (current branch, optional base or instructions)",
+                                        "argumentHint": "[base-ref] [review guidance]",
+                                        "source": "prompt",
+                                        "sourceInfo": {
+                                            "path": "/tmp/prompts/local-review.md",
+                                            "source": "local",
+                                            "scope": "user",
+                                            "origin": "top-level",
+                                            "baseDir": "/tmp/prompts",
                                         },
                                     },
                                 ]
@@ -420,6 +434,7 @@ impl pa_tui::client_settings::ClientSettings for StubSettings {
 fn options(socket: PathBuf) -> InteractiveOptions {
     InteractiveOptions {
         models: None,
+        plan_code: None,
         socket_path: socket,
         cwd: PathBuf::from("/tmp"),
         session_dir: None,
@@ -528,6 +543,32 @@ fn skill_commands_surface_in_the_slash_menu() {
     assert!(
         all.contains("Search the web for answers"),
         "the skill description renders: {all}"
+    );
+    assert!(all.contains("#user"), "the source label renders: {all}");
+}
+
+#[test]
+fn prompt_templates_surface_in_the_slash_menu() {
+    let steps = vec![
+        HeadlessStep::WaitMs(300),
+        HeadlessStep::Type("/local".to_string()),
+        HeadlessStep::SettleIdle,
+        HeadlessStep::WaitMs(100),
+    ];
+    let frames = run_plan(steps);
+    assert!(!frames.is_empty(), "frames were captured");
+    let all = frames.join("\n");
+    assert!(
+        all.contains("local-review"),
+        "the prompt template lists as a slash command: {all}"
+    );
+    assert!(
+        all.contains("local review (current branch"),
+        "the prompt description renders: {all}"
+    );
+    assert!(
+        all.contains("[base-ref]"),
+        "the argument hint renders: {all}"
     );
     assert!(all.contains("#user"), "the source label renders: {all}");
 }
