@@ -253,6 +253,19 @@ impl Editor {
         }
     }
 
+    /// Replace the provider's prompt-template commands (same swap pattern as
+    /// skill commands).
+    pub fn set_autocomplete_prompt_commands(&mut self, prompts: Vec<SlashCommandEntry>) {
+        let was_showing = self.autocomplete.is_some();
+        self.autocomplete = None;
+        if was_showing {
+            self.emit(EditorEvent::AutocompleteToggled(false));
+        }
+        if let Some(provider) = self.autocomplete_provider.as_mut() {
+            provider.set_prompt_commands(prompts);
+        }
+    }
+
     #[must_use]
     pub fn is_showing_autocomplete(&self) -> bool {
         self.autocomplete.is_some()

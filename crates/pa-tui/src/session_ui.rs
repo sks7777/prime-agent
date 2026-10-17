@@ -121,6 +121,7 @@ const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str = "Anthropic subscription auth i
 /// the autocomplete provider; an older refresh never applies.
 pub(crate) struct CommandCatalogUpdate {
     pub epoch: u64,
+    pub prompt_commands: Vec<crate::autocomplete::SlashCommandEntry>,
     pub skill_commands: Vec<crate::autocomplete::SlashCommandEntry>,
 }
 
@@ -286,6 +287,7 @@ pub(crate) struct SessionUi {
     heartbeat_refresh_epoch: u64,
     command_updates: mpsc::UnboundedSender<CommandCatalogUpdate>,
     command_refresh_epoch: u64,
+    prompt_commands_cache: Vec<crate::autocomplete::SlashCommandEntry>,
     skill_commands_cache: Vec<crate::autocomplete::SlashCommandEntry>,
     bash_activities: Value,
     /// Monotonic id of the latest issued kernel-bash list request; a late response from an older

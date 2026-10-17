@@ -140,6 +140,7 @@ impl SessionUi {
             heartbeat_refresh_epoch: 0,
             command_updates: activity_updates.commands,
             command_refresh_epoch: 0,
+            prompt_commands_cache: Vec::new(),
             skill_commands_cache: Vec::new(),
             bash_activities: serde_json::json!({"activities": []}),
             bash_list_epoch: 0,

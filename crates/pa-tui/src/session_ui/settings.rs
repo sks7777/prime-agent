@@ -376,6 +376,8 @@ impl SessionUi {
                 } else {
                     Vec::new()
                 };
+                view.editor
+                    .set_autocomplete_prompt_commands(self.prompt_commands_cache.clone());
                 view.editor.set_autocomplete_skill_commands(skills);
                 self.dirty = true;
             }
