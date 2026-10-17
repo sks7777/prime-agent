@@ -166,6 +166,35 @@ async fn an_empty_body_is_a_stream_drop_not_an_empty_turn() {
     assert_eq!(failure_kind(&error).as_deref(), Some("stream_drop"));
 }
 
+/// A "keepalive" response (proxy heartbeat chunks with `model: "keepalive"`
+/// and empty choices, no finish_reason, no [DONE]) classifies as `overloaded`
+/// rather than `stream_drop` so the error message names the real cause.
+#[tokio::test]
+async fn a_keepalive_response_classifies_as_overloaded_not_stream_drop() {
+    let body = r#"data: {"id":"chatcmpl-keepalive","object":"chat.completion.chunk","model":"keepalive","choices":[]}
+
+"#;
+    let (_, terminal) = stream_events(body.to_string()).await;
+    let AssistantMessageEvent::Error { error, .. } = terminal else {
+        panic!("a keepalive response must terminate with an error event");
+    };
+    assert_eq!(error.stop_reason, StopReason::Error);
+    assert!(
+        error
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("keepalive"),
+        "the error message names the keepalive cause: {:?}",
+        error.error_message
+    );
+    assert_eq!(
+        failure_kind(&error).as_deref(),
+        Some("overloaded"),
+        "a keepalive response classifies as overloaded, not stream_drop"
+    );
+}
+
 /// The healthy stream is unchanged: the stop signal (`finish_reason`) plus
 /// the `[DONE]` marker complete the turn with no error and no
 /// retryable classification.

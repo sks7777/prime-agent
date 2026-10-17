@@ -660,6 +660,29 @@ pub(crate) fn stream_drop_failure(open_block: OpenStreamBlock) -> StreamFailureE
     }
 }
 
+/// Failure for a "keepalive" response: the proxy (e.g. omnirouter) had no
+/// available upstream and held the connection open with heartbeat chunks
+/// (`model: "keepalive"`) until it gave up. Classified as overloaded (still
+/// retryable) so the error message names the real cause.
+#[must_use]
+pub(crate) fn keepalive_failure() -> StreamFailureError {
+    let info = StreamFailureInfo {
+        kind: StreamFailureKind::Overloaded,
+        provider_error_type: Some("keepalive".to_string()),
+        status: None,
+        request_id: None,
+        retry_after_ms: None,
+        raw: None,
+    };
+    StreamFailureError {
+        message: stream_failure_message(
+            &info,
+            Some("the proxy had no available upstream (keepalive response)"),
+        ),
+        info,
+    }
+}
+
 const MAX_RAW_LENGTH: usize = 2000;
 
 #[must_use]
