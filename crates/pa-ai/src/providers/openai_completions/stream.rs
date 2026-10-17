@@ -30,7 +30,7 @@ use crate::utils_inner::json_parse::{
 };
 use crate::utils_inner::sse::{ServerSentEvent, SseDecoder};
 use crate::utils_inner::stream_failure::{
-    record_stream_failure, stream_drop_failure, OpenStreamBlock, ProviderError,
+    keepalive_failure, record_stream_failure, stream_drop_failure, OpenStreamBlock, ProviderError,
 };
 
 struct StreamingState {
@@ -709,6 +709,13 @@ async fn run_stream(
     // `stream_drop` failure: the auto-retry arms re-issue the same request,
     // and the exhaustion discloses instead of the silent empty turn.
     if !state.saw_finish_reason && !state.saw_done_marker {
+        // A "keepalive" response model means the proxy (e.g. omnirouter)
+        // had no available upstream and held the connection open with
+        // heartbeat chunks until it gave up. Classify as overloaded (still
+        // retryable) so the error message names the real cause.
+        if output.response_model.as_deref() == Some("keepalive") {
+            return Err(ProviderError::StreamFailure(keepalive_failure()));
+        }
         return Err(ProviderError::StreamFailure(stream_drop_failure(
             open_stream_block(output),
         )));
