@@ -1320,12 +1320,32 @@ async fn handle_session_new(
     });
     if let Some(requested) = params.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
         let actual = options.actual_cwd.display().to_string();
-        if !super::same_cwd(Path::new(requested), &options.actual_cwd) {
+        let session_mode = state_value
+            .as_ref()
+            .and_then(|state| state.get("mode"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if !super::same_cwd(Path::new(requested), &options.actual_cwd) || session_mode.is_some() {
             result["_meta"] = meta::prime_agent_meta(&PrimeAgentSessionMeta {
-                cwd: Some(meta::PrimeAgentCwdMeta {
-                    requested: requested.to_string(),
-                    actual,
+                cwd: (!super::same_cwd(Path::new(requested), &options.actual_cwd)).then(|| {
+                    meta::PrimeAgentCwdMeta {
+                        requested: requested.to_string(),
+                        actual,
+                    }
                 }),
+                mode: session_mode,
+                ..Default::default()
+            });
+        }
+    } else {
+        let session_mode = state_value
+            .as_ref()
+            .and_then(|state| state.get("mode"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if session_mode.is_some() {
+            result["_meta"] = meta::prime_agent_meta(&PrimeAgentSessionMeta {
+                mode: session_mode,
                 ..Default::default()
             });
         }

@@ -68,6 +68,9 @@ pub struct SessionSummary {
     pub cwd: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    /// Current extension mode (e.g. "plan", "code", "dbg"), if an extension set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub is_streaming: bool,
     pub is_compacting: bool,
     /// True while the session is parked waiting out a provider-reported
@@ -241,6 +244,9 @@ pub struct AgentConnectionState {
     pub active_tool_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<Value>,
+    /// Current extension mode (e.g. "plan", "code", "dbg"), if an extension set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 #[cfg(test)]

@@ -278,6 +278,12 @@ pub trait SessionEngine: Send + Sync {
         None
     }
 
+    /// The session's current extension mode (e.g. "plan", "code", "dbg"),
+    /// if an extension set one.
+    fn session_mode(&self) -> Option<String> {
+        None
+    }
+
     /// The session's assembled system prompt, when the engine can produce
     /// it synchronously (the HTML export embeds it).
     fn export_system_prompt(&self) -> Option<String> {

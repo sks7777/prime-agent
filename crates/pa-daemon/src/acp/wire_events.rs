@@ -323,6 +323,17 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 }),
             }]
         }
+        "mode_changed" => {
+            vec![AcpSessionUpdate::SessionInfoUpdate {
+                meta: prime_agent_meta(&PrimeAgentSessionMeta {
+                    mode: event
+                        .get("mode")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    ..Default::default()
+                }),
+            }]
+        }
         "compaction_end" => {
             let result = event.get("result");
             vec![AcpSessionUpdate::SessionInfoUpdate {
@@ -692,6 +703,44 @@ mod tests {
                 "tokenBudget": 500,
                 "tokensUsed": 0,
             })
+        );
+    }
+
+    #[test]
+    fn mode_changed_maps_to_the_namespaced_mode_meta() {
+        let mut state = WireMappingState::default();
+        let updates = wire_updates(
+            &json!({
+                "type": "mode_changed",
+                "mode": "plan",
+            }),
+            &mut state,
+        );
+        assert_eq!(updates.len(), 1);
+        let value = serde_json::to_value(&updates[0]).unwrap();
+        assert_eq!(value["sessionUpdate"], "session_info_update");
+        assert_eq!(
+            value["_meta"]["ai.primeintellect.prime-agent"]["mode"],
+            json!("plan"),
+        );
+    }
+
+    #[test]
+    fn mode_changed_with_none_mode_clears_the_meta() {
+        let mut state = WireMappingState::default();
+        let updates = wire_updates(
+            &json!({
+                "type": "mode_changed",
+                "mode": null,
+            }),
+            &mut state,
+        );
+        assert_eq!(updates.len(), 1);
+        let value = serde_json::to_value(&updates[0]).unwrap();
+        assert_eq!(value["sessionUpdate"], "session_info_update");
+        assert_eq!(
+            value["_meta"]["ai.primeintellect.prime-agent"]["mode"],
+            serde_json::Value::Null,
         );
     }
 
