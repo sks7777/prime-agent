@@ -720,10 +720,8 @@ export async function runAcpModeWithConnection(
 				// Report the real cwd back in `_meta` rather than failing the request or
 				// letting the client assume a directory the agent is not using.
 				const requestedCwd = params.cwd;
-				const actualCwd = await connection
-					.getState()
-					.then((state) => state.cwd)
-					.catch(() => undefined);
+				const sessionState = await connection.getState().catch(() => undefined);
+				const actualCwd = sessionState?.cwd;
 				if (!actualCwd && mcpServers.some((server) => "command" in server)) {
 					throw acp.RequestError.invalidParams({ reason: "Could not resolve the ACP session cwd for stdio MCP" });
 				}
@@ -818,7 +816,7 @@ export async function runAcpModeWithConnection(
 				// ready, so a failed setup cannot leave it occupied and unusable.
 				entry.unsubscribe = unsubscribe;
 				session = entry;
-				const sessionMode = (await connection.getState().catch(() => undefined))?.mode;
+				const sessionMode = sessionState?.mode;
 				const response = {
 					sessionId,
 					...(cwdMismatch || sessionMode
