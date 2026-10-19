@@ -4,9 +4,9 @@
 [env]
 DO_NOT_TRACK = "1"
 
-# lld linker: rust-lld ships with rustc but clang can't find it by name.
-# To enable: ln -sf "$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/rust-lld" /usr/local/bin/ld64.lld
-# Then uncomment:
+# lld linker: Homebrew lld 23 (LLVM 23) understands the arm64e.x1-macos TAPI
+# tokens in the macOS 27 SDK. Rust 1.96 bundles LLD 22.1.2 which cannot parse them.
+# Setup: brew install lld && ln -sf /opt/homebrew/opt/lld/bin/ld64.lld ~/.local/bin/ld64.lld
 [target.aarch64-apple-darwin]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
