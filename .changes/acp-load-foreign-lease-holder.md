@@ -1,0 +1,1 @@
+- Fixed ACP `session/load` silently continuing on a fresh boot session when a still-live worker from the stopped connection kept holding the session lease: the handler now treats "Session is already active" as a no-op only when the current worker itself hosts the target file, and fails the load with an explicit error (registry mapping preserved) for a foreign live holder.
