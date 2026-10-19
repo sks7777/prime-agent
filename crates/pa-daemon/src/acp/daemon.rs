@@ -1601,12 +1601,32 @@ async fn handle_session_load(
                     .error
                     .clone()
                     .unwrap_or_else(|| "session switch failed".to_string());
-                // "Session is already active" means the target session file
-                // is already loaded in the current worker — the switch is a
-                // no-op, not a failure. Fall through to the admit logic.
                 if !switch_err.starts_with("Session is already active") {
                     state.lock().await.session_new_in_flight = false;
                     let _ = tx.send(super::internal_error(&id, &switch_err));
+                    return;
+                }
+                // "Session is already active" has two meanings. Self-hosted:
+                // this worker already hosts the target file, so the switch
+                // is a no-op and the admit logic may proceed. Foreign: a
+                // still-live worker from the previous connection keeps
+                // hosting the file (the client's stop released the ACP
+                // side, the resident worker stayed). Admitting on this
+                // process's fresh boot session in the foreign case drops
+                // the session's whole history — fail the load instead so
+                // the client surfaces the failed restore.
+                let current = fetch_connection_state(link, &binding.active_session_id).await;
+                let hosting_target = current
+                    .as_ref()
+                    .and_then(|state| state.get("sessionFile"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|file| file == session_file.to_string_lossy());
+                if !hosting_target {
+                    state.lock().await.session_new_in_flight = false;
+                    let _ = tx.send(super::internal_error(
+                        &id,
+                        &format!("ACP session {} cannot be loaded: {switch_err}", params.session_id),
+                    ));
                     return;
                 }
             }
@@ -4033,6 +4053,265 @@ mod tests {
             new_file.to_string_lossy().to_string(),
             "the switch targeted the newest entry's session file"
         );
+    }
+
+    #[tokio::test]
+    async fn session_load_fails_when_a_foreign_live_worker_holds_the_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let history_file = sessions_dir.join("runtime-history.jsonl");
+        std::fs::write(
+            &history_file,
+            r#"{"type":"session","version":3,"id":"runtime-history","timestamp":"2026-10-19T00:00:00.000Z","cwd":"PLACEHOLDER"}"#,
+        )
+        .unwrap();
+        crate::acp::session_registry::register_session(
+            &sessions_dir,
+            "acp-1",
+            Some("runtime-history".to_string()),
+            Some(history_file.to_string_lossy().to_string()),
+            &cwd,
+        );
+        // The worker's current file is the fresh boot session, not the
+        // loaded target: the holder that answered "already active" is a
+        // foreign live worker, so the switch must fail the load.
+        let state_payload = json!({
+            "sessionDir": sessions_dir.to_string_lossy(),
+            "sessionId": "runtime-boot",
+            "sessionFile": sessions_dir.join("runtime-boot.jsonl").to_string_lossy(),
+            "cwd": cwd.clone(),
+        });
+        let (writer, mut commands) = mpsc::unbounded_channel::<String>();
+        let (_frames_tx, frames) = mpsc::unbounded_channel();
+        let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let link = Arc::new(DaemonLink {
+            writer,
+            pending: Arc::clone(&pending),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            frames: Mutex::new(frames),
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        });
+        let worker = tokio::spawn(async move {
+            while let Some(line) = commands.recv().await {
+                let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
+                let id = envelope.id;
+                let (command, data, success, error) = match envelope.command {
+                    DaemonCommand::GetConnectionState { .. } => (
+                        "get_connection_state",
+                        Some(state_payload.clone()),
+                        true,
+                        None,
+                    ),
+                    DaemonCommand::SwitchSession { session_path, .. } => (
+                        "switch_session",
+                        None,
+                        false,
+                        Some(format!(
+                            "Session is already active in the-old-worker: {session_path}"
+                        )),
+                    ),
+                    other => panic!("unexpected command: {other:?}"),
+                };
+                let reply = pending.lock().unwrap().remove(&id).unwrap();
+                reply
+                    .send(DaemonResponse {
+                        id: Some(id),
+                        command: command.to_string(),
+                        success,
+                        data,
+                        error,
+                        error_info: None,
+                    })
+                    .unwrap();
+            }
+        });
+        let state = Arc::new(Mutex::new(state(None)));
+        let binding = DaemonBinding {
+            active_session_id: "daemon-1".to_string(),
+            client_owned: false,
+            mcp_owner_id: "owner-1".to_string(),
+        };
+        let options = DaemonAcpOptions {
+            socket_path: PathBuf::new(),
+            actual_cwd: PathBuf::from(&cwd),
+            product_version: "test".to_string(),
+            create: DaemonCommand::GetConnectionState {
+                id: None,
+                active_session_id: "daemon-1".to_string(),
+                rest: Map::default(),
+            },
+        };
+        let (tx, mut responses) = mpsc::unbounded_channel();
+        let cwd_value = cwd.clone();
+        let history_path = history_file.clone();
+        tokio::task::spawn_blocking(move || {
+            let header = std::fs::read_to_string(&history_path).unwrap();
+            std::fs::write(&history_path, header.replace("PLACEHOLDER", &cwd_value)).unwrap();
+        })
+        .await
+        .unwrap();
+        handle_session_load(
+            json!(1),
+            json!({ "sessionId": "acp-1", "cwd": cwd }),
+            &link,
+            &state,
+            &options,
+            &binding,
+            tx,
+        )
+        .await;
+        let response = responses.recv().await.unwrap();
+        assert!(
+            response.get("error").is_some(),
+            "a foreign live holder must fail the load instead of silently admitting a fresh session: {response}"
+        );
+        // The blocked load must not overwrite the registry entry with the
+        // fresh boot session.
+        let registry: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(sessions_dir.join("acp-session-registry.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            registry["acp-1"]["runtimeSessionId"],
+            json!("runtime-history"),
+            "the failed load must keep the real session mapping"
+        );
+        drop(link);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_load_still_admits_when_this_worker_already_hosts_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let history_file = sessions_dir.join("runtime-history.jsonl");
+        std::fs::write(
+            &history_file,
+            r#"{"type":"session","version":3,"id":"runtime-history","timestamp":"2026-10-19T00:00:00.000Z","cwd":"PLACEHOLDER"}"#,
+        )
+        .unwrap();
+        crate::acp::session_registry::register_session(
+            &sessions_dir,
+            "acp-1",
+            Some("runtime-history".to_string()),
+            Some(history_file.to_string_lossy().to_string()),
+            &cwd,
+        );
+        // The same worker already hosts the target file: the switch is a
+        // genuine no-op and the load must still succeed.
+        let state_payload = json!({
+            "sessionDir": sessions_dir.to_string_lossy(),
+            "sessionId": "runtime-history",
+            "sessionFile": history_file.to_string_lossy(),
+            "cwd": cwd.clone(),
+        });
+        let (writer, mut commands) = mpsc::unbounded_channel::<String>();
+        let (_frames_tx, frames) = mpsc::unbounded_channel();
+        let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let link = Arc::new(DaemonLink {
+            writer,
+            pending: Arc::clone(&pending),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            frames: Mutex::new(frames),
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        });
+        let worker_state = state_payload.clone();
+        let worker = tokio::spawn(async move {
+            while let Some(line) = commands.recv().await {
+                let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
+                let id = envelope.id;
+                let (command, data, success, error) = match envelope.command {
+                    DaemonCommand::GetConnectionState { .. } => (
+                        "get_connection_state",
+                        Some(worker_state.clone()),
+                        true,
+                        None,
+                    ),
+                    DaemonCommand::SwitchSession { .. } => (
+                        "switch_session",
+                        None,
+                        false,
+                        Some("Session is already active in daemon-1: /x".to_string()),
+                    ),
+                    DaemonCommand::GetAvailableModels { .. } => (
+                        "get_available_models",
+                        Some(json!({ "models": [] })),
+                        true,
+                        None,
+                    ),
+                    DaemonCommand::GetRlmChildren { .. } => (
+                        "get_rlm_children",
+                        Some(json!({ "children": [] })),
+                        true,
+                        None,
+                    ),
+                    other => panic!("unexpected command: {other:?}"),
+                };
+                let reply = pending.lock().unwrap().remove(&id).unwrap();
+                reply
+                    .send(DaemonResponse {
+                        id: Some(id),
+                        command: command.to_string(),
+                        success,
+                        data,
+                        error,
+                        error_info: None,
+                    })
+                    .unwrap();
+            }
+        });
+        let state = Arc::new(Mutex::new(state(None)));
+        let binding = DaemonBinding {
+            active_session_id: "daemon-1".to_string(),
+            client_owned: false,
+            mcp_owner_id: "owner-1".to_string(),
+        };
+        let options = DaemonAcpOptions {
+            socket_path: PathBuf::new(),
+            actual_cwd: PathBuf::from(&cwd),
+            product_version: "test".to_string(),
+            create: DaemonCommand::GetConnectionState {
+                id: None,
+                active_session_id: "daemon-1".to_string(),
+                rest: Map::default(),
+            },
+        };
+        let (tx, mut responses) = mpsc::unbounded_channel();
+        let cwd_value = cwd.clone();
+        let history_path = history_file.clone();
+        tokio::task::spawn_blocking(move || {
+            let header = std::fs::read_to_string(&history_path).unwrap();
+            std::fs::write(&history_path, header.replace("PLACEHOLDER", &cwd_value)).unwrap();
+        })
+        .await
+        .unwrap();
+        handle_session_load(
+            json!(1),
+            json!({ "sessionId": "acp-1", "cwd": cwd }),
+            &link,
+            &state,
+            &options,
+            &binding,
+            tx,
+        )
+        .await;
+        let response = responses.recv().await.unwrap();
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|result| result.get("sessionId"))
+                .and_then(Value::as_str),
+            Some("acp-1"),
+            "the self-hosted no-op must still admit the session: {response}"
+        );
+        drop(link);
+        worker.await.unwrap();
     }
 
     #[tokio::test]
