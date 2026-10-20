@@ -11,7 +11,7 @@ mod types;
 mod wire_config;
 mod wire_events;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{json, Value};
 
@@ -28,12 +28,15 @@ fn internal_error(id: &Value, details: &str) -> Value {
 /// are the same directory on disk (dev/inode) — the bind-mount and
 /// case-normalized-FS cases a lexical comparison misses.
 pub(crate) fn same_cwd(requested: &Path, actual: &Path) -> bool {
-    let canonical = |path: &Path| -> PathBuf {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-    };
-    let requested = canonical(requested);
-    let actual = canonical(actual);
-    if requested == actual {
+    let requested = std::fs::canonicalize(requested).unwrap_or_else(|_| requested.to_path_buf());
+    same_canonical_cwd(&requested, actual)
+}
+
+/// Same as `same_cwd` but the `requested` path is already canonicalized.
+/// Lets callers canonicalize once and reuse across many entries.
+pub(crate) fn same_canonical_cwd(canonical_requested: &Path, actual: &Path) -> bool {
+    let actual = std::fs::canonicalize(actual).unwrap_or_else(|_| actual.to_path_buf());
+    if canonical_requested == actual {
         return true;
     }
     #[cfg(unix)]
@@ -46,7 +49,7 @@ pub(crate) fn same_cwd(requested: &Path, actual: &Path) -> bool {
             }
             Some((metadata.dev(), metadata.ino()))
         };
-        if let (Some(left), Some(right)) = (identity(&requested), identity(&actual)) {
+        if let (Some(left), Some(right)) = (identity(canonical_requested), identity(&actual)) {
             return left == right;
         }
     }

@@ -1616,12 +1616,16 @@ async fn handle_session_load(
                 // the session's whole history — fail the load instead so
                 // the client surfaces the failed restore.
                 let current = fetch_connection_state(link, &binding.active_session_id).await;
-                let hosting_target = current
+                // Only fail when we have a positive signal that this
+                // worker hosts a *different* file (foreign holder). A
+                // transient state-fetch failure (None) must not regress
+                // the self-hosted no-op path — fall through to admit.
+                let foreign_holder = current
                     .as_ref()
                     .and_then(|state| state.get("sessionFile"))
                     .and_then(Value::as_str)
-                    .is_some_and(|file| file == session_file.to_string_lossy());
-                if !hosting_target {
+                    .is_some_and(|file| file != session_file.to_string_lossy());
+                if foreign_holder {
                     state.lock().await.session_new_in_flight = false;
                     let _ = tx.send(super::internal_error(
                         &id,
