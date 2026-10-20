@@ -90,7 +90,8 @@ fn write_registry(session_dir: &Path, registry: &AcpSessionRegistry) {
 
 /// Drop entries older than the max age.
 fn prune_registry(registry: &mut AcpSessionRegistry, now: u64) {
-    registry.retain(|_, entry| now.saturating_sub(entry.created_at) <= ACP_SESSION_REGISTRY_MAX_AGE_MS);
+    registry
+        .retain(|_, entry| now.saturating_sub(entry.created_at) <= ACP_SESSION_REGISTRY_MAX_AGE_MS);
 }
 
 /// Register or update one ACP session in the registry.
@@ -166,13 +167,17 @@ pub fn find_session_by_cwd(session_dir: &Path, cwd: &str) -> Option<ResolvedSess
     let mut registry = read_registry(session_dir);
     prune_registry(&mut registry, now_millis());
     let cwd_path = Path::new(cwd);
+    // Canonicalize once: same_cwd would re-canonicalize the requested
+    // path on every registry entry, repeating blocking syscalls.
+    let canonical_cwd =
+        std::fs::canonicalize(cwd_path).unwrap_or_else(|_| cwd_path.to_path_buf());
     // Newest-first candidates: several entries can share one cwd (forks,
     // probe sessions, earlier threads), and the arbitrary HashMap order
     // made the adoption nondeterministic. Resolve the newest entry whose
     // session file survives on disk.
     let mut candidates: Vec<(String, AcpSessionRegistryEntry)> = registry
         .into_iter()
-        .filter(|(_, entry)| super::same_cwd(cwd_path, Path::new(&entry.cwd)))
+        .filter(|(_, entry)| super::same_canonical_cwd(&canonical_cwd, Path::new(&entry.cwd)))
         .collect();
     candidates.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.created_at));
     // First preference: a recorded session file that still passes a header
@@ -279,6 +284,10 @@ fn scan_session_dir_ranked(
         };
         if best.as_ref().is_none_or(|(best_rank, _)| rank < *best_rank) {
             best = Some((rank, path));
+            // Rank 0 (newest candidate) is unbeatable — stop scanning.
+            if rank == 0 {
+                break;
+            }
         }
     }
     best.map(|(best_rank, path)| (best_rank as usize, path))
@@ -297,10 +306,10 @@ fn restore_archived_session_file(session_dir: &Path, runtime_session_id: &str) -
     }
     let dest = session_dir.join(session_file_name(runtime_session_id));
     if dest.exists() {
-        return Some(dest);
+        return validated_session_file(&dest);
     }
     std::fs::rename(&archive_file, &dest).ok()?;
-    Some(dest)
+    validated_session_file(&dest)
 }
 
 /// The resolution result: the registered ACP session id (the registry map
@@ -322,14 +331,15 @@ pub fn resolve_session(session_dir: &Path, session_id: &str) -> Option<ResolvedS
     let mut registry = read_registry(session_dir);
     prune_registry(&mut registry, now_millis());
     let entry = registry.get(session_id)?.clone();
-    // Prefer the recorded file if it still exists.
+    // Prefer the recorded file if it still exists and passes the
+    // schema version guard.
     if let Some(file_path) = entry.session_file.as_deref() {
         let path = PathBuf::from(file_path);
-        if path.exists() {
+        if let Some(validated) = validated_session_file(&path) {
             return Some(ResolvedSession {
                 acp_session_id: session_id.to_string(),
                 entry,
-                session_file: Some(path),
+                session_file: Some(validated),
             });
         }
     }
@@ -344,24 +354,13 @@ pub fn resolve_session(session_dir: &Path, session_id: &str) -> Option<ResolvedS
         }
         // The session may have been archived (moved to sessions-archive/ by
         // the daemon's periodic sweep). Restore it from the archive before
-        // giving up — the archive is a sibling of the sessions directory.
-        if let Some(archive_dir) = session_dir
-            .parent()
-            .map(|parent| parent.join(crate::session_archive::ARCHIVE_DIR_NAME))
-        {
-            if archive_dir.is_dir() {
-                let archive_file = archive_dir.join(session_file_name(runtime_id));
-                if archive_file.is_file() {
-                    let dest = session_dir.join(session_file_name(runtime_id));
-                    if !dest.exists() && std::fs::rename(&archive_file, &dest).is_ok() {
-                        return Some(ResolvedSession {
-                            acp_session_id: session_id.to_string(),
-                            entry,
-                            session_file: Some(dest),
-                        });
-                    }
-                }
-            }
+        // giving up.
+        if let Some(restored) = restore_archived_session_file(session_dir, runtime_id) {
+            return Some(ResolvedSession {
+                acp_session_id: session_id.to_string(),
+                entry,
+                session_file: Some(restored),
+            });
         }
     }
     Some(ResolvedSession {
@@ -382,10 +381,17 @@ fn scan_session_dir(session_dir: &Path, runtime_session_id: &str) -> Option<Path
         if path.extension().is_none_or(|ext| ext != "jsonl") {
             continue;
         }
-        if let Some(header) = pa_core::session::manager::read_session_header(&path) {
-            if header.id == runtime_session_id {
-                return Some(path);
-            }
+        let Some(header) = pa_core::session::manager::read_session_header(&path) else {
+            continue;
+        };
+        if header
+            .version
+            .is_some_and(|version| version > pa_core::session::CURRENT_SESSION_VERSION)
+        {
+            continue;
+        }
+        if header.id == runtime_session_id {
+            return Some(path);
         }
     }
     None
@@ -413,7 +419,10 @@ mod tests {
         assert!(resolved.is_some());
         let resolved = resolved.unwrap();
         assert_eq!(resolved.entry.cwd, "/tmp");
-        assert_eq!(resolved.entry.runtime_session_id.as_deref(), Some("runtime-1"));
+        assert_eq!(
+            resolved.entry.runtime_session_id.as_deref(),
+            Some("runtime-1")
+        );
         // No matching file on disk.
         assert!(resolved.session_file.is_none());
     }
@@ -431,13 +440,7 @@ mod tests {
         std::fs::create_dir_all(&session_dir).unwrap();
 
         // Insert an entry, then manually backdate it.
-        register_session(
-            &session_dir,
-            "old-session",
-            None,
-            None,
-            "/tmp",
-        );
+        register_session(&session_dir, "old-session", None, None, "/tmp");
         {
             let mut registry = read_registry(&session_dir);
             let entry = registry.get_mut("old-session").unwrap();
@@ -463,7 +466,10 @@ mod tests {
             "/tmp",
         );
         let resolved = resolve_session(&session_dir, "acp-1").unwrap();
-        assert_eq!(resolved.entry.runtime_session_id.as_deref(), Some("runtime-1"));
+        assert_eq!(
+            resolved.entry.runtime_session_id.as_deref(),
+            Some("runtime-1")
+        );
         assert_eq!(
             resolved.entry.session_file.as_deref(),
             Some("/tmp/session-1.jsonl")
