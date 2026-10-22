@@ -1631,13 +1631,19 @@ async fn handle_session_load(
                 if foreign_holder {
                     // The foreign holder may have released the lease between
                     // the failed switch and this check (e.g., worker-driven
-                    // passivation on a clean client disconnect). Retry
-                    // once after a brief delay before failing the load.
-                    // For orphaned holders (worker alive, owner reaped by
-                    // bb's idle sweep), the periodic orphan sweep
-                    // (300s interval) is the backstop — the next
-                    // session/load after the sweep releases the lease.
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    // passivation on a clean client disconnect). Trigger an
+                    // immediate orphan sweep to passivate the foreign holder
+                    // and release its lease, then retry the switch. If the
+                    // sweep command fails (transport error), still attempt
+                    // the retry — the holder may have released independently.
+                    // The 300s periodic sweep is the backstop if the sweep
+                    // and retry both miss.
+                    let _ = link
+                        .request(DaemonCommand::TriggerOrphanSweep {
+                            id: None,
+                            rest: Map::default(),
+                        })
+                        .await;
                     let retry = link
                         .request(DaemonCommand::SwitchSession {
                             id: None,
@@ -4144,6 +4150,9 @@ mod tests {
                             "Session is already active in the-old-worker: {session_path}"
                         )),
                     ),
+                    DaemonCommand::TriggerOrphanSweep { .. } => {
+                        ("trigger_orphan_sweep", None, true, None)
+                    }
                     other => panic!("unexpected command: {other:?}"),
                 };
                 let reply = pending.lock().unwrap().remove(&id).unwrap();
@@ -4440,6 +4449,9 @@ mod tests {
                         true,
                         None,
                     ),
+                    DaemonCommand::TriggerOrphanSweep { .. } => {
+                        ("trigger_orphan_sweep", None, true, None)
+                    }
                     other => panic!("unexpected command: {other:?}"),
                 };
                 let reply = pending.lock().unwrap().remove(&id).unwrap();

@@ -753,6 +753,15 @@ impl Supervisor {
         }
     }
 
+    pub(crate) async fn handle_orphan_sweep(
+        self: &Arc<Self>,
+        command_id: &str,
+        type_name: &str,
+    ) -> DaemonResponse {
+        self.passivate_orphaned_workers().await;
+        response_success(Some(command_id), type_name, None)
+    }
+
     pub(crate) async fn stop_worker(
         self: &Arc<Self>,
         resident: &Arc<ResidentWorker>,

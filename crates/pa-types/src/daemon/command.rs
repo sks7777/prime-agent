@@ -1288,6 +1288,17 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// Triggers an immediate orphan sweep: passivates workers whose ACP
+    /// client disconnected but whose process stayed alive holding a session
+    /// file lease. Sent by the ACP session-load path to clear a foreign
+    /// holder before retrying the switch, instead of waiting for the 300s
+    /// periodic sweep. Control-plane (no `active_session_id`).
+    TriggerOrphanSweep {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1328,5 +1339,10 @@ mod tests {
     #[test]
     fn mark_anthropic_warning_shown_roundtrip() {
         rt::<DaemonCommand>(r#"{"type":"mark_anthropic_warning_shown","activeSessionId":"s1"}"#);
+    }
+
+    #[test]
+    fn trigger_orphan_sweep_roundtrip() {
+        rt::<DaemonCommand>(r#"{"type":"trigger_orphan_sweep"}"#);
     }
 }
