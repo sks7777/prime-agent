@@ -719,6 +719,40 @@ impl Supervisor {
         }
     }
 
+    /// Supervisor-driven orphan sweep: passivates workers whose ACP
+    /// connection was reaped (bb host-daemon idle-reap) but whose
+    /// process stayed alive holding a session file lease. The
+    /// worker-driven passivation path never fires because the reaped
+    /// worker has no client to send `WorkerIdlePassivation` through.
+    pub(crate) async fn passivate_orphaned_workers(self: &Arc<Self>) {
+        for resident in self.registry.list().await {
+            let descriptor = resident.descriptor.lock().await;
+            let Some(owner) = descriptor.owner_client_id.clone() else {
+                continue;
+            };
+            drop(descriptor);
+            // Skip workers whose owner is still connected.
+            if self.client_connected(&owner) {
+                continue;
+            }
+            // Skip workers with in-flight routes (still serving a turn).
+            if resident.inflight.available_permits() < crate::backpressure::WORKER_INFLIGHT_CAPACITY
+            {
+                continue;
+            }
+            match self.stop_worker_releasing(&resident, None).await {
+                Ok(()) => self.log_line(&format!(
+                    "session worker {} passivated by orphan sweep (owner {owner} disconnected)",
+                    resident.worker_id,
+                )),
+                Err(error) => self.log_line(&format!(
+                    "orphan sweep: could not passivate worker {}: {error:#}",
+                    resident.worker_id,
+                )),
+            }
+        }
+    }
+
     pub(crate) async fn stop_worker(
         self: &Arc<Self>,
         resident: &Arc<ResidentWorker>,

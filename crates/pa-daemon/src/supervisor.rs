@@ -394,6 +394,29 @@ impl Supervisor {
         // so no signal can land with the default disposition still active.
         tokio::spawn(crate::signal_drain::install(Arc::clone(&self)));
 
+        // Orphan sweep: passivates workers whose ACP connection was
+        // reaped (bb host-daemon idle-reap) but whose process stayed
+        // alive holding a session file lease. The worker-driven
+        // passivation path never fires for orphans (no client to send
+        // `WorkerIdlePassivation` through), so the supervisor sweeps
+        // periodically.
+        {
+            let supervisor = Arc::clone(&self);
+            tokio::spawn(async move {
+                let interval = std::time::Duration::from_secs(300);
+                loop {
+                    tokio::time::sleep(interval).await;
+                    if supervisor
+                        .shutting_down
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        break;
+                    }
+                    supervisor.passivate_orphaned_workers().await;
+                }
+            });
+        }
+
         // The boot reap (the operator's same-socket predecessor rule): leftover workers of a
         // dead predecessor — alive, still holding their session leases — die here, and a
         // wedged predecessor supervisor dies with them; workers on OTHER sockets are never touched.

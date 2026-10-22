@@ -372,10 +372,8 @@ pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::
                             // it out: mark the session as needing
                             // recovery so the next prompt re-attaches on
                             // the replacement daemon (PRIME-55).
-                            if event.get("type").and_then(Value::as_str)
-                                == Some("session_closed")
-                                && event.get("reason").and_then(Value::as_str)
-                                    == Some("shutdown")
+                            if event.get("type").and_then(Value::as_str) == Some("session_closed")
+                                && event.get("reason").and_then(Value::as_str) == Some("shutdown")
                             {
                                 guard.shutdown_recovery_pending = true;
                             }
@@ -1465,8 +1463,14 @@ async fn handle_session_new(
     // registry entry for this ACP id with a stale one (PRIMER-3).
     if let Some(sv) = state_value.as_ref() {
         let session_dir = sv.get("sessionDir").and_then(Value::as_str);
-        let runtime_id = sv.get("sessionId").and_then(Value::as_str).map(str::to_string);
-        let session_file = sv.get("sessionFile").and_then(Value::as_str).map(str::to_string);
+        let runtime_id = sv
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let session_file = sv
+            .get("sessionFile")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let reg_cwd = sv.get("cwd").and_then(Value::as_str).map(str::to_string);
         if let (Some(session_dir), Some(reg_cwd)) = (session_dir, reg_cwd) {
             let _ = super::session_registry::register_session_if_absent(
@@ -1480,7 +1484,6 @@ async fn handle_session_new(
     }
     producer.commit_session_new_response().await;
 }
-
 
 /// `session/load`: resolve a registered ACP session id and switch this
 /// process onto its session file (TS PRIME-8). The session id is the
@@ -1626,12 +1629,38 @@ async fn handle_session_load(
                     .and_then(Value::as_str)
                     .is_some_and(|file| file != session_file.to_string_lossy());
                 if foreign_holder {
-                    state.lock().await.session_new_in_flight = false;
-                    let _ = tx.send(super::internal_error(
-                        &id,
-                        &format!("ACP session {} cannot be loaded: {switch_err}", params.session_id),
-                    ));
-                    return;
+                    // The foreign holder may have released the lease between
+                    // the failed switch and this check (e.g., worker-driven
+                    // passivation on a clean client disconnect). Retry
+                    // once after a brief delay before failing the load.
+                    // For orphaned holders (worker alive, owner reaped by
+                    // bb's idle sweep), the periodic orphan sweep
+                    // (300s interval) is the backstop — the next
+                    // session/load after the sweep releases the lease.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let retry = link
+                        .request(DaemonCommand::SwitchSession {
+                            id: None,
+                            active_session_id: binding.active_session_id.clone(),
+                            session_path: session_file.to_string_lossy().to_string(),
+                            cwd_override: None,
+                            rest: Map::default(),
+                        })
+                        .await;
+                    match retry {
+                        Ok(response) if response.success => {}
+                        _ => {
+                            state.lock().await.session_new_in_flight = false;
+                            let _ = tx.send(super::internal_error(
+                                &id,
+                                &format!(
+                                    "ACP session {} cannot be loaded: {switch_err}",
+                                    params.session_id,
+                                ),
+                            ));
+                            return;
+                        }
+                    }
                 }
             }
             Err(error) => {
@@ -1778,8 +1807,14 @@ async fn handle_session_load(
     let reg_state = fetch_connection_state(link, &binding.active_session_id).await;
     if let Some(rs) = reg_state.as_ref() {
         let session_dir = rs.get("sessionDir").and_then(Value::as_str);
-        let runtime_id = rs.get("sessionId").and_then(Value::as_str).map(str::to_string);
-        let session_file = rs.get("sessionFile").and_then(Value::as_str).map(str::to_string);
+        let runtime_id = rs
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let session_file = rs
+            .get("sessionFile")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let reg_cwd = rs.get("cwd").and_then(Value::as_str).map(str::to_string);
         if let (Some(session_dir), Some(reg_cwd)) = (session_dir, reg_cwd) {
             super::session_registry::register_session(
@@ -1947,19 +1982,17 @@ async fn handle_session_fork(
             Path::new(&process_cwd),
             &session_dir,
         ) {
-            Ok(manager) => {
-                match manager.get_session_file() {
-                    Some(file) => file.to_path_buf(),
-                    None => {
-                        state.lock().await.session_new_in_flight = false;
-                        let _ = tx.send(super::internal_error(
-                            &id,
-                            "Failed to create forked session file",
-                        ));
-                        return;
-                    }
+            Ok(manager) => match manager.get_session_file() {
+                Some(file) => file.to_path_buf(),
+                None => {
+                    state.lock().await.session_new_in_flight = false;
+                    let _ = tx.send(super::internal_error(
+                        &id,
+                        "Failed to create forked session file",
+                    ));
+                    return;
                 }
-            }
+            },
             Err(error) => {
                 state.lock().await.session_new_in_flight = false;
                 let _ = tx.send(super::internal_error(&id, &error));
@@ -2159,8 +2192,14 @@ async fn handle_session_fork(
     let forked_state = fetch_connection_state(link, &binding.active_session_id).await;
     if let Some(fs) = forked_state.as_ref() {
         let session_dir = fs.get("sessionDir").and_then(Value::as_str);
-        let runtime_id = fs.get("sessionId").and_then(Value::as_str).map(str::to_string);
-        let session_file = fs.get("sessionFile").and_then(Value::as_str).map(str::to_string);
+        let runtime_id = fs
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let session_file = fs
+            .get("sessionFile")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let reg_cwd = fs.get("cwd").and_then(Value::as_str).map(str::to_string);
         if let (Some(session_dir), Some(reg_cwd)) = (session_dir, reg_cwd) {
             super::session_registry::register_session(
@@ -2259,14 +2298,11 @@ async fn handle_session_prompt(
 
         let should_rebind = {
             let guard = state.lock().await;
-            guard
-                .session
-                .as_ref()
-                .is_some_and(|hosted| {
-                    hosted.acp_session_id == prompt_params.session_id
-                        && !hosted.cancelling
-                        && !hosted.mirror_rebind_attempted
-                })
+            guard.session.as_ref().is_some_and(|hosted| {
+                hosted.acp_session_id == prompt_params.session_id
+                    && !hosted.cancelling
+                    && !hosted.mirror_rebind_attempted
+            })
         };
 
         if let Some(mirror) = &mirror {
@@ -2300,10 +2336,7 @@ async fn handle_session_prompt(
                     );
                 }
                 // Strip the marker from the prompt text.
-                let stripped_params = strip_mirror_marker_from_params(
-                    &params,
-                    &mirror.claim_nonce,
-                );
+                let stripped_params = strip_mirror_marker_from_params(&params, &mirror.claim_nonce);
                 stripped_params
             } else {
                 // Already attempted or wrong session: strip and run normally.
@@ -2361,14 +2394,13 @@ async fn rebind_to_rlm_mirror_session(
         });
 
     // Read and validate the claim.
-    let claim =
-        match crate::rlm_bb_mirror::read_rlm_mirror_claim(claim_nonce, &agent_dir) {
-            Some(claim) => claim,
-            None => {
-                // Stale/invalid claim: degrade silently.
-                return Ok(());
-            }
-        };
+    let claim = match crate::rlm_bb_mirror::read_rlm_mirror_claim(claim_nonce, &agent_dir) {
+        Some(claim) => claim,
+        None => {
+            // Stale/invalid claim: degrade silently.
+            return Ok(());
+        }
+    };
 
     // Get the current (draft) session's state for the cwd match.
     let draft_session_id = {
@@ -2570,13 +2602,11 @@ async fn prompt_with_recovery(
     // graceful shutdown may answer the request with a failure response
     // instead of a transport error — treat shutdown-marked failures as
     // retryable too (PRIME-55).
-    let recovery_error: Option<anyhow::Error> = match link.request_until_close(prompt.clone()).await {
+    let recovery_error: Option<anyhow::Error> = match link.request_until_close(prompt.clone()).await
+    {
         Ok(response) if response.success => return Ok(response),
         Ok(response) => {
-            let error_msg = response
-                .error
-                .as_deref()
-                .unwrap_or("unknown error");
+            let error_msg = response.error.as_deref().unwrap_or("unknown error");
             if !is_prompt_recovery_retryable_message(error_msg) {
                 return Ok(response);
             }
@@ -2760,7 +2790,9 @@ async fn reattach_session(link: &DaemonLink, active_session_id: &str) -> anyhow:
     if !response.success {
         anyhow::bail!(
             "re-attach failed: {}",
-            response.error.unwrap_or_else(|| "unknown error".to_string())
+            response
+                .error
+                .unwrap_or_else(|| "unknown error".to_string())
         );
     }
     Ok(())
@@ -2795,9 +2827,7 @@ async fn prompt_turn(
     // Refresh per turn: the model (and therefore the context window) can
     // change between turns, and completed responses report usage against it.
     // A failed state read keeps the previously seeded window (TS behavior).
-    if let Some(turn_state) =
-        fetch_connection_state(link, &hosted_daemon_session_id).await
-    {
+    if let Some(turn_state) = fetch_connection_state(link, &hosted_daemon_session_id).await {
         if let Some(window) = turn_state
             .get("model")
             .and_then(|model| model.get("contextWindow"))
@@ -2852,10 +2882,7 @@ async fn prompt_turn(
     // Check whether a graceful shutdown already closed the session: if
     // so, re-arm the prompt with resumePendingUserMessage and skip the
     // first attempt on the dead link (PRIME-55).
-    let shutdown_pending = state
-        .lock()
-        .await
-        .shutdown_recovery_pending;
+    let shutdown_pending = state.lock().await.shutdown_recovery_pending;
     if shutdown_pending {
         set_prompt_resume_flag(&mut prompt);
     }
@@ -4313,6 +4340,182 @@ mod tests {
                 .and_then(Value::as_str),
             Some("acp-1"),
             "the self-hosted no-op must still admit the session: {response}"
+        );
+        drop(link);
+        worker.await.unwrap();
+    }
+
+    /// Regression: a foreign live holder blocks the first SwitchSession,
+    /// but the 500ms retry (after the orphan sweep passivates the holder)
+    /// succeeds and restores the session's history instead of falling back
+    /// to a fresh session. Before the fix, the load failed immediately on a
+    /// foreign holder and bb silently created a fresh session — losing all
+    /// in-agent history.
+    #[tokio::test]
+    async fn session_load_retries_after_orphan_sweep_releases_foreign_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let history_file = sessions_dir.join("runtime-history.jsonl");
+        std::fs::write(
+            &history_file,
+            r#"{"type":"session","version":3,"id":"runtime-history","timestamp":"2026-10-22T00:00:00.000Z","cwd":"PLACEHOLDER"}"#,
+        )
+        .unwrap();
+        crate::acp::session_registry::register_session(
+            &sessions_dir,
+            "acp-1",
+            Some("runtime-history".to_string()),
+            Some(history_file.to_string_lossy().to_string()),
+            &cwd,
+        );
+        // The first GetConnectionState reports a foreign holder (the
+        // worker hosts a different file); the first SwitchSession fails
+        // with "Session is already active"; the retry succeeds (the
+        // orphan sweep passivated the foreign holder and released the
+        // lease).
+        let foreign_state = json!({
+            "sessionDir": sessions_dir.to_string_lossy(),
+            "sessionId": "runtime-boot",
+            "sessionFile": sessions_dir.join("runtime-boot.jsonl").to_string_lossy(),
+            "cwd": cwd.clone(),
+        });
+        let self_state = json!({
+            "sessionDir": sessions_dir.to_string_lossy(),
+            "sessionId": "runtime-history",
+            "sessionFile": history_file.to_string_lossy(),
+            "cwd": cwd.clone(),
+        });
+        let switch_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let (writer, mut commands) = mpsc::unbounded_channel::<String>();
+        let (_frames_tx, frames) = mpsc::unbounded_channel();
+        let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let link = Arc::new(DaemonLink {
+            writer,
+            pending: Arc::clone(&pending),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            frames: Mutex::new(frames),
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        });
+        let sc = Arc::clone(&switch_count);
+        let fs = foreign_state.clone();
+        let ss = self_state.clone();
+        let worker = tokio::spawn(async move {
+            let state_count = std::sync::atomic::AtomicU32::new(0);
+            while let Some(line) = commands.recv().await {
+                let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
+                let id = envelope.id;
+                let (command, data, success, error) = match envelope.command {
+                    DaemonCommand::GetConnectionState { .. } => {
+                        let n = state_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let payload = if n < 2 { fs.clone() } else { ss.clone() };
+                        ("get_connection_state", Some(payload), true, None)
+                    }
+                    DaemonCommand::SwitchSession { session_path, .. } => {
+                        let n = sc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if n == 0 {
+                            (
+                                "switch_session",
+                                None,
+                                false,
+                                Some(format!(
+                                    "Session is already active in the-old-worker: {session_path}"
+                                )),
+                            )
+                        } else {
+                            ("switch_session", None, true, None)
+                        }
+                    }
+                    DaemonCommand::GetAvailableModels { .. } => (
+                        "get_available_models",
+                        Some(json!({ "models": [] })),
+                        true,
+                        None,
+                    ),
+                    DaemonCommand::GetRlmChildren { .. } => (
+                        "get_rlm_children",
+                        Some(json!({ "children": [] })),
+                        true,
+                        None,
+                    ),
+                    other => panic!("unexpected command: {other:?}"),
+                };
+                let reply = pending.lock().unwrap().remove(&id).unwrap();
+                reply
+                    .send(DaemonResponse {
+                        id: Some(id),
+                        command: command.to_string(),
+                        success,
+                        data,
+                        error,
+                        error_info: None,
+                    })
+                    .unwrap();
+            }
+        });
+        let state = Arc::new(Mutex::new(state(None)));
+        let binding = DaemonBinding {
+            active_session_id: "daemon-1".to_string(),
+            client_owned: false,
+            mcp_owner_id: "owner-1".to_string(),
+        };
+        let options = DaemonAcpOptions {
+            socket_path: PathBuf::new(),
+            actual_cwd: PathBuf::from(&cwd),
+            product_version: "test".to_string(),
+            create: DaemonCommand::GetConnectionState {
+                id: None,
+                active_session_id: "daemon-1".to_string(),
+                rest: Map::default(),
+            },
+        };
+        let (tx, mut responses) = mpsc::unbounded_channel();
+        let cwd_value = cwd.clone();
+        let history_path = history_file.clone();
+        tokio::task::spawn_blocking(move || {
+            let header = std::fs::read_to_string(&history_path).unwrap();
+            std::fs::write(&history_path, header.replace("PLACEHOLDER", &cwd_value)).unwrap();
+        })
+        .await
+        .unwrap();
+        handle_session_load(
+            json!(1),
+            json!({ "sessionId": "acp-1", "cwd": cwd }),
+            &link,
+            &state,
+            &options,
+            &binding,
+            tx,
+        )
+        .await;
+        let response = responses.recv().await.unwrap();
+        // The retry succeeded: the load admits the session, not an error.
+        let session_id = response
+            .get("result")
+            .and_then(|result| result.get("sessionId"))
+            .and_then(Value::as_str);
+        assert_eq!(
+            session_id,
+            Some("acp-1"),
+            "the retried load must admit the session: {response}"
+        );
+        // The load retried the switch exactly twice (first failure + retry).
+        assert_eq!(
+            switch_count.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the load must have retried the switch after the first failure"
+        );
+        // The registry mapping is preserved (not overwritten by a fresh id).
+        let registry: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(sessions_dir.join("acp-session-registry.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            registry["acp-1"]["runtimeSessionId"],
+            json!("runtime-history"),
+            "the successful load must keep the real session mapping"
         );
         drop(link);
         worker.await.unwrap();
