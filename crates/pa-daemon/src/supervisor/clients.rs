@@ -700,6 +700,10 @@ impl Supervisor {
                     .await;
                 (vec![response_line(&response)], false)
             }
+            DaemonCommand::TriggerOrphanSweep { .. } => {
+                let response = self.handle_orphan_sweep(&command_id, &type_name).await;
+                (vec![response_line(&response)], false)
+            }
             DaemonCommand::WorkerRosterDelta {
                 worker_token,
                 summary,
