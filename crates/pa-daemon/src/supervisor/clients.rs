@@ -364,7 +364,7 @@ impl Supervisor {
 
     /// Whether any live connection still speaks for `client_id` (one
     /// process may hold several connections).
-    fn client_connected(&self, client_id: &str) -> bool {
+    pub(crate) fn client_connected(&self, client_id: &str) -> bool {
         self.client_connections
             .lock()
             .unwrap()
