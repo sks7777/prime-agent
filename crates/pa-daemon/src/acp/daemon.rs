@@ -1210,66 +1210,26 @@ async fn handle_session_new(
         let _ = tx.send(super::internal_error(&id, &details));
         return;
     }
-    // Idempotent `session/new` (PRIMER-3): a repeated connect (e.g. bb
-    // re-attaching after a provider crash) reuses the registered session
-    // for this cwd instead of minting a fresh ACP id and a fresh runtime
-    // session. Adoption happens only for an IDLE registered session (a
-    // clean SwitchSession): any switch failure — a foreign live holder
-    // ("Session is already active"), a transport loss, an unreadable file
-    // — means the match is not this thread's crashed session; fall
-    // through to a fresh id. The process state is fetched once and
-    // re-read only after a successful switch.
-    let (acp_session_id, admission_state) = match params
+    // `session/new` always mints a fresh ACP session id. A previous
+    // implementation (PRIMER-3) reused a registered session whose cwd
+    // matched, but cwd is per-environment, not per-thread: two bb threads
+    // in the same env share it, so the second thread's `session/new`
+    // adopted the first thread's session and both claimed the same
+    // `providerThreadId` — bb's `classifyClaim` then rejected every send
+    // with 409 `provider_session_unavailable`. Reconnection after a
+    // provider crash is handled by `session/load` (bb sends `turn.submit`
+    // with the stored `providerThreadId`), not by `session/new`, so
+    // cwd-reuse served no valid caller.
+    let acp_session_id = uuid::Uuid::new_v4().to_string();
+    let admission_state = if params
         .cwd
         .as_deref()
         .filter(|cwd| !cwd.is_empty())
+        .is_some()
     {
-        Some(requested) => {
-            let process_state = fetch_connection_state(link, &binding.active_session_id).await;
-            let registered = process_state
-                .as_ref()
-                .and_then(|state| {
-                    state
-                        .get("sessionDir")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .and_then(|session_dir| {
-                    super::session_registry::find_session_by_cwd(Path::new(&session_dir), requested)
-                });
-            match registered {
-                Some(found) => {
-                    let session_file = found.session_file.clone().unwrap_or_default();
-                    let switch = link
-                        .request(DaemonCommand::SwitchSession {
-                            id: None,
-                            active_session_id: binding.active_session_id.clone(),
-                            session_path: session_file.to_string_lossy().to_string(),
-                            cwd_override: None,
-                            rest: Map::default(),
-                        })
-                        .await;
-                    match switch {
-                        Ok(response) if response.success => {
-                            // The worker now hosts the adopted file;
-                            // re-read the state for the pickers and
-                            // the registration.
-                            (
-                                found.acp_session_id,
-                                fetch_connection_state(link, &binding.active_session_id).await,
-                            )
-                        }
-                        // Foreign live holder or another switch
-                        // failure: adopt nothing (fresh id). The
-                        // still-hosted boot session's state carries
-                        // the fresh admission below.
-                        _ => (uuid::Uuid::new_v4().to_string(), process_state),
-                    }
-                }
-                None => (uuid::Uuid::new_v4().to_string(), process_state),
-            }
-        }
-        None => (uuid::Uuid::new_v4().to_string(), None),
+        fetch_connection_state(link, &binding.active_session_id).await
+    } else {
+        None
     };
     let producer = UpdateProducer::new(acp_session_id.clone(), tx.clone());
     // Neither picker fetch may fail the admission: discovery failures
@@ -2653,6 +2613,7 @@ async fn prompt_with_recovery(
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(PROMPT_RECOVERY_MAX_WAIT_MS);
     let mut recovered_link: Option<Arc<DaemonLink>> = None;
+    let mut recovered_forwarder: Option<tokio::task::JoinHandle<()>> = None;
     while std::time::Instant::now() < deadline {
         // Check for cancellation while waiting.
         if turn_cancelled(&*state.lock().await, admission_id) {
@@ -2661,10 +2622,56 @@ async fn prompt_with_recovery(
         tokio::time::sleep(std::time::Duration::from_millis(PROMPT_RECOVERY_PROBE_MS)).await;
         match DaemonLink::connect(socket_path).await {
             Ok(new_link) => {
+                let new_link = Arc::new(new_link);
+                // Spawn the frames consumer BEFORE reattach: the reader
+                // pushes the reattach response into the frames channel, and
+                // only this forwarder resolves pending requests. Spawning
+                // after the reattach await deadlocks the response.
+                let forward_state = Arc::clone(state);
+                let forward_link = Arc::clone(&new_link);
+                let forwarder_handle = tokio::spawn(async move {
+                    let mut frames = forward_link.frames.lock().await;
+                    while let Some(frame) = frames.recv().await {
+                        match frame {
+                            LinkFrame::Event(frame) => {
+                                let event = frame.get("event").cloned().unwrap_or(Value::Null);
+                                let mut guard = forward_state.lock().await;
+                                let Some(current) = guard.session.as_mut() else {
+                                    continue;
+                                };
+                                if let Some(stop) = wire_events::assistant_stop(&event) {
+                                    current.assistant_stop_reason = stop.stop_reason;
+                                }
+                                let active_turn = current.producer.active_prompt_turn().await;
+                                for update in
+                                    wire_events::wire_updates(&event, &mut current.mapping)
+                                {
+                                    let _ = current
+                                        .producer
+                                        .publish(
+                                            &update,
+                                            active_turn,
+                                            PrimeAgentEventPhase::Event,
+                                            None,
+                                        )
+                                        .await;
+                                }
+                            }
+                            LinkFrame::Response(response) => {
+                                let id = response.id.clone().unwrap_or_default();
+                                if let Some(tx) = forward_link.pending.lock().unwrap().remove(&id) {
+                                    let _ = tx.send(response);
+                                }
+                            }
+                            LinkFrame::HeartbeatsChanged => {}
+                        }
+                    }
+                });
                 // Re-attach the session on the new daemon.
                 match reattach_session(&new_link, hosted_daemon_session_id).await {
                     Ok(()) => {
-                        recovered_link = Some(Arc::new(new_link));
+                        recovered_forwarder = Some(forwarder_handle);
+                        recovered_link = Some(new_link);
                         break;
                     }
                     Err(_) => continue,
@@ -2697,47 +2704,14 @@ async fn prompt_with_recovery(
             .await;
         return Err(error);
     };
-    // Spawn an event forwarder for the new link so session events
-    // reach the producer during the re-issued turn.
-    let forward_state = Arc::clone(state);
-    let forward_link = Arc::clone(&new_link);
-    let forwarder = tokio::spawn(async move {
-        let mut frames = forward_link.frames.lock().await;
-        while let Some(frame) = frames.recv().await {
-            match frame {
-                LinkFrame::Event(frame) => {
-                    let event = frame.get("event").cloned().unwrap_or(Value::Null);
-                    let mut guard = forward_state.lock().await;
-                    let Some(current) = guard.session.as_mut() else {
-                        continue;
-                    };
-                    if let Some(stop) = wire_events::assistant_stop(&event) {
-                        current.assistant_stop_reason = stop.stop_reason;
-                    }
-                    let active_turn = current.producer.active_prompt_turn().await;
-                    for update in wire_events::wire_updates(&event, &mut current.mapping) {
-                        let _ = current
-                            .producer
-                            .publish(&update, active_turn, PrimeAgentEventPhase::Event, None)
-                            .await;
-                    }
-                }
-                LinkFrame::Response(response) => {
-                    let id = response.id.clone().unwrap_or_default();
-                    if let Some(tx) = forward_link.pending.lock().unwrap().remove(&id) {
-                        let _ = tx.send(response);
-                    }
-                }
-                LinkFrame::HeartbeatsChanged => {}
-            }
-        }
-    });
     // Re-issue the prompt with resumePendingUserMessage on the new link.
     set_prompt_resume_flag(&mut prompt);
     let result = new_link.request_until_close(prompt).await;
     // The forwarder's frames are drained: let it finish naturally
     // (the new link's reader ends when the response closes).
-    forwarder.abort();
+    if let Some(forwarder) = recovered_forwarder {
+        forwarder.abort();
+    }
     result
 }
 
@@ -2891,6 +2865,10 @@ async fn prompt_turn(
     let shutdown_pending = state.lock().await.shutdown_recovery_pending;
     if shutdown_pending {
         set_prompt_resume_flag(&mut prompt);
+        // One-shot: the resume flag applies only to the prompt that
+        // directly follows the shutdown. Clear it now so later,
+        // unrelated prompts take the normal fresh-admission path.
+        state.lock().await.shutdown_recovery_pending = false;
     }
     // Prompt recovery (PRIME-55): a daemon restart mid-turn drops the
     // transport. Hold the ACP prompt open, wait (bounded 180s) for the
@@ -3589,10 +3567,12 @@ mod tests {
         assert!(installed.is_empty());
     }
 
-    // PRIMER-3: a repeated session/new with a cwd whose session is already
-    // registered (with a live session file) must reuse it, not mint a new one.
+    // session/new must always mint a fresh ACP id, even when a registered
+    // session for the same cwd exists: cwd is per-environment, not
+    // per-thread, so reusing another thread's session creates a duplicate
+    // `providerThreadId` claim that bb rejects with 409.
     #[tokio::test]
-    async fn session_new_reuses_the_registered_session_for_the_same_cwd() {
+    async fn session_new_mints_a_fresh_id_even_when_a_same_cwd_session_is_registered() {
         let dir = tempfile::tempdir().unwrap();
         let sessions_dir = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -3693,19 +3673,20 @@ mod tests {
         )
         .await;
         let response = responses.recv().await.unwrap();
-        assert_eq!(
-            response
-                .get("result")
-                .and_then(|result| result.get("sessionId"))
-                .and_then(Value::as_str),
-            Some("acp-orig"),
-            "the registered session for this cwd is reused, not a fresh id"
+        let session_id = response
+            .get("result")
+            .and_then(|result| result.get("sessionId"))
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_ne!(
+            session_id, "acp-orig",
+            "session/new must mint a fresh id, not reuse the registered session"
         );
         drop(link);
         assert_eq!(
             worker.await.unwrap(),
-            1,
-            "the admission switched onto the registered session file"
+            0,
+            "no SwitchSession command — the admission does not adopt a registered session"
         );
     }
 
@@ -3801,28 +3782,35 @@ mod tests {
         assert!(!worker.await.unwrap(), "no switch for an unknown cwd");
     }
 
-    // PRIMER-3 review finding 3: a foreign live holder's "Session is already
-    // active" refusal must NOT adopt the matched session — session/new
-    // degrades to a fresh id instead of binding the wrong file.
+    // session/new mints a fresh id regardless of how many registered
+    // sessions share the cwd: cwd is per-environment, not per-thread.
     #[tokio::test]
-    async fn session_new_switch_refusal_falls_back_to_a_fresh_id() {
+    async fn session_new_mints_fresh_id_when_multiple_entries_share_a_cwd() {
         let dir = tempfile::tempdir().unwrap();
         let sessions_dir = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
-        let session_file = sessions_dir.join("runtime-1.jsonl");
         let cwd = dir.path().to_string_lossy().to_string();
-        std::fs::write(
-            &session_file,
+        let header = |id: &str| {
             format!(
-                r#"{{"type":"session","id":"runtime-1","timestamp":"2026-10-17T00:00:00.000Z","cwd":"{cwd}"}}"#,
-            ),
-        )
-        .unwrap();
+                r#"{{"type":"session","id":"{id}","timestamp":"2026-10-17T00:00:00.000Z","cwd":"{cwd}"}}"#,
+            )
+        };
+        let old_file = sessions_dir.join("runtime-old.jsonl");
+        std::fs::write(&old_file, header("runtime-old")).unwrap();
+        let new_file = sessions_dir.join("runtime-new.jsonl");
+        std::fs::write(&new_file, header("runtime-new")).unwrap();
         crate::acp::session_registry::register_session(
             &sessions_dir,
-            "acp-orig",
-            Some("runtime-1".to_string()),
-            Some(session_file.to_string_lossy().to_string()),
+            "acp-old",
+            Some("runtime-old".to_string()),
+            Some(old_file.to_string_lossy().to_string()),
+            &cwd,
+        );
+        crate::acp::session_registry::register_session(
+            &sessions_dir,
+            "acp-new",
+            Some("runtime-new".to_string()),
+            Some(new_file.to_string_lossy().to_string()),
             &cwd,
         );
 
@@ -3837,74 +3825,46 @@ mod tests {
             protocol_version: DAEMON_PROTOCOL_VERSION,
             next_request_id: std::sync::atomic::AtomicU64::new(0),
         });
-        let worker_cwd = cwd.clone();
+        let state_payload = json!({
+            "sessionDir": sessions_dir.to_string_lossy(),
+            "sessionId": "runtime-new",
+            "sessionFile": new_file.to_string_lossy(),
+            "cwd": cwd.clone(),
+        });
         let worker = tokio::spawn(async move {
+            let mut switches = 0usize;
             while let Some(line) = commands.recv().await {
                 let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
                 let id = envelope.id;
-                match envelope.command {
+                let (command, data) = match envelope.command {
                     DaemonCommand::GetConnectionState { .. } => {
-                        let reply = pending.lock().unwrap().remove(&id).unwrap();
-                        reply
-                            .send(DaemonResponse {
-                                id: Some(id),
-                                command: "get_connection_state".to_string(),
-                                success: true,
-                                data: Some(json!({
-                                    "sessionDir": sessions_dir.to_string_lossy(),
-                                    "sessionId": "runtime-boot",
-                                    "sessionFile": sessions_dir.join("runtime-boot.jsonl").to_string_lossy(),
-                                    "cwd": worker_cwd,
-                                })),
-                                error: None,
-                                error_info: None,
-                            })
-                            .unwrap();
+                        ("get_connection_state", Some(state_payload.clone()))
                     }
                     DaemonCommand::SwitchSession { .. } => {
-                        let reply = pending.lock().unwrap().remove(&id).unwrap();
-                        reply
-                            .send(DaemonResponse {
-                                id: Some(id),
-                                command: "switch_session".to_string(),
-                                success: false,
-                                data: None,
-                                error: Some(
-                                    "Session is already active in pid 12345: <path>".to_string(),
-                                ),
-                                error_info: None,
-                            })
-                            .unwrap();
+                        switches += 1;
+                        ("switch_session", None)
                     }
                     DaemonCommand::GetAvailableModels { .. } => {
-                        let reply = pending.lock().unwrap().remove(&id).unwrap();
-                        reply
-                            .send(DaemonResponse {
-                                id: Some(id),
-                                command: "get_available_models".to_string(),
-                                success: true,
-                                data: Some(json!({ "models": [] })),
-                                error: None,
-                                error_info: None,
-                            })
-                            .unwrap();
+                        ("get_available_models", Some(json!({ "models": [] })))
                     }
                     DaemonCommand::GetRlmChildren { .. } => {
-                        let reply = pending.lock().unwrap().remove(&id).unwrap();
-                        reply
-                            .send(DaemonResponse {
-                                id: Some(id),
-                                command: "get_rlm_children".to_string(),
-                                success: true,
-                                data: Some(json!({ "children": [] })),
-                                error: None,
-                                error_info: None,
-                            })
-                            .unwrap();
+                        ("get_rlm_children", Some(json!({ "children": [] })))
                     }
                     other => panic!("unexpected command: {other:?}"),
-                }
+                };
+                let reply = pending.lock().unwrap().remove(&id).unwrap();
+                reply
+                    .send(DaemonResponse {
+                        id: Some(id),
+                        command: command.to_string(),
+                        success: true,
+                        data,
+                        error: None,
+                        error_info: None,
+                    })
+                    .unwrap();
             }
+            switches
         });
         let state = Arc::new(Mutex::new(state(None)));
         let binding = DaemonBinding {
@@ -3938,157 +3898,125 @@ mod tests {
             .get("result")
             .and_then(|result| result.get("sessionId"))
             .and_then(Value::as_str)
-            .unwrap()
-            .to_string();
+            .unwrap();
         assert_ne!(
-            session_id, "acp-orig",
-            "a foreign live holder's refusal must not adopt the registered session"
+            session_id, "acp-new",
+            "session/new must mint a fresh id, not adopt the newest same-cwd entry"
         );
-        uuid::Uuid::parse_str(&session_id)
-            .unwrap_or_else(|error| panic!("the fallback id is a fresh UUID: {error}"));
-        drop(link);
-        worker.await.unwrap();
-    }
-
-    // PRIMER-3 review finding 2: several registry entries can share one cwd;
-    // the adoption must be deterministic — the newest created_at wins.
-    #[tokio::test]
-    async fn session_new_adopted_the_newest_entry_for_a_shared_cwd() {
-        let dir = tempfile::tempdir().unwrap();
-        let sessions_dir = dir.path().join("sessions");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let header = |id: &str| {
-            format!(
-                r#"{{"type":"session","id":"{id}","timestamp":"2026-10-17T00:00:00.000Z","cwd":"{cwd}"}}"#,
-            )
-        };
-        let old_file = sessions_dir.join("runtime-old.jsonl");
-        std::fs::write(&old_file, header("runtime-old")).unwrap();
-        let new_file = sessions_dir.join("runtime-new.jsonl");
-        std::fs::write(&new_file, header("runtime-new")).unwrap();
-        crate::acp::session_registry::register_session(
-            &sessions_dir,
-            "acp-old",
-            Some("runtime-old".to_string()),
-            Some(old_file.to_string_lossy().to_string()),
-            &cwd,
-        );
-        crate::acp::session_registry::register_session(
-            &sessions_dir,
-            "acp-new",
-            Some("runtime-new".to_string()),
-            Some(new_file.to_string_lossy().to_string()),
-            &cwd,
-        );
-        // Deterministic recency: backdate the older entry via the registry
-        // file (two immediate registrations can land in the same
-        // millisecond, and the newest-first pick must not depend on clock
-        // spacing).
-        let mut registry: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(sessions_dir.join("acp-session-registry.json")).unwrap(),
-        )
-        .unwrap();
-        registry["acp-old"]["createdAt"] = json!(1);
-        std::fs::write(
-            sessions_dir.join("acp-session-registry.json"),
-            serde_json::to_string(&registry).unwrap(),
-        )
-        .unwrap();
-
-        let (writer, mut commands) = mpsc::unbounded_channel::<String>();
-        let (_frames_tx, frames) = mpsc::unbounded_channel();
-        let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let link = Arc::new(DaemonLink {
-            writer,
-            pending: Arc::clone(&pending),
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            frames: Mutex::new(frames),
-            protocol_version: DAEMON_PROTOCOL_VERSION,
-            next_request_id: std::sync::atomic::AtomicU64::new(0),
-        });
-        let state_payload = json!({
-            "sessionDir": sessions_dir.to_string_lossy(),
-            "sessionId": "runtime-new",
-            "sessionFile": new_file.to_string_lossy(),
-            "cwd": cwd.clone(),
-        });
-        let worker = tokio::spawn(async move {
-            let mut switched_to = String::new();
-            while let Some(line) = commands.recv().await {
-                let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
-                let id = envelope.id;
-                let (command, data) = match envelope.command {
-                    DaemonCommand::GetConnectionState { .. } => {
-                        ("get_connection_state", Some(state_payload.clone()))
-                    }
-                    DaemonCommand::SwitchSession { session_path, .. } => {
-                        switched_to = session_path;
-                        ("switch_session", None)
-                    }
-                    DaemonCommand::GetAvailableModels { .. } => {
-                        ("get_available_models", Some(json!({ "models": [] })))
-                    }
-                    DaemonCommand::GetRlmChildren { .. } => {
-                        ("get_rlm_children", Some(json!({ "children": [] })))
-                    }
-                    other => panic!("unexpected command: {other:?}"),
-                };
-                let reply = pending.lock().unwrap().remove(&id).unwrap();
-                reply
-                    .send(DaemonResponse {
-                        id: Some(id),
-                        command: command.to_string(),
-                        success: true,
-                        data,
-                        error: None,
-                        error_info: None,
-                    })
-                    .unwrap();
-            }
-            switched_to
-        });
-        let state = Arc::new(Mutex::new(state(None)));
-        let binding = DaemonBinding {
-            active_session_id: "daemon-1".to_string(),
-            client_owned: false,
-            mcp_owner_id: "owner-1".to_string(),
-        };
-        let options = DaemonAcpOptions {
-            socket_path: PathBuf::new(),
-            actual_cwd: PathBuf::from(&cwd),
-            product_version: "test".to_string(),
-            create: DaemonCommand::GetConnectionState {
-                id: None,
-                active_session_id: "daemon-1".to_string(),
-                rest: Map::default(),
-            },
-        };
-        let (tx, mut responses) = mpsc::unbounded_channel();
-        handle_session_new(
-            json!(1),
-            json!({ "cwd": cwd }),
-            &link,
-            &state,
-            &options,
-            &binding,
-            tx,
-        )
-        .await;
-        let response = responses.recv().await.unwrap();
-        assert_eq!(
-            response
-                .get("result")
-                .and_then(|result| result.get("sessionId"))
-                .and_then(Value::as_str),
-            Some("acp-new"),
-            "the newest same-cwd entry wins the adoption"
+        assert_ne!(
+            session_id, "acp-old",
+            "session/new must mint a fresh id, not adopt any same-cwd entry"
         );
         drop(link);
         assert_eq!(
             worker.await.unwrap(),
-            new_file.to_string_lossy().to_string(),
-            "the switch targeted the newest entry's session file"
+            0,
+            "no SwitchSession — the admission does not adopt any registered session"
+        );
+    }
+
+    // Regression: two bb threads in the same environment (same cwd) each
+    // call session/new and must receive distinct ACP session ids. Before
+    // the fix, cwd-reuse adopted the first thread's session for the
+    // second, creating a duplicate `providerThreadId` claim.
+    #[tokio::test]
+    async fn session_new_mints_distinct_ids_for_two_calls_with_same_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+
+        async fn run_session_new(sessions_dir: &Path, cwd: &str) -> String {
+            let (writer, mut commands) = mpsc::unbounded_channel::<String>();
+            let (_frames_tx, frames) = mpsc::unbounded_channel();
+            let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            let link = Arc::new(DaemonLink {
+                writer,
+                pending: Arc::clone(&pending),
+                closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                frames: Mutex::new(frames),
+                protocol_version: DAEMON_PROTOCOL_VERSION,
+                next_request_id: std::sync::atomic::AtomicU64::new(0),
+            });
+            let state_payload = json!({
+                "sessionDir": sessions_dir.to_string_lossy(),
+                "sessionId": "runtime-boot",
+                "sessionFile": sessions_dir.join("runtime-boot.jsonl").to_string_lossy(),
+                "cwd": cwd,
+            });
+            let pending_clone = Arc::clone(&pending);
+            let worker = tokio::spawn(async move {
+                while let Some(line) = commands.recv().await {
+                    let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
+                    let id = envelope.id;
+                    let (command, data) = match envelope.command {
+                        DaemonCommand::GetConnectionState { .. } => {
+                            ("get_connection_state", Some(state_payload.clone()))
+                        }
+                        DaemonCommand::GetAvailableModels { .. } => {
+                            ("get_available_models", Some(json!({ "models": [] })))
+                        }
+                        DaemonCommand::GetRlmChildren { .. } => {
+                            ("get_rlm_children", Some(json!({ "children": [] })))
+                        }
+                        other => panic!("unexpected command: {other:?}"),
+                    };
+                    let reply = pending_clone.lock().unwrap().remove(&id).unwrap();
+                    reply
+                        .send(DaemonResponse {
+                            id: Some(id),
+                            command: command.to_string(),
+                            success: true,
+                            data,
+                            error: None,
+                            error_info: None,
+                        })
+                        .unwrap();
+                }
+            });
+            let state = Arc::new(Mutex::new(state(None)));
+            let binding = DaemonBinding {
+                active_session_id: "daemon-1".to_string(),
+                client_owned: false,
+                mcp_owner_id: "owner-1".to_string(),
+            };
+            let options = DaemonAcpOptions {
+                socket_path: PathBuf::new(),
+                actual_cwd: PathBuf::from(cwd),
+                product_version: "test".to_string(),
+                create: DaemonCommand::GetConnectionState {
+                    id: None,
+                    active_session_id: "daemon-1".to_string(),
+                    rest: Map::default(),
+                },
+            };
+            let (tx, mut responses) = mpsc::unbounded_channel();
+            handle_session_new(
+                json!(1),
+                json!({ "cwd": cwd }),
+                &link,
+                &state,
+                &options,
+                &binding,
+                tx,
+            )
+            .await;
+            drop(link);
+            let _ = worker.await;
+            let response = responses.recv().await.unwrap();
+            response
+                .get("result")
+                .and_then(|result| result.get("sessionId"))
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string()
+        }
+
+        let id_a = run_session_new(&sessions_dir, &cwd).await;
+        let id_b = run_session_new(&sessions_dir, &cwd).await;
+        assert_ne!(
+            id_a, id_b,
+            "two session/new calls with the same cwd must mint distinct ACP ids"
         );
     }
 
