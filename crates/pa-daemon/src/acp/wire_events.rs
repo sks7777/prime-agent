@@ -989,7 +989,10 @@ mod tests {
                 }),
                 &mut state,
             );
-            assert!(updates.is_empty(), "stopReason={stop_reason} should emit no usage_update");
+            assert!(
+                updates.is_empty(),
+                "stopReason={stop_reason} should emit no usage_update"
+            );
         }
     }
 
