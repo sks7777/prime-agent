@@ -60,6 +60,9 @@ pub(crate) use routing::{
 #[allow(unused_imports)]
 use worker_lifecycle::{probe_worker_socket, worker_connect_deadline};
 
+// The sessions sibling resolves the launched worker's client ownership.
+pub(crate) use worker_lifecycle::WorkerOwnership;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::backpressure::RouteAdmission;
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::registry::ResidentWorker;
-use crate::supervisor::Supervisor;
+use crate::supervisor::{Supervisor, WorkerOwnership};
 
 /// Worker round-trip budget for the sender-summary read and the delivery
 /// route (TS `WORKER_REQUEST_TIMEOUT_MS`).
@@ -274,7 +274,11 @@ impl Supervisor {
         let launch = tokio::spawn({
             let supervisor = Arc::clone(self);
             let create = create;
-            async move { supervisor.launch_worker(&create, None).await }
+            async move {
+                supervisor
+                    .launch_worker(&create, WorkerOwnership::default())
+                    .await
+            }
         });
         let launched = tokio::time::timeout(
             std::time::Duration::from_millis(crate::supervisor::ROUTE_TIMEOUT_MS),
@@ -392,7 +396,11 @@ impl Supervisor {
         let launch = tokio::spawn({
             let supervisor = Arc::clone(self);
             let create = create;
-            async move { supervisor.launch_worker(&create, None).await }
+            async move {
+                supervisor
+                    .launch_worker(&create, WorkerOwnership::default())
+                    .await
+            }
         });
         let launched = tokio::time::timeout(
             std::time::Duration::from_millis(crate::supervisor::ROUTE_TIMEOUT_MS),
@@ -544,6 +552,7 @@ mod tests {
                 worker_instance_id: None,
                 root_active_session_id: worker_id.to_string(),
                 owner_client_id: None,
+                acp_client_id: None,
                 root_session_id: None,
                 session_file: Some("/sessions/some-session.jsonl".to_string()),
                 session_dir: None,

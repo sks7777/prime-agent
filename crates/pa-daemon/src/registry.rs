@@ -648,6 +648,7 @@ mod tests {
                 worker_instance_id: None,
                 root_active_session_id: worker_id.to_string(),
                 owner_client_id: None,
+                acp_client_id: None,
                 root_session_id: None,
                 session_file: Some("/sessions/some-session.jsonl".to_string()),
                 session_dir: None,

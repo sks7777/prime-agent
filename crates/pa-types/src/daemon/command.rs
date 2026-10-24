@@ -1307,6 +1307,19 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// Passivates the resident worker holding one session file when no
+    /// client still subscribes to it: the ACP session-load retry's last
+    /// resort for a wake-launched holder (no owner, no bridge id) the
+    /// orphan sweep cannot see. Control-plane (no `active_session_id`).
+    PassivateFileHolder {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// The held session file (absolute path).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_path: Option<String>,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -441,6 +441,7 @@ mod tests {
             worker_instance_id: Some(format!("inst-{session_id}")),
             root_active_session_id: format!("active-{session_id}"),
             owner_client_id: None,
+            acp_client_id: None,
             root_session_id: Some(session_id.into()),
             session_file: Some(sessions_file(sessions_dir, session_id)),
             session_dir: None,

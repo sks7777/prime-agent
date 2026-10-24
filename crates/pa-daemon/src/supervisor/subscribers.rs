@@ -119,6 +119,17 @@ impl SessionSubscribers {
         }
     }
 
+    /// Whether any connection still subscribes to the session (the orphan
+    /// criterion's attached-client guard: a live client attached to a
+    /// resident keeps it, even when the recorded bridge client is gone).
+    pub(crate) fn has_subscribers(&self, active_session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(active_session_id)
+            .is_some_and(|subscribers| !subscribers.is_empty())
+    }
+
     fn register(
         &self,
         active_session_id: &str,

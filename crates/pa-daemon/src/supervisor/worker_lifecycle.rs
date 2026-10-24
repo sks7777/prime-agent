@@ -18,6 +18,35 @@ use super::{
 use crate::lease::is_process_alive;
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 
+/// The launched worker's client ownership: the `ClientOwned` lifecycle owner
+/// (whose stop deletes the ephemeral roster row), plus the ACP bridge client
+/// (`executionMode: "acp"`), whose disconnect passivates a `Resident` worker
+/// without killing its roster row.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WorkerOwnership {
+    pub(crate) owner_client_id: Option<String>,
+    pub(crate) acp_client_id: Option<String>,
+}
+
+impl WorkerOwnership {
+    /// A `ClientOwned` create: the client owns the worker and its roster row.
+    pub(crate) fn owned_by(client_id: Option<String>) -> Self {
+        Self {
+            owner_client_id: client_id,
+            acp_client_id: None,
+        }
+    }
+
+    /// A `Resident` ACP create: the bridge client is the worker's
+    /// prompt-lifetime but the roster row survives the stop.
+    pub(crate) fn acp_bridge(client_id: String) -> Self {
+        Self {
+            owner_client_id: None,
+            acp_client_id: Some(client_id),
+        }
+    }
+}
+
 impl Supervisor {
     /// Complete a tombstoned stop for a worker encountered at adoption: adoption
     /// finishes the stop, never adopts the worker as healthy. The `archive_on_stop`
@@ -100,7 +129,7 @@ impl Supervisor {
     pub(crate) async fn launch_worker(
         self: &Arc<Self>,
         create: &DaemonCommand,
-        owner_client_id: Option<String>,
+        ownership: WorkerOwnership,
     ) -> Result<(Arc<ResidentWorker>, Value)> {
         let DaemonCommand::Create {
             session_path,
@@ -117,6 +146,10 @@ impl Supervisor {
         else {
             return Err(anyhow!("launch_worker requires a create command"));
         };
+        let WorkerOwnership {
+            owner_client_id,
+            acp_client_id,
+        } = ownership;
         // The allowlisted client env (the pane identity, e.g. Herdr's
         // `HERDR_*`) re-filtered here (the socket peer is untrusted) and
         // carried on the durable create command: the worker resolves its
@@ -328,6 +361,7 @@ impl Supervisor {
             worker_instance_id: Some(uuid::Uuid::new_v4().to_string()),
             root_active_session_id: worker_id.clone(),
             owner_client_id,
+            acp_client_id,
             root_session_id: None,
             session_file: session_path.clone(),
             session_dir: session_dir.clone(),
@@ -724,15 +758,46 @@ impl Supervisor {
     /// process stayed alive holding a session file lease. The
     /// worker-driven passivation path never fires because the reaped
     /// worker has no client to send `WorkerIdlePassivation` through.
+    /// Two shapes qualify: a client-owned worker whose owner
+    /// disconnected, and an ACP-bridge `Resident` worker (the bridge
+    /// client is recorded as `acp_client_id` at launch) whose bridge
+    /// client disconnected.
     pub(crate) async fn passivate_orphaned_workers(self: &Arc<Self>) {
         for resident in self.registry.list().await {
-            let descriptor = resident.descriptor.lock().await;
-            let Some(owner) = descriptor.owner_client_id.clone() else {
-                continue;
+            let (owner, acp_client) = {
+                let descriptor = resident.descriptor.lock().await;
+                (
+                    descriptor.owner_client_id.clone(),
+                    descriptor.acp_client_id.clone(),
+                )
             };
-            drop(descriptor);
-            // Skip workers whose owner is still connected.
-            if self.client_connected(&owner) {
+            // The orphan criterion: a client-owned worker whose owner
+            // disconnected, or an ACP-bridge `Resident` worker whose
+            // bridge client disconnected (bb's host-daemon reaps idle
+            // bridge processes without stopping the daemon worker).
+            let orphaned = match (&owner, &acp_client) {
+                (Some(owner), _) => !self.client_connected(owner),
+                (None, Some(acp_client)) => !self.client_connected(acp_client),
+                (None, None) => continue,
+            };
+            if !orphaned {
+                continue;
+            }
+            // The logged client id is client-chosen: newline-stripped like
+            // every other client-attribution log line (a chosen id must
+            // not forge attribution lines in the daemon log).
+            let lifetime = acp_client
+                .or(owner)
+                .expect("one client id is set")
+                .replace(['\n', '\r'], " ");
+            // The attached-client guard: a live client attached to the
+            // resident (routed attach, a reusing open) keeps it even when
+            // the recorded owner or bridge client is gone — the passivation
+            // would disconnect a client the orphan criterion never consulted.
+            if self
+                .session_subscribers
+                .has_subscribers(&resident.worker_id)
+            {
                 continue;
             }
             // Skip workers with in-flight routes (still serving a turn).
@@ -742,7 +807,7 @@ impl Supervisor {
             }
             match self.stop_worker_releasing(&resident, None).await {
                 Ok(()) => self.log_line(&format!(
-                    "session worker {} passivated by orphan sweep (owner {owner} disconnected)",
+                    "session worker {} passivated by orphan sweep (client {lifetime} disconnected)",
                     resident.worker_id,
                 )),
                 Err(error) => self.log_line(&format!(
@@ -751,6 +816,60 @@ impl Supervisor {
                 )),
             }
         }
+    }
+
+    /// The session-load retry's targeted passivation (the sweep's blind
+    /// spot): stop the resident holding one session file when no client
+    /// still subscribes to it. A wake-launched holder (no owner, no
+    /// bridge id) is invisible to the orphan sweep, so the load names the
+    /// file directly.
+    pub(crate) async fn handle_passivate_file_holder(
+        self: &Arc<Self>,
+        command_id: &str,
+        type_name: &str,
+        session_path: Option<&str>,
+    ) -> DaemonResponse {
+        let Some(session_path) = session_path.filter(|path| !path.is_empty()) else {
+            return response_failure(
+                Some(command_id),
+                type_name,
+                "passivate_file_holder requires a session path",
+                None,
+            );
+        };
+        for resident in self.registry.list_by_session_file(session_path).await {
+            // A subscribed session has a live client: the holder is not
+            // unattended, and stopping it would disconnect that client.
+            if self
+                .session_subscribers
+                .has_subscribers(&resident.worker_id)
+            {
+                continue;
+            }
+            // In-flight routes keep the holder like the sweep.
+            if resident.inflight.available_permits() < crate::backpressure::WORKER_INFLIGHT_CAPACITY
+            {
+                continue;
+            }
+            match self.stop_worker_releasing(&resident, None).await {
+                Ok(()) => {
+                    self.log_line(&format!(
+                        "session worker {} passivated as the unattended holder of {session_path}",
+                        resident.worker_id,
+                    ));
+                    return response_success(Some(command_id), type_name, None);
+                }
+                Err(error) => {
+                    return response_failure(
+                        Some(command_id),
+                        type_name,
+                        &format!("could not passivate the file holder: {error:#}"),
+                        None,
+                    );
+                }
+            }
+        }
+        response_success(Some(command_id), type_name, None)
     }
 
     pub(crate) async fn handle_orphan_sweep(

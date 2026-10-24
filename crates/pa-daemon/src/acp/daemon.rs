@@ -1613,19 +1613,46 @@ async fn handle_session_load(
                             rest: Map::default(),
                         })
                         .await;
-                    match retry {
-                        Ok(response) if response.success => {}
-                        _ => {
-                            state.lock().await.session_new_in_flight = false;
-                            let _ = tx.send(super::internal_error(
-                                &id,
-                                &format!(
-                                    "ACP session {} cannot be loaded: {switch_err}",
-                                    params.session_id,
-                                ),
-                            ));
-                            return;
+                    let switched = match retry {
+                        Ok(response) if response.success => true,
+                        Ok(_) => {
+                            // The sweep only passivates workers a recorded
+                            // client orphaned. A wake-launched holder (no
+                            // owner, no bridge id — a message or heartbeat
+                            // wake over this file) is invisible to it, so
+                            // the load asks the supervisor to passivate the
+                            // file's unattended holder directly, then
+                            // retries the switch once more.
+                            let _ = link
+                                .request(DaemonCommand::PassivateFileHolder {
+                                    id: None,
+                                    session_path: Some(session_file.to_string_lossy().to_string()),
+                                    rest: Map::default(),
+                                })
+                                .await;
+                            link.request(DaemonCommand::SwitchSession {
+                                id: None,
+                                active_session_id: binding.active_session_id.clone(),
+                                session_path: session_file.to_string_lossy().to_string(),
+                                cwd_override: None,
+                                rest: Map::default(),
+                            })
+                            .await
+                            .map(|response| response.success)
+                            .unwrap_or(false)
                         }
+                        Err(_) => false,
+                    };
+                    if !switched {
+                        state.lock().await.session_new_in_flight = false;
+                        let _ = tx.send(super::internal_error(
+                            &id,
+                            &format!(
+                                "ACP session {} cannot be loaded: {switch_err}",
+                                params.session_id,
+                            ),
+                        ));
+                        return;
                     }
                 }
             }
@@ -4095,6 +4122,11 @@ mod tests {
                     DaemonCommand::TriggerOrphanSweep { .. } => {
                         ("trigger_orphan_sweep", None, true, None)
                     }
+                    DaemonCommand::PassivateFileHolder { .. } => {
+                        // The targeted passivation finds no unattended
+                        // holder here, so it answers success with no stop.
+                        ("passivate_file_holder", None, true, None)
+                    }
                     other => panic!("unexpected command: {other:?}"),
                 };
                 let reply = pending.lock().unwrap().remove(&id).unwrap();
@@ -4393,6 +4425,11 @@ mod tests {
                     ),
                     DaemonCommand::TriggerOrphanSweep { .. } => {
                         ("trigger_orphan_sweep", None, true, None)
+                    }
+                    DaemonCommand::PassivateFileHolder { .. } => {
+                        // The targeted passivation finds no unattended
+                        // holder here, so it answers success with no stop.
+                        ("passivate_file_holder", None, true, None)
                     }
                     other => panic!("unexpected command: {other:?}"),
                 };

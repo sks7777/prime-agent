@@ -939,7 +939,8 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         | DaemonCommand::KillPersistentShell { .. }
         | DaemonCommand::Restart { .. }
         | DaemonCommand::Shutdown { .. }
-        | DaemonCommand::TriggerOrphanSweep { .. } => None,
+        | DaemonCommand::TriggerOrphanSweep { .. }
+        | DaemonCommand::PassivateFileHolder { .. } => None,
     }
 }
 
@@ -1071,6 +1072,7 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::Shutdown { .. } => "shutdown",
         DaemonCommand::WorkerRegister { .. } => "worker_register",
         DaemonCommand::TriggerOrphanSweep { .. } => "trigger_orphan_sweep",
+        DaemonCommand::PassivateFileHolder { .. } => "passivate_file_holder",
     }
 }
 

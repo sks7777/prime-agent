@@ -156,6 +156,7 @@ mod tests {
             worker_instance_id: None,
             root_active_session_id: name.to_string(),
             owner_client_id: None,
+            acp_client_id: None,
             root_session_id: None,
             session_file: None,
             session_dir: None,

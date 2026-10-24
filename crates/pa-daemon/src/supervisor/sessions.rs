@@ -5,7 +5,7 @@ use super::{
     anyhow, bail, join_all, json, list_sessions, mpsc, name_unavailable_error, paths,
     reservation_key, response_failure, response_line, response_success, subscribers, Arc,
     DaemonCommand, DaemonResponse, DaemonSessionLifecycle, NameScope, Outbound, Path, PathBuf,
-    ResidentWorker, Result, RouteAdmission, Supervisor, Value, ROUTE_TIMEOUT_MS,
+    ResidentWorker, Result, RouteAdmission, Supervisor, Value, WorkerOwnership, ROUTE_TIMEOUT_MS,
     SUMMARY_TIMEOUT_MS,
 };
 use crate::session_scan::list_sessions_with;
@@ -614,6 +614,13 @@ impl Supervisor {
             .reuse_live_worker_for_create(command, &client_id)
             .await?
         {
+            // A reusing ACP bridge take over the resident's bridge
+            // identity: the recorded bridge client drives the
+            // disconnect cleanup and the orphan sweep, so a stale id
+            // from a reaped bridge would passivate the worker out from
+            // under this live bridge (PRIMER-6 review finding).
+            self.reassign_acp_bridge_for_reuse(command, &client_id)
+                .await;
             return Ok(summary);
         }
         // TS `createRlmSubagentRuntime` (#2396): the sibling name is held under a daemon-wide
@@ -629,15 +636,31 @@ impl Supervisor {
         // Only a `client_owned`-lifecycle create is client-owned; unspecified and `Resident`
         // are unowned. RLM child spawns declare `Resident`, so a spawned child never
         // inherits the client's ownership (an owned child's rows would die with a stop).
-        let create_lifecycle = match command {
-            DaemonCommand::Create { lifecycle, .. } => *lifecycle,
-            _ => None,
+        let (create_lifecycle, create_config, create_rest) = match command {
+            DaemonCommand::Create {
+                lifecycle,
+                config,
+                rest,
+                ..
+            } => (*lifecycle, config.as_ref(), Some(rest)),
+            _ => (None, None, None),
         };
-        let owner_client_id = match create_lifecycle {
-            Some(DaemonSessionLifecycle::ClientOwned) => Some(client_id),
-            _ => None,
+        // The live create nests its session flags under `config`; the
+        // durable replay (update restore, respawn) flattens the same keys
+        // into the command's top-level rest. Both shapes must classify an
+        // ACP bridge session, or a restored ACP worker relaunches
+        // unowned and re-holds its session lease past a dead bridge.
+        let execution_mode = create_config
+            .and_then(|config| config.get("executionMode"))
+            .or_else(|| create_rest.and_then(|rest| rest.get("executionMode")))
+            .and_then(serde_json::Value::as_str);
+        let is_acp = execution_mode == Some("acp");
+        let ownership = match create_lifecycle {
+            Some(DaemonSessionLifecycle::ClientOwned) => WorkerOwnership::owned_by(Some(client_id)),
+            _ if is_acp => WorkerOwnership::acp_bridge(client_id),
+            _ => WorkerOwnership::default(),
         };
-        let (resident, create_summary) = self.launch_worker(command, owner_client_id).await?;
+        let (resident, create_summary) = self.launch_worker(command, ownership).await?;
         // The single-flight stays held through the spawn admission below: an admission
         // failure tears the resident down, and a concurrent open that had just reused it
         // would hold a summary for a gone worker. The ledger is the only topology store.
@@ -688,6 +711,50 @@ impl Supervisor {
             }
         }
         Ok(summary)
+    }
+
+    /// Transfer an ACP bridge resident's bridge identity to a reusing ACP
+    /// create's client (the reuse seam never touches the descriptor, so a
+    /// reaped bridge's id would otherwise drive the disconnect cleanup and
+    /// the orphan sweep against a worker the new bridge now serves).
+    async fn reassign_acp_bridge_for_reuse(
+        self: &Arc<Self>,
+        command: &DaemonCommand,
+        client_id: &str,
+    ) {
+        let DaemonCommand::Create {
+            lifecycle,
+            config,
+            rest,
+            ..
+        } = command
+        else {
+            return;
+        };
+        // Only an ACP bridge create takes over: an interactive or RLM
+        // reuse must not clear the bridge identity that still owns the
+        // worker's prompt-lifetime.
+        let execution_mode = config
+            .as_ref()
+            .and_then(|config| config.get("executionMode"))
+            .or_else(|| rest.get("executionMode"))
+            .and_then(serde_json::Value::as_str);
+        if execution_mode != Some("acp") || *lifecycle == Some(DaemonSessionLifecycle::ClientOwned)
+        {
+            return;
+        }
+        let Ok(Some(path)) = crate::create_reuse::create_target_file(command) else {
+            return;
+        };
+        let path_text = path.to_string_lossy().to_string();
+        for resident in self.registry.list_by_session_file(&path_text).await {
+            let mut descriptor = resident.descriptor.lock().await;
+            if descriptor.acp_client_id.as_deref() == Some(client_id) {
+                continue;
+            }
+            descriptor.acp_client_id = Some(client_id.to_string());
+            let _ = crate::descriptor::persist_worker(&resident.descriptor_path, &descriptor);
+        }
     }
 
     async fn assert_session_name_available(self: &Arc<Self>, name: &str) -> Result<()> {

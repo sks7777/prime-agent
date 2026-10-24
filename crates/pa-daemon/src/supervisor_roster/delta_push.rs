@@ -24,6 +24,7 @@ async fn supervisor_with_registered_worker(dir: &Path) -> Supervisor {
         worker_instance_id: None,
         root_active_session_id: "a-delta".to_string(),
         owner_client_id: None,
+        acp_client_id: None,
         root_session_id: None,
         session_file: Some(dir.join("session.jsonl").to_string_lossy().to_string()),
         session_dir: Some(dir.to_string_lossy().to_string()),
