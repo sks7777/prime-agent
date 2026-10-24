@@ -1,0 +1,1 @@
+- Fixed speculative-cell example in `usage.md`: replaced `bash('cat src/likely.ts')` with `open('src/likely.ts').read()` to align with the "use Python for reading files" rule.
