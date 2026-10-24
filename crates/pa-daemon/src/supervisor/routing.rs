@@ -4,7 +4,7 @@ use super::{
     anyhow, attach_client_capabilities, bail, client_command_payload, command_active_session_id,
     json, mpsc, oneshot, response_failure, response_line, response_success, streamed_attach_lines,
     wants_chunked, Arc, DaemonCommand, DaemonResponse, Duration, Outbound, ResidentWorker, Result,
-    RosterFamilySeedOwner, RouteAdmission, SnapshotPurpose, Supervisor, Value, WorkerReply,
+    RouteAdmission, SnapshotPurpose, Supervisor, Value, WorkerOwnership, WorkerReply,
     WorkerRequest,
 };
 use anyhow::Context as _;
@@ -1031,7 +1031,7 @@ impl Supervisor {
             let create = create;
             async move {
                 supervisor
-                    .launch_worker(&create, None, RosterFamilySeedOwner::Registration)
+                    .launch_worker(&create, WorkerOwnership::default())
                     .await
             }
         });

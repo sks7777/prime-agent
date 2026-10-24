@@ -236,6 +236,13 @@ pub struct DaemonWorkerDescriptor {
     pub root_active_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_client_id: Option<String>,
+    /// The ACP bridge client that created this `Resident` worker
+    /// (`executionMode: "acp"`): the bridge process is the worker's
+    /// prompt-lifetime even though the lifecycle stays `Resident`, so its
+    /// disconnect must passivate the worker (bb's host-daemon reaps idle
+    /// bridge processes without stopping the daemon worker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

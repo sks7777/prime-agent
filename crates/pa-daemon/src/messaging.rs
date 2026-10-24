@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::backpressure::RouteAdmission;
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::registry::ResidentWorker;
-use crate::supervisor::{RosterFamilySeedOwner, Supervisor};
+use crate::supervisor::{Supervisor, WorkerOwnership};
 
 /// Worker round-trip budget for the sender-summary read and the delivery
 /// route (TS `WORKER_REQUEST_TIMEOUT_MS`).
@@ -276,7 +276,7 @@ impl Supervisor {
             let create = create;
             async move {
                 supervisor
-                    .launch_worker(&create, None, RosterFamilySeedOwner::Registration)
+                    .launch_worker(&create, WorkerOwnership::default())
                     .await
             }
         });
@@ -398,7 +398,7 @@ impl Supervisor {
             let create = create;
             async move {
                 supervisor
-                    .launch_worker(&create, None, RosterFamilySeedOwner::Registration)
+                    .launch_worker(&create, WorkerOwnership::default())
                     .await
             }
         });
@@ -552,6 +552,7 @@ mod tests {
                 worker_instance_id: None,
                 root_active_session_id: worker_id.to_string(),
                 owner_client_id: None,
+                acp_client_id: None,
                 root_session_id: None,
                 session_file: Some("/sessions/some-session.jsonl".to_string()),
                 session_dir: None,

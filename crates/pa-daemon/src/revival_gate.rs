@@ -123,6 +123,7 @@ mod tests {
             worker_instance_id: None,
             root_active_session_id: "w1".to_string(),
             owner_client_id: None,
+            acp_client_id: None,
             root_session_id: None,
             session_file: session_file.map(|p| p.to_string_lossy().to_string()),
             session_dir: None,

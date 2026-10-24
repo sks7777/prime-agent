@@ -98,7 +98,7 @@ async fn resident_process_alive(resident: &Arc<ResidentWorker>) -> bool {
 
 /// The create's target session file, resolved once for the whole open (the single-flight
 /// key and the reuse lookup share one resolution); `Ok(None)` for creates with no file.
-fn create_target_file(command: &DaemonCommand) -> Result<Option<PathBuf>> {
+pub(crate) fn create_target_file(command: &DaemonCommand) -> Result<Option<PathBuf>> {
     let DaemonCommand::Create {
         session_path,
         no_session,

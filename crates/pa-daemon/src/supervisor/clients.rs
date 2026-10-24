@@ -375,9 +375,14 @@ impl Supervisor {
     /// TS `scheduleOwnedWorkerCleanupForClient`.
     async fn schedule_owned_worker_cleanup_for_client(self: &Arc<Self>, client_id: &str) {
         for resident in self.registry.list().await {
-            let owner = resident.descriptor.lock().await.owner_client_id.clone();
+            let descriptor = resident.descriptor.lock().await;
+            let owner = descriptor.owner_client_id.clone();
+            let acp_client = descriptor.acp_client_id.clone();
+            drop(descriptor);
             if owner.as_deref() == Some(client_id) {
                 self.schedule_owned_worker_cleanup(&resident).await;
+            } else if acp_client.as_deref() == Some(client_id) {
+                self.schedule_acp_bridge_cleanup(&resident).await;
             }
         }
     }
@@ -445,6 +450,93 @@ impl Supervisor {
                 )),
                 Err(error) => supervisor.log_line(&format!(
                     "could not clean up client-owned worker {}: {error:#}",
+                    timer_resident.worker_id
+                )),
+            }
+        });
+        let previous = resident
+            .owner_cleanup
+            .lock()
+            .unwrap()
+            .replace(task.abort_handle());
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+    }
+
+    /// Passivate an ACP-bridge worker [`OWNED_WORKER_DISCONNECT_GRACE`]
+    /// after the bridge client's last connection closed: the bridge
+    /// process (bb's host-daemon reaps idle ones) was the worker's
+    /// prompt-lifetime, so a dead bridge must release the session lease —
+    /// but gracefully (roster row kept, next `session/load` re-creates the
+    /// worker over the same session file).
+    pub(super) async fn schedule_acp_bridge_cleanup(
+        self: &Arc<Self>,
+        resident: &Arc<ResidentWorker>,
+    ) {
+        let acp_client = resident.descriptor.lock().await.acp_client_id.clone();
+        let Some(acp_client) = acp_client else { return };
+        if self.client_connected(&acp_client) {
+            return;
+        }
+        let supervisor = Arc::clone(self);
+        let timer_resident = Arc::clone(resident);
+        let deadline = tokio::time::Instant::now() + OWNED_WORKER_DISCONNECT_GRACE;
+        let task = tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            {
+                let mut slot = timer_resident.owner_cleanup.lock().unwrap();
+                if slot.as_ref().map(tokio::task::AbortHandle::id) != Some(tokio::task::id()) {
+                    return;
+                }
+                slot.take();
+            }
+            if supervisor.shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            if supervisor.client_connected(&acp_client) {
+                return;
+            }
+            if timer_resident
+                .descriptor
+                .lock()
+                .await
+                .acp_client_id
+                .as_deref()
+                != Some(acp_client.as_str())
+            {
+                return;
+            }
+            let Some(current) = supervisor.registry.get(&timer_resident.worker_id).await else {
+                return;
+            };
+            if !Arc::ptr_eq(&current, &timer_resident) {
+                return;
+            }
+            if supervisor.client_connected(&acp_client) {
+                return;
+            }
+            // Skip if a routed request arrived in the window (a new bridge
+            // client connected directly over the worker without a create),
+            // or any other client still subscribes to the session (routed
+            // attach, a reusing open): the passivation would disconnect a
+            // client the bridge criterion never consulted.
+            if timer_resident.inflight.available_permits()
+                < crate::backpressure::WORKER_INFLIGHT_CAPACITY
+                || supervisor
+                    .session_subscribers
+                    .has_subscribers(&timer_resident.worker_id)
+            {
+                return;
+            }
+            match supervisor.stop_worker(&timer_resident).await {
+                Ok(()) => supervisor.log_line(&format!(
+                    "passivated ACP bridge worker {} after bridge client {} disconnected",
+                    timer_resident.worker_id,
+                    acp_client.replace(['\n', '\r'], " "),
+                )),
+                Err(error) => supervisor.log_line(&format!(
+                    "could not passivate ACP bridge worker {}: {error:#}",
                     timer_resident.worker_id
                 )),
             }
@@ -702,6 +794,12 @@ impl Supervisor {
             }
             DaemonCommand::TriggerOrphanSweep { .. } => {
                 let response = self.handle_orphan_sweep(&command_id, &type_name).await;
+                (vec![response_line(&response)], false)
+            }
+            DaemonCommand::PassivateFileHolder { session_path, .. } => {
+                let response = self
+                    .handle_passivate_file_holder(&command_id, &type_name, session_path.as_deref())
+                    .await;
                 (vec![response_line(&response)], false)
             }
             DaemonCommand::WorkerRosterDelta {

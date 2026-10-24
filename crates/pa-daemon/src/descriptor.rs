@@ -605,6 +605,7 @@ mod tests {
             worker_instance_id: Some("inst".to_string()),
             root_active_session_id: "abc123def456".to_string(),
             owner_client_id: None,
+            acp_client_id: None,
             root_session_id: None,
             session_file: Some("/a.jsonl".to_string()),
             session_dir: None,
