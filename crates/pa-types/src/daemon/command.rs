@@ -617,6 +617,14 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    ResolveRlmMirrorAdmission {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        active_session_id: String,
+        child_id: String,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     WaitForIdle {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

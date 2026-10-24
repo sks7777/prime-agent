@@ -144,6 +144,36 @@ impl SupervisorChildSessionsInner {
 
     /// Delete one inactive child by id: refresh the registry row first, refuse one still in flight,
     /// and tear a settled one down with its ledger tombstone (same as `rlm.delete_subagent`).
+    /// Resolve a mirror child's deferred admission after the ACP frontend
+    /// rebound (PRIME-11 happy path). Finds the child by id, fires the
+    /// waker, and marks prompt_admitted so the watcher proceeds to
+    /// settle-watch. Returns `false` if the child is not found or already
+    /// settled.
+    pub(crate) async fn resolve_mirror_admission(&self, child_id: &str) -> bool {
+        let record = {
+            let children = self.children.lock().await;
+            let mut found = None;
+            for r in children.iter() {
+                let rec = r.lock().await;
+                if rec.rlm_child_id == child_id || rec.active_session_id == child_id {
+                    found = Some(std::sync::Arc::clone(r));
+                    break;
+                }
+            }
+            found
+        };
+        let Some(record) = record else {
+            return false;
+        };
+        let resolved = self
+            .resolve_waiting_mirror_run(&record, "Mirror admission resolved")
+            .await;
+        if resolved {
+            record.lock().await.prompt_admitted = true;
+        }
+        resolved
+    }
+
     pub(super) async fn delete_inactive_subagent(&self, child_id: &str) -> Result<&'static str> {
         if !self.replay_retired_usage(Some(child_id)).await {
             bail!("RLM child usage remains owed after retirement; retry deletion");
@@ -181,8 +211,10 @@ impl SupervisorChildSessionsInner {
             if running && !already_terminated {
                 // PRIME-11: settle a parked mirror child's wait before
                 // proceeding with the delete.
-                let is_mirror = record.lock().await.waiting_mirror_admission
-                    || record.lock().await.auto_mirror_thread;
+                let is_mirror = {
+                    let rec = record.lock().await;
+                    rec.waiting_mirror_admission || rec.auto_mirror_thread
+                };
                 if is_mirror {
                     self.resolve_waiting_mirror_run(record, "Deleted by parent orchestrator")
                         .await;

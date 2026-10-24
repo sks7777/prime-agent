@@ -974,10 +974,10 @@ fn is_session_gone_error(message: &str) -> bool {
         || message.starts_with("Session is already active")
         || message.starts_with("Daemon connection is closed")
         || message.starts_with("Failed to recover from a")
-        || message.contains("worker returned an invalid")
-        || message.contains("Timed out connecting to daemon session worker")
-        || message.contains("Worker connection deadline elapsed")
-        || message.contains("Timed out waiting for daemon worker")
+        || message.starts_with("worker returned an invalid")
+        || message.starts_with("Timed out connecting to daemon session worker")
+        || message.starts_with("Worker connection deadline elapsed")
+        || message.starts_with("Timed out waiting for daemon worker")
 }
 
 /// TS `cancel_prompt_admission` with `cancelOwned`: a committed prompt's
@@ -2474,6 +2474,20 @@ async fn rebind_to_rlm_mirror_session(
 
     // Consume the claim (single-use).
     crate::rlm_bb_mirror::consume_rlm_mirror_claim(claim_nonce, &agent_dir);
+
+    // Notify the parent session to resolve the mirror child's deferred
+    // admission (PRIME-11 happy path: the waker fires so the parent's
+    // watcher stops waiting and transitions to settle-watch).
+    if let Some(parent_session_id) = &claim.parent_session_id {
+        let _ = link
+            .request(DaemonCommand::ResolveRlmMirrorAdmission {
+                id: None,
+                active_session_id: parent_session_id.clone(),
+                child_id: claim.target.clone(),
+                rest: Map::default(),
+            })
+            .await;
+    }
 
     // Kill the draft session (best-effort).
     let _ = link

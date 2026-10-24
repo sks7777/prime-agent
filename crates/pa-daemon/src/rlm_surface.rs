@@ -66,6 +66,32 @@ impl Worker {
         }
     }
 
+    /// `resolve_rlm_mirror_admission`: notify the parent that a mirror
+    /// child's ACP frontend has rebound and the admission turn has started.
+    /// The TS wire contract is `{ resolved: boolean }`.
+    pub(crate) async fn handle_resolve_rlm_mirror_admission(
+        &self,
+        payload: &Value,
+    ) -> DaemonResponse {
+        if let Err(response) = self.require_created("resolve_rlm_mirror_admission") {
+            return response;
+        }
+        let Some(child_id) = payload.get("childId").and_then(Value::as_str) else {
+            return response_failure(
+                None,
+                "resolve_rlm_mirror_admission",
+                "resolve_rlm_mirror_admission requires a childId",
+                None,
+            );
+        };
+        let resolved = self.engine.resolve_rlm_mirror_admission(child_id).await;
+        response_success(
+            None,
+            "resolve_rlm_mirror_admission",
+            Some(json!({ "resolved": resolved })),
+        )
+    }
+
     /// `set_rlm_max_depth`: set the session's recursion bound, optionally persisting it as the
     /// global settings default. The response is the TS `SetRlmMaxDepthResult` wire object.
     pub(crate) async fn handle_set_rlm_max_depth(&self, payload: &Value) -> DaemonResponse {

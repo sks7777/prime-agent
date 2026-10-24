@@ -97,6 +97,8 @@ pub(crate) struct RlmMirrorClaim {
     pub(crate) target: String,
     #[serde(rename = "createdAtMs")]
     pub(crate) created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) parent_session_id: Option<String>,
 }
 
 /// True when this session runs inside a bb thread (the ACP plugin injects
@@ -157,13 +159,19 @@ fn mirror_claims_dir(agent_dir: &Path) -> PathBuf {
 
 /// Write the single-use claim the mirror thread's ACP frontend consumes on
 /// boot.
-pub fn write_rlm_mirror_claim(nonce: &str, target: &str, agent_dir: &Path) -> Result<()> {
+pub fn write_rlm_mirror_claim(
+    nonce: &str,
+    target: &str,
+    agent_dir: &Path,
+    parent_session_id: Option<&str>,
+) -> Result<()> {
     let claims_dir = mirror_claims_dir(agent_dir);
     std::fs::create_dir_all(&claims_dir)
         .with_context(|| format!("create mirror claims dir {}", claims_dir.display()))?;
     let claim = RlmMirrorClaim {
         target: target.to_string(),
         created_at_ms: crate::util::now_ms(),
+        parent_session_id: parent_session_id.map(str::to_string),
     };
     let path = claims_dir.join(format!("{nonce}.json"));
     let content =
@@ -186,10 +194,12 @@ pub(crate) fn read_rlm_mirror_claim(nonce: &str, agent_dir: &Path) -> Option<Rlm
     let content = std::fs::read_to_string(&path).ok()?;
     let claim: RlmMirrorClaim = serde_json::from_str(&content).ok()?;
     if claim.target.is_empty() {
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     let now = crate::util::now_ms();
     if now.saturating_sub(claim.created_at_ms) > RLM_MIRROR_CLAIM_TTL_MS {
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     Some(claim)
@@ -361,6 +371,7 @@ pub async fn spawn_bb_mirror_thread(options: BbMirrorSpawnOptions) -> Result<BbM
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|error| BbSpawnFailed {
         kind: BbSpawnFailureKind::SpawnError,
         message: format!("bb thread spawn failed: {error}"),
@@ -402,9 +413,8 @@ pub async fn spawn_bb_mirror_thread(options: BbMirrorSpawnOptions) -> Result<BbM
         Ok(Ok(outcome)) => Ok(outcome),
         Ok(Err(error)) => Err(anyhow!(error)),
         Err(_) => {
-            // The timeout elapsed: kill the child process. `wait_with_output`
-            // already consumed `child`, so we rely on the process being
-            // killed by the timeout drop.
+            // The timeout elapsed. `kill_on_drop(true)` on the Command
+            // ensures the process is killed when the Child is dropped.
             Err(anyhow!(BbSpawnFailed {
                 kind: BbSpawnFailureKind::Timeout,
                 message: format!("bb thread spawn timed out after {timeout_ms}ms"),
@@ -425,10 +435,11 @@ fn parse_bb_spawn_outcome(stdout_text: &str) -> BbMirrorSpawnOutcome {
             }
         }
     }
-    // The thread exists but bb printed nothing parsable.
+    // Unparseable output: treat as ambiguous failure (no thread id, not
+    // confirmed created) so the caller parks instead of assuming success.
     BbMirrorSpawnOutcome {
         thread_id: None,
-        thread_created: true,
+        thread_created: false,
     }
 }
 
@@ -539,7 +550,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let nonce = new_mirror_claim_nonce();
         assert_eq!(nonce.len(), 32);
-        write_rlm_mirror_claim(&nonce, "session-123", &dir).unwrap();
+        write_rlm_mirror_claim(&nonce, "session-123", &dir, None).unwrap();
         let claim = read_rlm_mirror_claim(&nonce, &dir).unwrap();
         assert_eq!(claim.target, "session-123");
         consume_rlm_mirror_claim(&nonce, &dir);

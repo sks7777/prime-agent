@@ -837,6 +837,13 @@ impl SupervisorChildSessions {
         self.inner.delete_inactive_subagent(child_id).await
     }
 
+    /// Resolve a mirror child's deferred admission after the ACP frontend
+    /// rebound (PRIME-11 happy path). Returns `false` if the child is not
+    /// found or already settled.
+    pub(crate) async fn resolve_mirror_admission(&self, child_id: &str) -> bool {
+        self.inner.resolve_mirror_admission(child_id).await
+    }
+
     fn entry(record: &ChildRecord) -> RlmSubagentEntry {
         let running = record.settled_status.is_none();
         RlmSubagentEntry {

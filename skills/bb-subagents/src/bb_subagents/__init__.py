@@ -70,7 +70,7 @@ async def _resolve_active_session_id(handle: Any, timeout_s: float) -> str:
     )
 
 
-def _write_mirror_claim(nonce: str, target: str) -> None:
+def _write_mirror_claim(nonce: str, target: str, parent_session_id: str | None = None) -> None:
     """Write the single-use claim the ACP frontend consumes on boot.
 
     The claim carries a 10-minute TTL server-side (acp-mode validates it), so
@@ -80,8 +80,11 @@ def _write_mirror_claim(nonce: str, target: str) -> None:
     agent_dir = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or os.path.expanduser("~/.prime/agent")
     claims_dir = os.path.join(agent_dir, "acp-mirror-claims")
     os.makedirs(claims_dir, exist_ok=True)
+    claim = {"target": target, "createdAtMs": int(time.time() * 1000)}
+    if parent_session_id:
+        claim["parentSessionId"] = parent_session_id
     with open(os.path.join(claims_dir, f"{nonce}.json"), "w", encoding="utf-8") as claim_file:
-        json.dump({"target": target, "createdAtMs": int(time.time() * 1000)}, claim_file)
+        json.dump(claim, claim_file)
 
 
 async def _delete_waiting_child(handle: Any) -> None:
@@ -109,7 +112,15 @@ async def _run_bb(args: list[str], stdin_text: str | None = None) -> dict[str, A
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate(stdin_text.encode() if stdin_text is not None else None)
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(stdin_text.encode() if stdin_text is not None else None),
+            timeout=30,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise BbSpawnFailed(f"bb {' '.join(args[:2])} timed out after 30s")
     if proc.returncode != 0:
         raise BbSpawnFailed(f"bb {' '.join(args[:2])} failed: {stderr.decode(errors='replace').strip()}")
     try:
@@ -163,12 +174,16 @@ async def spawn_mirror(
         raise TypeError("name must be a non-empty string")
 
     handle = await rlm_spawn(task, name=name, model=model, thinking=thinking, bb_mirror=True)
-    # The daemon worker boots asynchronously; the admission payload carries no
-    # live session id, so resolve it from the parent-scoped roster.
-    active_session_id = await _resolve_active_session_id(handle, _SUBAGENT_ROSTER_TIMEOUT_S)
-
-    nonce = secrets.token_hex(16)
-    _write_mirror_claim(nonce, active_session_id)
+    # The daemon creates the nonce and writes the claim for explicit
+    # bb_mirror=True (so the ChildRecord knows it for cleanup). Use the
+    # returned nonce if present; fall back to generating our own.
+    nonce = getattr(handle, "mirror_claim_nonce", None)
+    if not nonce:
+        # Daemon didn't create a claim (older daemon or resolve failed):
+        # resolve the session id and write the claim ourselves.
+        active_session_id = await _resolve_active_session_id(handle, _SUBAGENT_ROSTER_TIMEOUT_S)
+        nonce = secrets.token_hex(16)
+        _write_mirror_claim(nonce, active_session_id)
     mirror_prompt = f"[rlm-mirror:{nonce}]\n{_TASK_FRAME}\n\n{task}"
 
     try:

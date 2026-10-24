@@ -480,6 +480,17 @@ pub trait SessionEngine: Send + Sync {
         Box::pin(async { Ok("not_found") })
     }
 
+    /// Resolve a mirror child's deferred admission after the ACP frontend
+    /// rebound (PRIME-11 happy path). Returns `true` if the child was found
+    /// and the waker fired.
+    fn resolve_rlm_mirror_admission<'a>(
+        &'a self,
+        child_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        let _ = child_id;
+        Box::pin(async { false })
+    }
+
     /// Returns `{ maxDepth, source, globalSaved }` plus `globalError` when
     /// the requested global settings write failed.
     ///

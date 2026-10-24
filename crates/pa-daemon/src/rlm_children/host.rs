@@ -15,8 +15,8 @@ use super::{
 use crate::rlm_bb_mirror::{
     bb_mirror_env_from_process, build_rlm_mirror_prompt, mirror_thread_title,
     new_mirror_claim_nonce, remove_rlm_mirror_claim, resolve_child_active_session_id,
-    should_auto_mirror_rlm_child, spawn_bb_mirror_thread, BbMirrorSpawnOptions, BbSpawnFailed,
-    BB_MIRROR_WAIT_TIMEOUT_MS, RLM_MIRROR_ROSTER_TIMEOUT_MS,
+    should_auto_mirror_rlm_child, spawn_bb_mirror_thread, write_rlm_mirror_claim,
+    BbMirrorSpawnOptions, BbSpawnFailed, BB_MIRROR_WAIT_TIMEOUT_MS, RLM_MIRROR_ROSTER_TIMEOUT_MS,
 };
 use serde_json::Map;
 
@@ -237,6 +237,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
             // degrades to a plain headless child; an ambiguous failure
             // parks on the deadline.
             let mut runtime_mirror_failed: Option<String> = None;
+            let mut mirror_nonce: Option<String> = None;
             if auto_mirror_requested {
                 let bb_env = bb_mirror_env_from_process(&env);
                 if let Some(bb_env) = bb_env {
@@ -265,13 +266,27 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     )
                     .await;
                     match active_session_id {
-                        Ok(_active_id) => {
+                        Ok(active_id) => {
                             // Write the claim and spawn the bb thread.
                             let nonce = new_mirror_claim_nonce();
-                            {
+                            if let Err(error) = write_rlm_mirror_claim(
+                                &nonce,
+                                &active_id,
+                                &this.agent_dir,
+                                Some(&this.parent_active_session_id),
+                            ) {
+                                runtime_mirror_failed = Some(error.to_string());
                                 let mut rec = record.lock().await;
-                                rec.auto_mirror_thread = true;
-                                rec.mirror_claim_nonce = Some(nonce.clone());
+                                rec.waiting_mirror_admission = false;
+                                rec.auto_mirror_thread = false;
+                                rec.mirror_admission_waker.take();
+                            } else {
+                                {
+                                    let mut rec = record.lock().await;
+                                    rec.auto_mirror_thread = true;
+                                    rec.mirror_claim_nonce = Some(nonce.clone());
+                                }
+                                mirror_nonce = Some(nonce.clone());
                             }
                             let mirror_prompt = build_rlm_mirror_prompt(&nonce, &request.prompt);
                             let title = mirror_thread_title(
@@ -322,6 +337,55 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     rec.waiting_mirror_admission = false;
                     rec.auto_mirror_thread = false;
                     rec.mirror_admission_waker.take();
+                }
+            }
+
+            // PRIME-11 explicit bb_mirror=True (not auto-mirror): the daemon
+            // creates the nonce and writes the claim so the ChildRecord knows
+            // it for cleanup. The caller (Python skill) uses the returned
+            // nonce to build the mirror thread prompt.
+            if bb_mirror
+                && !auto_mirror_requested
+                && mirror_nonce.is_none()
+                && runtime_mirror_failed.is_none()
+            {
+                let child_id_for_resolve = child_id.clone();
+                let session_name_for_resolve = record.lock().await.session_name.clone();
+                let roster_this = Arc::clone(&this);
+                let active_session_id = resolve_child_active_session_id(
+                    async move || {
+                        let cmd = DaemonCommand::GetRlmChildren {
+                            id: None,
+                            active_session_id: roster_this.parent_active_session_id.clone(),
+                            rest: Map::default(),
+                        };
+                        let response = roster_this.command(&cmd, 30_000).await?;
+                        let children = response
+                            .get("children")
+                            .and_then(|c| c.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        Ok(children)
+                    },
+                    &child_id_for_resolve,
+                    &session_name_for_resolve,
+                    RLM_MIRROR_ROSTER_TIMEOUT_MS,
+                )
+                .await;
+                if let Ok(active_id) = active_session_id {
+                    let nonce = new_mirror_claim_nonce();
+                    if write_rlm_mirror_claim(
+                        &nonce,
+                        &active_id,
+                        &this.agent_dir,
+                        Some(&this.parent_active_session_id),
+                    )
+                    .is_ok()
+                    {
+                        let mut rec = record.lock().await;
+                        rec.mirror_claim_nonce = Some(nonce.clone());
+                        mirror_nonce = Some(nonce);
+                    }
                 }
             }
 
@@ -499,6 +563,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 name,
                 session_dir: created.session_dir,
                 model,
+                mirror_claim_nonce: mirror_nonce,
             })
         })
     }

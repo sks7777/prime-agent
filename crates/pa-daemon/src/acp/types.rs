@@ -337,8 +337,10 @@ pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
                     instruction_texts.push(text.to_string());
                     continue;
                 }
-                // A merged wrapper+text block: split it.
-                if rest_texts.is_empty() && instruction_texts.is_empty() {
+                // A merged wrapper+text block: split it. Only attempt the
+                // split on the first text block (rest_texts empty); prior
+                // instruction blocks do not prevent splitting.
+                if rest_texts.is_empty() {
                     if let Some((wrapper, rest)) = split_acp_instruction_prefix(trimmed) {
                         instruction_texts.push(wrapper);
                         rest_texts.push(rest);

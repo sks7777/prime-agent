@@ -1286,6 +1286,18 @@ impl SessionEngine for AgentSessionEngine {
         })
     }
 
+    fn resolve_rlm_mirror_admission<'a>(
+        &'a self,
+        child_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            match &self.children {
+                Some(children) => children.resolve_mirror_admission(child_id).await,
+                None => false,
+            }
+        })
+    }
+
     fn set_rlm_max_depth(&self, max_depth: u64, global: bool) -> anyhow::Result<Value> {
         if let Some(children) = &self.children {
             children.set_rlm_max_depth(max_depth.min(u64::from(u32::MAX)) as u32);

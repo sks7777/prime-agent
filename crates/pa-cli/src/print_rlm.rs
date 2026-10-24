@@ -856,6 +856,7 @@ impl RlmSubagentHost for InlineHost {
                 name,
                 session_dir: child_node.session_dir.clone(),
                 model: selector,
+                mirror_claim_nonce: None,
             })
         })
     }

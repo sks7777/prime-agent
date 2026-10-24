@@ -40,6 +40,8 @@ pub struct RlmSpawnHandle {
     pub name: String,
     pub session_dir: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror_claim_nonce: Option<String>,
 }
 
 /// `rlm.create_session` handle: one resident depth-0 daemon session.
@@ -971,6 +973,7 @@ mod tests {
                     name: "worker".into(),
                     session_dir: "/tmp/sub-1".into(),
                     model: "p/m".into(),
+                    mirror_claim_nonce: None,
                 })
             })
         }

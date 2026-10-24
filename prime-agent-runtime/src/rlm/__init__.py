@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import sys
 import types
 from dataclasses import dataclass
@@ -30,6 +32,7 @@ class RLMSpawnHandle:
     name: str
     session_dir: Path
     model: str
+    mirror_claim_nonce: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,7 @@ def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
         name=name,
         session_dir=Path(session_dir),
         model=model,
+        mirror_claim_nonce=payload.get("mirror_claim_nonce"),
     )
 
 
@@ -209,6 +213,10 @@ async def spawn(
     if thinking is not None:
         kwargs["thinking"] = thinking
     if temperature is not None:
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+            raise TypeError(f"temperature must be a number, got {type(temperature).__name__}")
+        if not math.isfinite(temperature):
+            raise ValueError(f"temperature must be finite, got {temperature}")
         kwargs["temperature"] = float(temperature)
     if bb_mirror is not None:
         kwargs["bb_mirror"] = bool(bb_mirror)
