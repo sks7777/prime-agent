@@ -186,6 +186,18 @@ async def spawn_mirror(
         _write_mirror_claim(nonce, active_session_id)
     mirror_prompt = f"[rlm-mirror:{nonce}]\n{_TASK_FRAME}\n\n{task}"
 
+    # Forward the model and reasoning level to bb so the mirror thread's
+    # display matches the spawned child (bb falls back to the project
+    # default when these are omitted). `--model` takes the id part only
+    # (the `--provider` flag carries the bridge id); `--reasoning-level`
+    # accepts low/medium/high/xhigh/max and is omitted for off/minimal.
+    bb_model = model.split("/", 1)[1] if model and "/" in model else model
+    bb_reasoning = (
+        thinking
+        if thinking and thinking not in ("off", "minimal")
+        else None
+    )
+
     try:
         spawned = await _run_bb(
             [
@@ -202,6 +214,12 @@ async def spawn_mirror(
                 "--parent-self",
                 "--provider",
                 "acp-prime-agent",
+                *(["--model", bb_model] if bb_model else []),
+                *(
+                    ["--reasoning-level", bb_reasoning]
+                    if bb_reasoning
+                    else []
+                ),
                 "--title",
                 title if isinstance(title, str) and title.strip() else _title_for(name, task),
                 "--prompt-file",

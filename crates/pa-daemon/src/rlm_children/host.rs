@@ -300,6 +300,16 @@ impl RlmSubagentHost for SupervisorChildSessions {
                                 prompt: mirror_prompt,
                                 bb_command: bb_env.bb_cli,
                                 timeout_ms: None,
+                                model: Some(crate::rlm_bb_mirror::bb_model_id_from_selector(
+                                    &model,
+                                )),
+                                reasoning_level:
+                                    crate::rlm_bb_mirror::bb_reasoning_level_from_thinking(
+                                        request
+                                            .thinking
+                                            .as_deref()
+                                            .or(identity.thinking.as_deref()),
+                                    ),
                             })
                             .await;
                             if let Err(error) = &spawn_result {
