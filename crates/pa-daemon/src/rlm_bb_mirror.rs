@@ -152,6 +152,31 @@ pub fn build_rlm_mirror_prompt(nonce: &str, prompt: &str) -> String {
     format!("[rlm-mirror:{nonce}]\n{RLM_MIRROR_TASK_FRAME}\n\n{prompt}")
 }
 
+/// Map a daemon thinking-level wire name to the bb `--reasoning-level` value.
+///
+/// bb accepts `low`, `medium`, `high`, `xhigh`, `max` (and provider-specific ids).
+/// `off` and `minimal` have no bb equivalent: return `None` so the flag is
+/// omitted and bb falls back to its default (no reasoning).
+pub fn bb_reasoning_level_from_thinking(thinking: Option<&str>) -> Option<String> {
+    match thinking? {
+        "off" | "minimal" => None,
+        level @ ("low" | "medium" | "high" | "xhigh" | "max") => Some(level.to_string()),
+        // A provider-specific id passes through unchanged.
+        other => Some(other.to_string()),
+    }
+}
+
+/// The id part of a resolved `provider/id` model selector, or the full
+/// selector when it has no `/`. Used as the bb `--model` value (the
+/// `--provider` flag carries the bridge id, not the LLM provider).
+pub fn bb_model_id_from_selector(selector: &str) -> String {
+    selector
+        .split_once('/')
+        .map(|(_, id)| id)
+        .unwrap_or(selector)
+        .to_string()
+}
+
 /// The claims directory under the agent dir.
 fn mirror_claims_dir(agent_dir: &Path) -> PathBuf {
     agent_dir.join(RLM_MIRROR_CLAIMS_DIR)
@@ -333,6 +358,13 @@ pub struct BbMirrorSpawnOptions {
     /// bb binary override; defaults to `BB_CLI` or "bb".
     pub bb_command: Option<String>,
     pub timeout_ms: Option<u64>,
+    /// Model id for the bb thread's `--model` flag (id part only, not
+    /// `provider/id`); `None` falls back to the project's default.
+    pub model: Option<String>,
+    /// Reasoning level wire name (`low`/`medium`/`high`/`xhigh`/`max`)
+    /// for the bb thread's `--reasoning-level` flag; `None` (or an
+    /// unsupported level like `off`/`minimal`) omits the flag.
+    pub reasoning_level: Option<String>,
 }
 
 /// Spawn the mirror bb thread via the bb CLI and parse the thread id.
@@ -365,6 +397,12 @@ pub async fn spawn_bb_mirror_thread(options: BbMirrorSpawnOptions) -> Result<BbM
         "--prompt-file",
         "-",
     ]);
+    if let Some(model) = &options.model {
+        cmd.args(["--model", model]);
+    }
+    if let Some(level) = &options.reasoning_level {
+        cmd.args(["--reasoning-level", level]);
+    }
     if let Some(env_id) = &options.environment_id {
         cmd.args(["--environment", env_id]);
     }
@@ -666,6 +704,28 @@ mod tests {
             &summary,
             Path::new("/some/path")
         ));
+    }
+
+
+
+    #[test]
+    fn bb_model_id_from_selector_returns_id_part() {
+        assert_eq!(bb_model_id_from_selector("anthropic/claude-sonnet-4"), "claude-sonnet-4");
+        assert_eq!(bb_model_id_from_selector("claude-sonnet-4"), "claude-sonnet-4");
+    }
+
+    #[test]
+    fn bb_reasoning_level_from_thinking_maps_levels() {
+        assert_eq!(bb_reasoning_level_from_thinking(Some("off")), None);
+        assert_eq!(bb_reasoning_level_from_thinking(Some("minimal")), None);
+        assert_eq!(bb_reasoning_level_from_thinking(None), None);
+        assert_eq!(bb_reasoning_level_from_thinking(Some("low")), Some("low".to_string()));
+        assert_eq!(bb_reasoning_level_from_thinking(Some("medium")), Some("medium".to_string()));
+        assert_eq!(bb_reasoning_level_from_thinking(Some("high")), Some("high".to_string()));
+        assert_eq!(bb_reasoning_level_from_thinking(Some("xhigh")), Some("xhigh".to_string()));
+        assert_eq!(bb_reasoning_level_from_thinking(Some("max")), Some("max".to_string()));
+        // A provider-specific id passes through unchanged.
+        assert_eq!(bb_reasoning_level_from_thinking(Some("acp-level-3")), Some("acp-level-3".to_string()));
     }
 
     #[test]
