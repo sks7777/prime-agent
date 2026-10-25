@@ -510,6 +510,16 @@ impl SessionEngine for AgentSessionEngine {
         Some(self.effective_thinking().wire_name().to_string())
     }
 
+    fn session_mode(&self) -> Option<String> {
+        let session = self.session.try_lock().ok()?;
+        session
+            .as_deref()
+            .and_then(|core| core.session_mode.lock().ok())
+            .map(|state| state.mode)
+            .map(|mode| mode.map(|m| m.label().to_string()))
+            .flatten()
+    }
+
     /// The built session's assembled prompt (the export embeds it); best-effort.
     fn export_system_prompt(&self) -> Option<String> {
         let session = self.session.try_lock().ok()?;

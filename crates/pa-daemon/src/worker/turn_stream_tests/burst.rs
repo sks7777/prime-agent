@@ -192,7 +192,7 @@ async fn streamed_turn_pipeline_benchmark() {
             telemetry_disabled: Some(true),
             cron_store: None,
             queued_steering_probe: None,
-            plan_code_mode: None,
+            session_mode: None,
         })
         .unwrap();
         let started = std::time::Instant::now();
@@ -236,7 +236,7 @@ async fn the_last_parked_update_carries_the_final_content() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let events = turn_session_events(Arc::new(engine)).await;
@@ -282,7 +282,7 @@ async fn the_accumulated_text_delta_chunks_equal_the_final_message() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let events = turn_session_events(Arc::new(engine)).await;
@@ -298,7 +298,10 @@ async fn the_accumulated_text_delta_chunks_equal_the_final_message() {
                 .map(str::to_string)
         })
         .collect();
-    assert_eq!(accumulated, text, "the accumulated text_delta chunks must equal the final message text");
+    assert_eq!(
+        accumulated, text,
+        "the accumulated text_delta chunks must equal the final message text"
+    );
 }
 
 /// The client sees the full message without a tick wait and nothing lands out of order.

@@ -342,7 +342,8 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 updates.push(AcpSessionUpdate::Plan {
                     entries: vec![super::types::PlanEntry {
                         content: objective.to_string(),
-                        status: Some(plan_status),
+                        priority: super::types::PlanEntryPriority::High,
+                        status: plan_status,
                     }],
                 });
             }

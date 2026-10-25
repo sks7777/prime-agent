@@ -7,6 +7,7 @@ pub const OPINIONATED_LAYER: &str = include_str!("layers/opinionated.md");
 pub const PLAN_MODE_LAYER: &str = include_str!("layers/plan_mode.md");
 pub const CODE_MODE_LAYER: &str = include_str!("layers/code_mode.md");
 pub const DEBUG_MODE_LAYER: &str = include_str!("layers/debug_mode.md");
+pub const ASK_MODE_LAYER: &str = include_str!("layers/ask_mode.md");
 
 /// Source file of one layer (breakdown provenance).
 #[must_use]

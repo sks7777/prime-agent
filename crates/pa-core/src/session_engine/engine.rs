@@ -107,7 +107,7 @@ pub struct SessionEngineConfig {
     pub semantic_edges: Option<super::semantic_edges::SemanticEdgeIdentity>,
     pub on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
     /// Initial plan-code mode from the `--plan-code` CLI flag.
-    pub plan_code_mode: Option<crate::plan_code::PlanCodeMode>,
+    pub session_mode: Option<crate::session_mode::SessionMode>,
 }
 
 pub struct SessionEngine {
@@ -151,9 +151,7 @@ pub struct SessionEngine {
     /// until the process exits.
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
     /// Plan-code mode state (shared with the before_tool_call hook).
-    pub plan_code: std::sync::Arc<std::sync::Mutex<crate::plan_code::PlanCodeState>>,
-    /// Tool names active before plan mode; restored on exit.
-    pub plan_code_saved_tools: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    pub session_mode: std::sync::Arc<std::sync::Mutex<crate::session_mode::SessionModeState>>,
 }
 
 /// Skill overrides for built-in integrations the user is not logged into,
@@ -866,20 +864,20 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     session.adopt_next_turn_rows(boot_notice_rows);
 
     // Plan-code mode: shared state + the before-tool-call gate.
-    let plan_code = std::sync::Arc::new(std::sync::Mutex::new(
-        crate::plan_code::PlanCodeState::default(),
+    let session_mode = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::session_mode::SessionModeState::default(),
     ));
-    if let Some(initial_mode) = config.plan_code_mode {
-        plan_code
+    if let Some(initial_mode) = config.session_mode {
+        session_mode
             .lock()
             .expect("plan-code state lock")
             .enter(initial_mode);
     }
-    let plan_code_for_hook = std::sync::Arc::clone(&plan_code);
-    agent.set_before_tool_call(Some(crate::plan_code::plan_mode_before_tool_call(
-        plan_code_for_hook,
+    let session_mode_for_hook = std::sync::Arc::clone(&session_mode);
+    agent.set_before_tool_call(Some(crate::session_mode::session_mode_before_tool_call(
+        session_mode_for_hook,
     )));
-    let plan_code_saved_tools =
+    let session_mode_saved_tools =
         std::sync::Arc::new(std::sync::Mutex::new(active_tool_names.clone()));
 
     turn_boundary.bind(super::turn_boundary::TurnBoundaryRuntime {
@@ -948,8 +946,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         factory_host,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
-        plan_code,
-        plan_code_saved_tools,
+        session_mode,
     })
 }
 

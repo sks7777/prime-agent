@@ -779,6 +779,9 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         | DaemonCommand::SetModel {
             active_session_id, ..
         }
+        | DaemonCommand::SetMode {
+            active_session_id, ..
+        }
         | DaemonCommand::CycleModel {
             active_session_id, ..
         }
@@ -1026,6 +1029,7 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::HeartbeatSet { .. } => "heartbeat_set",
         DaemonCommand::HeartbeatUpdate { .. } => "heartbeat_update",
         DaemonCommand::SetModel { .. } => "set_model",
+        DaemonCommand::SetMode { .. } => "set_mode",
         DaemonCommand::CycleModel { .. } => "cycle_model",
         DaemonCommand::SetScopedModels { .. } => "set_scoped_models",
         DaemonCommand::SetThinkingLevel { .. } => "set_thinking_level",

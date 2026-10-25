@@ -160,6 +160,30 @@ const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "x
 
 /// `set_thinking_level`: clamp to what the model supports, record the
 /// durable row on a change, and persist the settings default.
+/// `set_mode`: switch the session's extension mode (ACP v1
+/// `session/set_mode`). `modeId` is `"ask"` (or absent) to clear, or `"plan"`,
+/// `"code"`, `"debug"` to set. Returns the new mode label, or `null` when
+/// cleared.
+pub(crate) async fn set_mode(
+    state: &Arc<RpcState>,
+    payload: &Value,
+) -> Result<ResponseData, String> {
+    let _ops = state.model_ops.lock().await;
+    let mode_id = payload.get("modeId").and_then(Value::as_str);
+    let mode = match mode_id {
+        Some(id) => pa_core::session_mode::SessionMode::from_flag(id)
+            .map(Some)
+            .ok_or_else(|| {
+                format!("Invalid modeId \"{id}\". Valid values: ask, plan, code, debug.")
+            })?,
+        None => None,
+    };
+    let handle = state.session.handle_mut().await;
+    let label =
+        pa_core::session_engine::session_commands::set_session_mode(&handle.engine, mode).await;
+    Ok(ResponseData::Present(json!({ "mode": label })))
+}
+
 pub(crate) async fn set_thinking_level(
     state: &Arc<RpcState>,
     payload: &Value,

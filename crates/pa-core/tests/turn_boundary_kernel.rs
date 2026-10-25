@@ -211,7 +211,7 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .await
     .expect("create_session");

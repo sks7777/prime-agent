@@ -90,7 +90,7 @@ impl AgentSessionEngine {
                     if !plan_text.is_empty() {
                         let guard = self.session.blocking_lock();
                         if let Some(core) = guard.as_deref() {
-                            core.plan_code
+                            core.session_mode
                                 .lock()
                                 .expect("plan-code state lock")
                                 .mark_completed(&plan_text);

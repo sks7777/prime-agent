@@ -854,10 +854,10 @@ pub(crate) async fn build_headless_engine_with(
             queued_steering_probe: None,
             should_stop_after_turn: None,
             image_model_router,
-            plan_code_mode: config
-                .plan_code
+            session_mode: config
+                .session_mode
                 .as_deref()
-                .and_then(pa_core::plan_code::PlanCodeMode::from_flag),
+                .and_then(pa_core::session_mode::SessionMode::from_flag),
         },
     )
     .await

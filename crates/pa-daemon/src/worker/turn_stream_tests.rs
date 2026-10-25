@@ -328,6 +328,7 @@ async fn a_turns_tool_executions_count_onto_the_summary() {
                 quota_parked: false,
                 subagents_running: false,
                 progress_note: None,
+                session_mode: None,
             },
         )
     };

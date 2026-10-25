@@ -1248,13 +1248,13 @@ impl AgentSessionEngine {
                 wiring.binding = self.kernel_cron_binding().or(wiring.binding);
                 wiring
             }),
-            plan_code_mode: self.config.plan_code_mode.or_else(|| {
+            session_mode: self.config.session_mode.or_else(|| {
                 self.create_resources
                     .read()
                     .expect("create resources lock")
-                    .plan_code
+                    .session_mode
                     .as_deref()
-                    .and_then(pa_core::plan_code::PlanCodeMode::from_flag)
+                    .and_then(pa_core::session_mode::SessionMode::from_flag)
             }),
         })
         .await

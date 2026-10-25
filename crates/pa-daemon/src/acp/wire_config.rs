@@ -249,6 +249,29 @@ async fn apply_wire_config(
             }
             Ok(())
         }
+        ("mode", value) => {
+            // ACP v1 session-config-options: switch the session mode
+            // through the worker's `set_mode` command. `None` clears
+            // the mode (returns to default); `plan`/`code`/`debug`/`ask`
+            // set the mode.
+            let response = link
+                .request(DaemonCommand::SetMode {
+                    id: None,
+                    active_session_id: daemon_session_id.to_string(),
+                    mode: value.map(str::to_string),
+                    rest: Map::default(),
+                })
+                .await
+                .map_err(|error| WireConfigError::internal(error.to_string()))?;
+            if !response.success {
+                return Err(WireConfigError::internal(
+                    response
+                        .error
+                        .unwrap_or_else(|| "the mode switch failed".to_string()),
+                ));
+            }
+            Ok(())
+        }
         _ => Err(WireConfigError::invalid_params(format!(
             "Invalid configuration option: {config_id}"
         ))),
@@ -319,7 +342,12 @@ pub(super) fn picker_options_from_state(
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
-    session_config_options(model, &thinking_level, &levels, models)
+    let current_mode = state
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
+    session_config_options(model, &thinking_level, &levels, models, &current_mode)
 }
 
 /// Recompute the options from the worker's live state and publish the
