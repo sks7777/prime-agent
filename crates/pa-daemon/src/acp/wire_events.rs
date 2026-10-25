@@ -300,7 +300,7 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
         }
         "goal_update" => {
             let goal = event.get("goal");
-            vec![AcpSessionUpdate::SessionInfoUpdate {
+            let mut updates = vec![AcpSessionUpdate::SessionInfoUpdate {
                 meta: prime_agent_meta(&PrimeAgentSessionMeta {
                     goal: Some(super::meta::PrimeAgentGoalMeta {
                         status: goal
@@ -321,7 +321,32 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                     }),
                     ..Default::default()
                 }),
-            }]
+            }];
+            // The goal's objective is the plan's content; the goal's status
+            // maps to the plan entry status (complete→completed, active→
+            // in_progress, anything else→pending). A goal without an
+            // objective carries no plan entry.
+            if let Some(objective) = goal
+                .and_then(|goal| goal.get("objective"))
+                .and_then(Value::as_str)
+                .filter(|objective| !objective.is_empty())
+            {
+                let status = goal
+                    .and_then(|goal| goal.get("status"))
+                    .and_then(Value::as_str);
+                let plan_status = match status {
+                    Some("complete") => super::types::PlanEntryStatus::Completed,
+                    Some("active") => super::types::PlanEntryStatus::InProgress,
+                    _ => super::types::PlanEntryStatus::Pending,
+                };
+                updates.push(AcpSessionUpdate::Plan {
+                    entries: vec![super::types::PlanEntry {
+                        content: objective.to_string(),
+                        status: Some(plan_status),
+                    }],
+                });
+            }
+            updates
         }
         "compaction_end" => {
             let result = event.get("result");
@@ -663,7 +688,8 @@ mod tests {
     #[test]
     fn goal_update_maps_to_the_namespaced_goal_meta() {
         // The GoalState fields the meta carries,
-        // nothing else.
+        // nothing else. The same event also emits a `plan` update
+        // whose single entry's content is the goal objective.
         let mut state = WireMappingState::default();
         let updates = wire_updates(
             &json!({
@@ -681,11 +707,11 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(updates.len(), 1);
-        let value = serde_json::to_value(&updates[0]).unwrap();
-        assert_eq!(value["sessionUpdate"], "session_info_update");
+        assert_eq!(updates.len(), 2);
+        let session_info = serde_json::to_value(&updates[0]).unwrap();
+        assert_eq!(session_info["sessionUpdate"], "session_info_update");
         assert_eq!(
-            value["_meta"]["ai.primeintellect.prime-agent"]["goal"],
+            session_info["_meta"]["ai.primeintellect.prime-agent"]["goal"],
             json!({
                 "status": "active",
                 "objective": "Name a river",
@@ -693,6 +719,10 @@ mod tests {
                 "tokensUsed": 0,
             })
         );
+        let plan = serde_json::to_value(&updates[1]).unwrap();
+        assert_eq!(plan["sessionUpdate"], "plan");
+        assert_eq!(plan["entries"][0]["content"], "Name a river");
+        assert_eq!(plan["entries"][0]["status"], "in_progress");
     }
 
     #[test]
@@ -759,6 +789,91 @@ mod tests {
         assert_eq!(
             value["_meta"]["ai.primeintellect.prime-agent"]["compaction"],
             json!({ "tokensBefore": 4200, "summary": "a summary" })
+        );
+    }
+
+    #[test]
+    fn goal_update_publishes_a_plan_entry_besides_the_session_info() {
+        // A goal with an objective emits both the session_info_update
+        // (namespaced goal meta) and a `plan` update whose single entry
+        // carries the objective as content and a status derived from the
+        // goal status (active -> in_progress, complete -> completed, else
+        // pending). A goal without an objective emits only the session
+        // info update.
+        let mut state = WireMappingState::default();
+        let updates = wire_updates(
+            &json!({
+                "type": "goal_update",
+                "goal": {
+                    "active": true,
+                    "status": "active",
+                    "goalId": "g-plan",
+                    "objective": "Ship the plan feature",
+                    "tokenBudget": 1000,
+                    "tokensUsed": 250,
+                    "timeUsedSeconds": 0,
+                    "continuationsUsed": 0,
+                },
+            }),
+            &mut state,
+        );
+        let plan_updates: Vec<&AcpSessionUpdate> = updates
+            .iter()
+            .filter(|update| serde_json::to_value(update).unwrap()["sessionUpdate"] == "plan")
+            .collect();
+        assert_eq!(plan_updates.len(), 1);
+        let plan = serde_json::to_value(plan_updates[0]).unwrap();
+        assert_eq!(plan["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(plan["entries"][0]["content"], "Ship the plan feature");
+        assert_eq!(plan["entries"][0]["status"], "in_progress");
+
+        // A completed goal maps its objective to a completed plan entry.
+        let updates = wire_updates(
+            &json!({
+                "type": "goal_update",
+                "goal": {
+                    "active": false,
+                    "status": "complete",
+                    "goalId": "g-plan",
+                    "objective": "Ship the plan feature",
+                    "tokenBudget": 1000,
+                    "tokensUsed": 1000,
+                    "timeUsedSeconds": 30,
+                    "continuationsUsed": 1,
+                },
+            }),
+            &mut state,
+        );
+        let plan = serde_json::to_value(
+            updates
+                .iter()
+                .find(|update| serde_json::to_value(update).unwrap()["sessionUpdate"] == "plan")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan["entries"][0]["status"], "completed");
+
+        // A goal without an objective emits no plan update.
+        let updates = wire_updates(
+            &json!({
+                "type": "goal_update",
+                "goal": {
+                    "active": false,
+                    "status": "idle",
+                    "tokensUsed": 0,
+                    "timeUsedSeconds": 0,
+                    "continuationsUsed": 0,
+                },
+            }),
+            &mut state,
+        );
+        let plan_updates: Vec<&AcpSessionUpdate> = updates
+            .iter()
+            .filter(|update| serde_json::to_value(update).unwrap()["sessionUpdate"] == "plan")
+            .collect();
+        assert!(
+            plan_updates.is_empty(),
+            "no plan entry without an objective"
         );
     }
 

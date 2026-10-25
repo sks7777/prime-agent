@@ -194,6 +194,29 @@ pub enum AcpSessionUpdate {
     /// window ring and popover.
     #[serde(rename = "usage_update")]
     UsageUpdate { used: u64, size: u64 },
+    /// The session's plan entries (TS `plan`): the agent's current
+    /// plan with per-entry status. bb renders this as a checklist.
+    #[serde(rename = "plan")]
+    Plan { entries: Vec<PlanEntry> },
+}
+
+/// A plan entry's lifecycle status (TS `acpPlanEntryStatus`):
+/// `pending`, `in_progress`, or `completed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanEntryStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// One entry in a plan update (TS `acpPlanUpdate` entries array):
+/// `content` is the entry text, `status` is optional.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanEntry {
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<PlanEntryStatus>,
 }
 
 impl AcpSessionUpdate {
