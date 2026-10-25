@@ -68,12 +68,18 @@ impl TurnStreamCoalescer {
 
     /// Park one streamed update: the newest snapshot wins; the delta merges into the
     /// parked run (same kind) or starts a fresh one. `false` when the turn already ended.
+    ///
+    /// On a kind switch (e.g. `text_delta` followed by `toolcall_start` with no
+    /// settling `text_end` between them), the superseded pending is flushed before
+    /// the new kind parks — otherwise its accumulated delta is silently dropped and
+    /// a delta-mapping consumer (bb) loses the tail of the previous channel.
     pub(crate) fn park_update(
         &self,
         message: AssistantSnapshot,
         kind: &str,
         delta: &str,
         sequence: u64,
+        events: &crate::worker::EventPump,
     ) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
@@ -87,9 +93,18 @@ impl TurnStreamCoalescer {
                 pending.message = message;
                 pending.sequence = sequence;
             }
-            // Kind switch: the newer snapshot wins whole. A `*_start`
-            // event carries no delta, so nothing additive is lost.
-            _ => {
+            // Kind switch: flush the superseded run before the new kind parks,
+            // so its accumulated delta is not silently dropped.
+            Some(_) => {
+                self.flush_locked(&mut inner, events);
+                inner.pending = Some(PendingUpdate {
+                    message,
+                    kind: kind.to_string(),
+                    delta: delta.to_string(),
+                    sequence,
+                });
+            }
+            None => {
                 inner.pending = Some(PendingUpdate {
                     message,
                     kind: kind.to_string(),
@@ -202,7 +217,8 @@ mod tests {
             AssistantSnapshot::Wire(json!({ "text": "partial" })),
             "text_delta",
             "part",
-            1
+            1,
+            &pump
         ));
         // The parked update waits for the flusher until a direct frame
         // arrives: the direct send must broadcast the parked snapshot first.
@@ -223,19 +239,22 @@ mod tests {
             AssistantSnapshot::Wire(json!({ "text": "The" })),
             "text_delta",
             "The ",
-            1
+            1,
+            &pump
         ));
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "The Thames" })),
             "text_delta",
             "Thames ",
-            2
+            2,
+            &pump
         ));
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "The Thames flows" })),
             "text_delta",
             "flows",
-            3
+            3,
+            &pump
         ));
         assert!(coalescer.flush_pending(&pump));
         let flushed = session_event_of(&rx.try_recv().unwrap());
@@ -253,22 +272,33 @@ mod tests {
     }
 
     #[test]
-    fn a_kind_switch_replaces_the_run() {
+    fn a_kind_switch_flushes_the_superseded_run_before_parking() {
         let (pump, mut rx) = subscribe();
         let coalescer = TurnStreamCoalescer::new("s1".to_string(), "g1".to_string());
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "think" })),
             "thinking_delta",
             "think",
-            1
+            1,
+            &pump
         ));
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "thinkanswer" })),
             "text_delta",
             "answer",
-            2
+            2,
+            &pump
         ));
         coalescer.send_direct(&[event_payload(&json!({ "type": "turn_end" }))], &pump);
+        // The superseded run flushes first so its accumulated delta is not
+        // silently dropped (a delta-mapping consumer would otherwise lose the
+        // tail of the previous channel).
+        let superseded = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(
+            superseded["event"]["assistantMessageEvent"]["type"],
+            "thinking_delta"
+        );
+        assert_eq!(superseded["event"]["assistantMessageEvent"]["delta"], "think");
         let flushed = session_event_of(&rx.try_recv().unwrap());
         assert_eq!(
             flushed["event"]["assistantMessageEvent"]["type"],
@@ -279,7 +309,53 @@ mod tests {
         assert_eq!(direct["event"]["type"], "turn_end");
         assert!(
             rx.try_recv().is_err(),
-            "no frames beyond the flushed run and the direct one"
+            "no frames beyond the superseded flush, the new flush, and the direct one"
+        );
+    }
+
+    /// Regression: a kind switch with no settling event between the two
+    /// channels must flush the superseded run, not drop it. Without the fix,
+    /// a `text_delta` parked before a `toolcall_start` (which parks but does
+    /// not settle) is silently replaced and its accumulated delta is lost — a
+    /// delta-mapping consumer (bb) then sees the assistant text truncated.
+    #[test]
+    fn a_kind_switch_without_settling_flushes_the_superseded_delta() {
+        let (pump, mut rx) = subscribe();
+        let coalescer = TurnStreamCoalescer::new("s1".to_string(), "g1".to_string());
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "the tail of the answer" })),
+            "text_delta",
+            "tail",
+            1,
+            &pump
+        ));
+        // `toolcall_start` is not settling: it parks. Without the fix it
+        // would replace the parked `text_delta`, dropping "tail".
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "the tail of the answer" })),
+            "toolcall_start",
+            "",
+            2,
+            &pump
+        ));
+        coalescer.send_direct(&[event_payload(&json!({ "type": "turn_end" }))], &pump);
+        let superseded = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(
+            superseded["event"]["assistantMessageEvent"]["type"],
+            "text_delta"
+        );
+        assert_eq!(superseded["event"]["assistantMessageEvent"]["delta"], "tail");
+        // The parked `toolcall_start` (empty delta) flushes before turn_end.
+        let parked_start = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(
+            parked_start["event"]["assistantMessageEvent"]["type"],
+            "toolcall_start"
+        );
+        let direct = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(direct["event"]["type"], "turn_end");
+        assert!(
+            rx.try_recv().is_err(),
+            "the superseded text_delta flushed, the toolcall_start parked, turn_end direct"
         );
     }
 
@@ -291,14 +367,16 @@ mod tests {
             AssistantSnapshot::Wire(json!({ "text": "partial" })),
             "text_delta",
             "p",
-            1
+            1,
+            &pump
         ));
         coalescer.close();
         assert!(!coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "stale" })),
             "text_delta",
             "s",
-            2
+            2,
+            &pump
         ));
         assert!(!coalescer.flush_pending(&pump), "the flusher stops");
         assert!(rx.try_recv().is_err(), "a closed turn parks nothing");

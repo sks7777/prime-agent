@@ -764,6 +764,7 @@ impl TurnRunner {
                                 stream_kind.unwrap_or_default(),
                                 delta,
                                 sequence,
+                                &events,
                             ) {
                                 return false;
                             }
