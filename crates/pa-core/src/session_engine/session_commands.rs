@@ -183,11 +183,12 @@ pub async fn execute_session_command(
         "refine" => execute_refine(engine, params, command, &mut execution).await,
         "goal" => execute_goal(engine, command, images, &mut execution).await,
         "autonomous" => execute_autonomous(params, command, &mut execution),
-        "plan" => execute_plan_code_mode(engine, command, &mut execution).await,
-        "code" => execute_plan_code_mode(engine, command, &mut execution).await,
-        "dbg" => execute_plan_code_mode(engine, command, &mut execution).await,
-        "exit" => execute_plan_code_exit(engine, command, &mut execution).await,
-        "todos" => Ok(execute_plan_code_todos(engine, command, &mut execution)),
+        "ask" => execute_session_mode(engine, command, &mut execution).await,
+        "plan" => execute_session_mode(engine, command, &mut execution).await,
+        "code" => execute_session_mode(engine, command, &mut execution).await,
+        "debug" => execute_session_mode(engine, command, &mut execution).await,
+        "exit" => execute_session_mode_exit(engine, command, &mut execution).await,
+        "todos" => Ok(execute_session_mode_todos(engine, command, &mut execution)),
         other => Err(format!("Unknown session command: {other}")),
     };
     if let Err(message) = result {
@@ -431,45 +432,39 @@ fn execute_autonomous(
 }
 
 // ---------------------------------------------------------------------------
-// Plan-code mode commands (/plan, /code, /dbg)
+// Session mode commands (/plan, /code, /debug)
 // ---------------------------------------------------------------------------
 
-/// Execute `/plan`, `/code`, or `/dbg`: set the mode, adjust tools, and
+/// Execute `/plan`, `/code`, or `/debug`: set the session mode, adjust tools, and
 /// optionally submit trailing args as a follow-up prompt.
-async fn execute_plan_code_mode(
+async fn execute_session_mode(
     engine: &SessionEngine,
     command: &SessionSlashCommand,
     execution: &mut SessionCommandExecution,
 ) -> Result<(), String> {
     let mode = match command.name {
-        "plan" => crate::plan_code::PlanCodeMode::Plan,
-        "code" => crate::plan_code::PlanCodeMode::Code,
-        "dbg" => crate::plan_code::PlanCodeMode::Debug,
-        _ => return Err(format!("Unknown plan-code mode: {}", command.name)),
+        "plan" => crate::session_mode::SessionMode::Plan,
+        "ask" => crate::session_mode::SessionMode::Ask,
+        "code" => crate::session_mode::SessionMode::Code,
+        "debug" => crate::session_mode::SessionMode::Debug,
+        _ => return Err(format!("Unknown session mode: {}", command.name)),
     };
 
-    let previous_mode = {
-        let state = engine.plan_code.lock().expect("plan-code state lock");
-        state.mode
-    };
-    let from_plan = previous_mode == Some(crate::plan_code::PlanCodeMode::Plan);
-
-    // Enter the new mode.
-    {
-        let mut state = engine.plan_code.lock().expect("plan-code state lock");
+    let (previous_mode, from_plan) = {
+        let mut state = engine.session_mode.lock().expect("session-mode state lock");
+        let prev = state.mode;
         state.enter(mode);
-    }
-
-    // Plan tracking: extract the tracked steps from the trailing args' Plan
-    // section (`/plan` submits a plan prompt whose numbered list is the
-    // execution checklist; `/code`/`/dbg` switch without plan text).
-    if mode == crate::plan_code::PlanCodeMode::Plan {
-        let todos = crate::plan_code::extract_todo_items(command.args.trim());
-        if !todos.is_empty() {
-            let mut state = engine.plan_code.lock().expect("plan-code state lock");
-            state.set_todos(todos);
+        // Plan tracking: extract the tracked steps from the trailing args' Plan
+        // section (`/plan` submits a plan prompt whose numbered list is the
+        // execution checklist; `/code`/`/debug` switch without plan text).
+        if mode == crate::session_mode::SessionMode::Plan {
+            let todos = crate::session_mode::extract_todo_items(command.args.trim());
+            if !todos.is_empty() {
+                state.set_todos(todos);
+            }
         }
-    }
+        (prev, prev == Some(crate::session_mode::SessionMode::Plan))
+    };
 
     // Adjust tools: in plan mode, disable edit; otherwise restore all tools.
     adjust_tools_for_mode(engine, mode).await;
@@ -478,11 +473,12 @@ async fn execute_plan_code_mode(
     rebuild_system_prompt(engine, Some(mode)).await;
 
     let notification = match mode {
-        crate::plan_code::PlanCodeMode::Plan => {
+        crate::session_mode::SessionMode::Plan => {
             "Plan mode enabled. Read-only commands pass; non-read-only require confirmation; edit is disabled."
         }
-        crate::plan_code::PlanCodeMode::Code => "Code mode enabled. Full access restored.",
-        crate::plan_code::PlanCodeMode::Debug => "Debug mode enabled. Systematic diagnosis.",
+        crate::session_mode::SessionMode::Ask => "Ask mode enabled. Read-only Q&A.",
+        crate::session_mode::SessionMode::Code => "Code mode enabled. Full access restored.",
+        crate::session_mode::SessionMode::Debug => "Debug mode enabled. Systematic diagnosis.",
     };
     execution.push_message(slash_command_result(
         command,
@@ -497,27 +493,28 @@ async fn execute_plan_code_mode(
     let prompt = command.args.trim();
     if !prompt.is_empty() {
         let content = if from_plan
-            && (mode == crate::plan_code::PlanCodeMode::Code
-                || mode == crate::plan_code::PlanCodeMode::Debug)
+            && (mode == crate::session_mode::SessionMode::Code
+                || mode == crate::session_mode::SessionMode::Debug)
         {
             format!(
                 "{}
 
 {}",
-                crate::plan_code::mode_switch_banner(mode),
+                crate::session_mode::mode_switch_banner(mode),
                 prompt
             )
         } else {
             prompt.to_string()
         };
-        execution.continuation_message = Some(prompt_custom_message("plan_code_prompt", content));
+        execution.continuation_message =
+            Some(prompt_custom_message("session_mode_prompt", content));
     } else if from_plan
-        && (mode == crate::plan_code::PlanCodeMode::Code
-            || mode == crate::plan_code::PlanCodeMode::Debug)
+        && (mode == crate::session_mode::SessionMode::Code
+            || mode == crate::session_mode::SessionMode::Debug)
     {
         execution.continuation_message = Some(prompt_custom_message(
-            "plan_code_prompt",
-            crate::plan_code::mode_switch_banner(mode),
+            "session_mode_prompt",
+            crate::session_mode::mode_switch_banner(mode),
         ));
     }
 
@@ -525,16 +522,22 @@ async fn execute_plan_code_mode(
 }
 
 /// Execute `/exit`: leave plan/code/debug mode, restore default tools.
-async fn execute_plan_code_exit(
+async fn execute_session_mode_exit(
     engine: &SessionEngine,
     command: &SessionSlashCommand,
     execution: &mut SessionCommandExecution,
 ) -> Result<(), String> {
-    let was_in_mode = {
-        let state = engine.plan_code.lock().expect("plan-code state lock");
-        state.mode.is_some()
+    let mode_label = {
+        let mut state = engine.session_mode.lock().expect("session-mode state lock");
+        let label = state.mode.map_or("unknown", |m| m.label()).to_string();
+        if state.mode.is_none() {
+            None
+        } else {
+            state.exit();
+            Some(label)
+        }
     };
-    if !was_in_mode {
+    let Some(mode_label) = mode_label else {
         execution.push_message(slash_command_result(
             command,
             "Not in plan, code, or debug mode.".to_string(),
@@ -544,15 +547,7 @@ async fn execute_plan_code_exit(
             true,
         ));
         return Ok(());
-    }
-    let mode_label = {
-        let state = engine.plan_code.lock().expect("plan-code state lock");
-        state.mode.map_or("unknown", |m| m.label())
     };
-    {
-        let mut state = engine.plan_code.lock().expect("plan-code state lock");
-        state.exit();
-    }
     // Restore the system prompt without mode layers.
     rebuild_system_prompt(engine, None).await;
     let notification = format!("Exited {mode_label} mode. Default tools restored.");
@@ -567,13 +562,43 @@ async fn execute_plan_code_exit(
     Ok(())
 }
 
+/// Switch the session's extension mode without recording a slash-command
+/// echo or pushing a continuation message — the path `session/set_mode`
+/// (ACP v1) takes. Enter `plan`/`code`/`debug`, or clear the mode (`None`)
+/// to return to the default. Returns the new mode label, or `None` when
+/// cleared.
+///
+/// # Panics
+/// Panics if the `session_mode` state mutex is poisoned.
+pub async fn set_session_mode(
+    engine: &SessionEngine,
+    mode: Option<crate::session_mode::SessionMode>,
+) -> Option<String> {
+    if let Some(mode) = mode {
+        {
+            let mut state = engine.session_mode.lock().expect("session-mode state lock");
+            state.enter(mode);
+        }
+        adjust_tools_for_mode(engine, mode).await;
+        rebuild_system_prompt(engine, Some(mode)).await;
+        Some(mode.label().to_string())
+    } else {
+        {
+            let mut state = engine.session_mode.lock().expect("session-mode state lock");
+            state.exit();
+        }
+        rebuild_system_prompt(engine, None).await;
+        None
+    }
+}
+
 /// Execute `/todos`: show current plan progress.
-fn execute_plan_code_todos(
+fn execute_session_mode_todos(
     engine: &SessionEngine,
     command: &SessionSlashCommand,
     execution: &mut SessionCommandExecution,
 ) {
-    let state = engine.plan_code.lock().expect("plan-code state lock");
+    let state = engine.session_mode.lock().expect("session-mode state lock");
     if state.todos.is_empty() {
         execution.push_message(slash_command_result(
             command,
@@ -625,41 +650,22 @@ fn prompt_custom_message(custom_type: &str, content: String) -> CustomMessage {
 }
 
 /// Adjust the agent's tool set for the active mode.
-/// In plan mode: disable edit, keep everything else.
-/// In code/debug: restore all tools.
-async fn adjust_tools_for_mode(engine: &SessionEngine, mode: crate::plan_code::PlanCodeMode) {
-    let agent = engine.session.agent();
-    let state = agent.state().await;
-    let all_tools = state.tools.clone();
-    match mode {
-        crate::plan_code::PlanCodeMode::Plan => {
-            // Save current tool names for restoration.
-            let tool_names: Vec<String> = all_tools.iter().map(|t| t.name().to_string()).collect();
-            *engine
-                .plan_code_saved_tools
-                .lock()
-                .expect("plan-code saved tools lock") = tool_names;
-            // Disable edit tool, keep everything else.
-            let filtered: Vec<Arc<dyn pa_agent::types::AgentTool>> = all_tools
-                .into_iter()
-                .filter(|t| t.name() != "edit")
-                .collect();
-            agent.set_tools(filtered).await;
-        }
-        crate::plan_code::PlanCodeMode::Code | crate::plan_code::PlanCodeMode::Debug => {
-            // Restore all tools.
-            agent.set_tools(all_tools).await;
-        }
-    }
+/// All modes keep the full tool set — the `before_tool_call` hook
+/// enforces read-only restrictions in Plan and Ask modes. This avoids
+/// the tool-restoration problem when switching modes.
+async fn adjust_tools_for_mode(engine: &SessionEngine, _mode: crate::session_mode::SessionMode) {
+    // No tool filtering: the before_tool_call hook blocks edit/bash
+    // in Plan and Ask modes. Keeping all tools registered avoids
+    // losing edit when switching Plan/Ask → Code/Debug.
 }
 
 /// Rebuild the system prompt with the active plan-code mode layer.
 async fn rebuild_system_prompt(
     engine: &SessionEngine,
-    mode: Option<crate::plan_code::PlanCodeMode>,
+    mode: Option<crate::session_mode::SessionMode>,
 ) {
     // The system prompt is rebuilt by re-calling build_system_prompt with
-    // the plan_code_mode field set. The engine stores the original prompt
+    // the session_mode field set. The engine stores the original prompt
     // options implicitly through its fields; we reconstruct the key ones.
     // In practice, the system prompt is set once at creation and the
     // mode layer is injected as a dynamic tail segment. For the Rust port,
@@ -668,9 +674,9 @@ async fn rebuild_system_prompt(
     let current_prompt = agent.state().await.system_prompt;
 
     // Strip any existing plan-code layer suffix, then append the new one.
-    let base_prompt = strip_plan_code_layers(&current_prompt);
+    let base_prompt = strip_session_mode_layers(&current_prompt);
     let new_prompt = match mode {
-        Some(crate::plan_code::PlanCodeMode::Plan) => {
+        Some(crate::session_mode::SessionMode::Plan) => {
             format!(
                 "{base_prompt}
 
@@ -678,7 +684,7 @@ async fn rebuild_system_prompt(
                 crate::prompts::layers::PLAN_MODE_LAYER.trim()
             )
         }
-        Some(crate::plan_code::PlanCodeMode::Code) => {
+        Some(crate::session_mode::SessionMode::Code) => {
             format!(
                 "{base_prompt}
 
@@ -686,12 +692,18 @@ async fn rebuild_system_prompt(
                 crate::prompts::layers::CODE_MODE_LAYER.trim()
             )
         }
-        Some(crate::plan_code::PlanCodeMode::Debug) => {
+        Some(crate::session_mode::SessionMode::Debug) => {
             format!(
                 "{base_prompt}
 
 {}",
                 crate::prompts::layers::DEBUG_MODE_LAYER.trim()
+            )
+        }
+        Some(crate::session_mode::SessionMode::Ask) => {
+            format!(
+                "{base_prompt}\n\n{}",
+                crate::prompts::layers::ASK_MODE_LAYER.trim()
             )
         }
         None => base_prompt,
@@ -701,12 +713,13 @@ async fn rebuild_system_prompt(
 
 /// Remove plan/code/debug mode layer text from a system prompt (to avoid
 /// stacking layers on repeated mode switches).
-fn strip_plan_code_layers(prompt: &str) -> String {
+fn strip_session_mode_layers(prompt: &str) -> String {
     let mut result = prompt.to_string();
     for layer in &[
         crate::prompts::layers::PLAN_MODE_LAYER,
         crate::prompts::layers::CODE_MODE_LAYER,
         crate::prompts::layers::DEBUG_MODE_LAYER,
+        crate::prompts::layers::ASK_MODE_LAYER,
     ] {
         let trimmed = layer.trim();
         if let Some(pos) = result.find(trimmed) {

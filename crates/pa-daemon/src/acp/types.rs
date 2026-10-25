@@ -1,7 +1,9 @@
 //! ACP wire types: the method surface, `session/update` payload shapes,
 //! and prompt-block parsing. The served surface is exactly what the TS
-//! product serves; ACP-spec methods it does not serve (`session/load`,
-//! `session/read`, `session/clone`, cwd adoption) are not invented here.
+//! product serves; ACP-spec methods it does not serve (`session/read`,
+//! `session/clone`, cwd adoption) are not invented here. Session modes
+//! (ACP v1 `session-config-options`) are served: `session/new` advertises
+//! a `mode` config option; `session/set_config_option` switches it.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -210,13 +212,22 @@ pub enum PlanEntryStatus {
     Completed,
 }
 
-/// One entry in a plan update (TS `acpPlanUpdate` entries array):
-/// `content` is the entry text, `status` is optional.
+/// The relative importance of a plan entry (ACP v1 `PlanEntryPriority`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanEntryPriority {
+    High,
+    Medium,
+    Low,
+}
+
+/// One entry in a plan update (ACP v1 `plan` entries array):
+/// `content` is the entry text, `priority` and `status` are required.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanEntry {
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<PlanEntryStatus>,
+    pub priority: PlanEntryPriority,
+    pub status: PlanEntryStatus,
 }
 
 impl AcpSessionUpdate {

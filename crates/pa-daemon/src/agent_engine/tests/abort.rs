@@ -60,7 +60,7 @@ fn abort_in_flight_turn_cancels_a_mid_provider_wait() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let engine = std::sync::Arc::new(engine);
@@ -384,7 +384,7 @@ fn retried_run_restarts_with_its_own_agent_frames() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let mut events: Vec<EngineEvent> = Vec::new();
@@ -568,7 +568,7 @@ fn abort_in_flight_turn_cancels_a_running_kernel_cell() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let engine = std::sync::Arc::new(engine);

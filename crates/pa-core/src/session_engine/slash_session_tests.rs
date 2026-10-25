@@ -47,7 +47,7 @@ async fn session_commands_never_reach_the_model() {
 }
 
 #[tokio::test]
-async fn plan_code_commands_are_session_commands() {
+async fn session_mode_commands_are_session_commands() {
     let provider = Arc::new(ScriptedProvider::new(test_model()));
     let options = AgentOptions {
         initial_state: AgentInitialState {
@@ -63,12 +63,12 @@ async fn plan_code_commands_are_session_commands() {
     let engine = AgentSession::new(Arc::new(agent), session, vec![])
         .await
         .unwrap();
-    for cmd in &["/plan", "/code", "/dbg", "/exit", "/todos"] {
+    for cmd in &["/plan", "/code", "/debug", "/exit", "/todos"] {
         let outcome = engine.prompt(cmd, PromptOptions::default()).await.unwrap();
         match &outcome {
             PromptOutcome::SessionCommand(command) => {
                 assert!(
-                    ["plan", "code", "dbg", "exit", "todos"].contains(&command.name),
+                    ["plan", "code", "debug", "exit", "todos"].contains(&command.name),
                     "{cmd} should resolve to a plan-code session command, got {}",
                     command.name
                 );

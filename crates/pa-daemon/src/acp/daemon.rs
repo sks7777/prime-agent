@@ -402,7 +402,12 @@ pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::
                             }
                             if matches!(
                                 event.get("type").and_then(Value::as_str),
-                                Some("agent_end" | "auto_retry_start" | "auto_retry_end")
+                                Some(
+                                    "agent_end"
+                                        | "auto_retry_start"
+                                        | "auto_retry_end"
+                                        | "mode_changed"
+                                )
                             ) {
                                 refresh = Some((
                                     Arc::clone(&current.config),
@@ -1330,6 +1335,7 @@ async fn handle_session_new(
             });
         }
     }
+
     // Install the hosted session before the admission response leaves
     // (an immediate `session/set_config_option` must resolve against
     // it). The producer gate opens only after the response is queued,

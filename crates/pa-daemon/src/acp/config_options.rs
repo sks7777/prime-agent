@@ -97,6 +97,7 @@ pub fn session_config_options(
     thinking_level: &str,
     available_levels: &[String],
     models: &[Model],
+    current_mode: &str,
 ) -> Vec<SessionConfigOption> {
     let Some(model) = model else {
         return Vec::new();
@@ -155,6 +156,35 @@ pub fn session_config_options(
                 .collect(),
         });
     }
+    // ACP v1 session-config-options: expose the session mode as a
+    // `mode` select (the preferred surface per the spec). `ask` is the
+    // default (no extension layer); `plan`/`code`/`debug` are the
+    // extension modes.
+    options.push(SessionConfigOption {
+        id: "mode".to_string(),
+        name: "Mode".to_string(),
+        kind: "select",
+        category: "mode".to_string(),
+        current_value: current_mode.to_string(),
+        options: vec![
+            SessionConfigSelectOption {
+                value: "ask".to_string(),
+                name: "Ask".to_string(),
+            },
+            SessionConfigSelectOption {
+                value: "plan".to_string(),
+                name: "Plan".to_string(),
+            },
+            SessionConfigSelectOption {
+                value: "code".to_string(),
+                name: "Code".to_string(),
+            },
+            SessionConfigSelectOption {
+                value: "debug".to_string(),
+                name: "Debug".to_string(),
+            },
+        ],
+    });
     options
 }
 
@@ -233,7 +263,7 @@ mod tests {
 
     #[test]
     fn no_model_yields_no_options() {
-        assert!(session_config_options(None, "medium", &levels(&["off"]), &[]).is_empty());
+        assert!(session_config_options(None, "medium", &levels(&["off"]), &[], "ask").is_empty());
     }
 
     #[test]
@@ -241,22 +271,28 @@ mod tests {
         let flagged_false =
             PickerModel::from_model(&model("faux", "map-model", "Map Model", false));
         let mapped = levels(&["minimal", "low", "medium", "high", "xhigh"]);
-        let options = session_config_options(Some(flagged_false.clone()), "high", &mapped, &[]);
+        let options =
+            session_config_options(Some(flagged_false.clone()), "high", &mapped, &[], "ask");
         assert_eq!(
             options.len(),
-            2,
+            3,
             "the addressable map serves the picker: {options:?}"
         );
         assert_eq!(options[1].id, "thought_level");
         assert_eq!(options[1].options.len(), 5, "{options:?}");
         // A model with no selectable surface (`off` only) hides the
         // picker even when the list is non-empty.
-        let off_only =
-            session_config_options(Some(flagged_false.clone()), "off", &levels(&["off"]), &[]);
-        assert_eq!(off_only.len(), 1, "no surface, no picker: {off_only:?}");
+        let off_only = session_config_options(
+            Some(flagged_false.clone()),
+            "off",
+            &levels(&["off"]),
+            &[],
+            "ask",
+        );
+        assert_eq!(off_only.len(), 2, "no surface, no picker: {off_only:?}");
         // An empty levels list hides it too.
-        let none = session_config_options(Some(flagged_false), "off", &[], &[]);
-        assert_eq!(none.len(), 1, "no levels, no picker: {none:?}");
+        let none = session_config_options(Some(flagged_false), "off", &[], &[], "ask");
+        assert_eq!(none.len(), 2, "no levels, no picker: {none:?}");
     }
 
     #[test]
@@ -271,8 +307,9 @@ mod tests {
             "medium",
             &levels(&["off", "medium", "high"]),
             &models,
+            "ask",
         );
-        assert_eq!(options.len(), 2);
+        assert_eq!(options.len(), 3);
         let model_option = &options[0];
         assert_eq!(model_option.id, "model");
         assert_eq!(model_option.kind, "select");
@@ -315,11 +352,12 @@ mod tests {
         // A discovered model with the same (provider, id): the current model
         // replaces the discovered entry in place.
         let models = vec![model("faux", "shared", "Discovered Name", false)];
-        let options = session_config_options(Some(current), "off", &levels(&["off"]), &models);
+        let options =
+            session_config_options(Some(current), "off", &levels(&["off"]), &models, "ask");
         assert_eq!(options[0].options.len(), 1);
         assert_eq!(options[0].options[0].name, "Live Name (faux)");
         // Non-reasoning current model: no effort option.
-        assert_eq!(options.len(), 1);
+        assert_eq!(options.len(), 2);
     }
 
     #[test]
@@ -336,7 +374,7 @@ mod tests {
     #[test]
     fn response_value_carries_config_options() {
         let current = PickerModel::from_model(&model("faux", "faux-1", "Faux Model", false));
-        let options = session_config_options(Some(current), "off", &[], &[]);
+        let options = session_config_options(Some(current), "off", &[], &[], "ask");
         let value = config_options_value(&options);
         assert_eq!(value["configOptions"][0]["id"], "model");
         assert_eq!(

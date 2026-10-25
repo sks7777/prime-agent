@@ -5,14 +5,15 @@
 use std::collections::HashMap;
 
 /// Session-executed commands (their behavior lives in the session engine).
-pub const SESSION_SLASH_COMMAND_NAMES: [&str; 9] = [
+pub const SESSION_SLASH_COMMAND_NAMES: [&str; 10] = [
     "compact",
     "refine",
     "goal",
     "autonomous",
+    "ask",
     "plan",
     "code",
-    "dbg",
+    "debug",
     "exit",
     "todos",
 ];
@@ -82,9 +83,10 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
     BuiltinSlashCommand { name: "refine", description: "Refine continual harness prompt notes, skills, subagents, and memory", execution: SlashCommandExecution::Session, argument_hint: None, aliases: &[], takes_argument: false },
     BuiltinSlashCommand { name: "goal", description: "Set or view a persistent goal; supports pause, resume, and clear", execution: SlashCommandExecution::Session, argument_hint: Some("[objective]"), aliases: &[], takes_argument: true },
     BuiltinSlashCommand { name: "autonomous", description: "Set or view autonomous mode with an optional budget", execution: SlashCommandExecution::Session, argument_hint: Some("[status|off|on [--max-continuations <n>] [--max-turns <n>] [--max-tokens <n>] [--timeout-ms <n>] [--gate <command>]]"), aliases: &[], takes_argument: true },
+    BuiltinSlashCommand { name: "ask", description: "Enter ask mode (read-only Q&A). Trailing args run as a prompt.", execution: SlashCommandExecution::Session, argument_hint: Some("[prompt]"), aliases: &[], takes_argument: true },
     BuiltinSlashCommand { name: "plan", description: "Enter plan mode (read-only exploration). Trailing args run as a prompt.", execution: SlashCommandExecution::Session, argument_hint: Some("[prompt]"), aliases: &[], takes_argument: true },
     BuiltinSlashCommand { name: "code", description: "Enter code mode (full implementation). Trailing args run as a prompt.", execution: SlashCommandExecution::Session, argument_hint: Some("[prompt]"), aliases: &[], takes_argument: true },
-    BuiltinSlashCommand { name: "dbg", description: "Enter debug mode (systematic diagnosis). Trailing args run as a prompt.", execution: SlashCommandExecution::Session, argument_hint: Some("[prompt]"), aliases: &[], takes_argument: true },
+    BuiltinSlashCommand { name: "debug", description: "Enter debug mode (systematic diagnosis). Trailing args run as a prompt.", execution: SlashCommandExecution::Session, argument_hint: Some("[prompt]"), aliases: &[], takes_argument: true },
     BuiltinSlashCommand { name: "exit", description: "Exit plan/code/debug mode and restore default tools", execution: SlashCommandExecution::Session, argument_hint: None, aliases: &[], takes_argument: false },
     BuiltinSlashCommand { name: "todos", description: "Show current plan todo list", execution: SlashCommandExecution::Session, argument_hint: None, aliases: &[], takes_argument: false },
     BuiltinSlashCommand { name: "rlm-max-depth", description: "Set/view the per-chat persistent RLM max depth immediately; never interrupts or queues the running turn", execution: SlashCommandExecution::Client, argument_hint: Some("[<int> [--global]]"), aliases: &[], takes_argument: true },

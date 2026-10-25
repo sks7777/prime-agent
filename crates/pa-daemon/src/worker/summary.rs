@@ -136,6 +136,7 @@ impl Worker {
             context_usage: store.and_then(|store| {
                 crate::session_stats::store_context_usage(store, inputs.model_context_window)
             }),
+            mode: inputs.session_mode,
         }
     }
 
@@ -414,6 +415,7 @@ pub(crate) struct SummaryInputs {
     pub(crate) quota_parked: bool,
     pub(crate) subagents_running: bool,
     pub(crate) progress_note: Option<String>,
+    pub(crate) session_mode: Option<String>,
 }
 
 impl SummaryInputs {
@@ -450,6 +452,7 @@ impl SummaryInputs {
             quota_parked: engine.is_quota_parked(),
             subagents_running: engine.has_running_subagents(),
             progress_note: engine.progress_note(),
+            session_mode: engine.session_mode(),
         }
     }
 }
@@ -463,6 +466,7 @@ pub(crate) struct ConnectionStateInputs {
     is_bash_running: bool,
     goal: Value,
     model_context_window: Option<u64>,
+    session_mode: Option<String>,
 }
 
 impl ConnectionStateInputs {
@@ -500,6 +504,7 @@ impl ConnectionStateInputs {
             is_bash_running: user_bash.is_running(),
             goal: engine.goal_state_value(),
             model_context_window: details.model_context_window,
+            session_mode: engine.session_mode(),
         }
     }
 }
@@ -567,6 +572,7 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
         session_name: store.and_then(|s| s.session_name().map(str::to_string)),
         cwd: core.cwd.clone(),
         thinking_level: Some(inputs.thinking_level),
+        mode: inputs.session_mode,
         is_streaming: streaming,
         is_compacting: compacting,
         is_quota_parked: Some(inputs.quota_parked),

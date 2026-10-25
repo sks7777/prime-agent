@@ -1,12 +1,13 @@
-//! Plan/code/debug mode: built-in three-mode workflow for the Rust port.
+//! Session modes: built-in four-mode workflow (ask/plan/code/debug).
 //!
-//! - [`PlanCodeMode::Plan`] — read-only exploration: edit tool disabled,
+//! - [`SessionMode::Ask`] — default: no extension layer, full tool access.
+//! - [`SessionMode::Plan`] — read-only exploration: edit tool disabled,
 //!   bash mutations gated, plan markdown writes allowed.
-//! - [`PlanCodeMode::Code`] — full implementation mode with adapted prompt.
-//! - [`PlanCodeMode::Debug`] — systematic diagnosis with full tool access.
+//! - [`SessionMode::Code`] — full implementation mode with adapted prompt.
+//! - [`SessionMode::Debug`] — systematic diagnosis with full tool access.
 //!
 //! The mode state lives in the session engine; slash commands
-//! (`/plan`, `/code`, `/dbg`, `/exit`, `/todos`) and the `--plan-code` CLI
+//! (`/plan`, `/code`, `/debug`, `/exit`, `/todos`) and the `--plan-code` CLI
 //! flag drive transitions.
 
 use std::sync::Arc;
@@ -17,29 +18,40 @@ use pa_agent::types::{BeforeToolCallContext, BeforeToolCallResult};
 /// The three operational modes plus the absent (normal) state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PlanCodeMode {
+pub enum SessionMode {
+    /// Read-only Q&A mode: edit blocked, bash restricted to read-only,
+    /// python_repl gated. No file modifications.
+    Ask,
+    /// Read-only exploration: edit tool disabled, bash mutations gated,
+    /// plan markdown writes allowed.
     Plan,
+    /// Full implementation mode with adapted prompt.
     Code,
+    /// Systematic diagnosis with full tool access.
     Debug,
 }
 
-impl PlanCodeMode {
+impl SessionMode {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            Self::Ask => "ask",
             Self::Plan => "plan",
             Self::Code => "code",
             Self::Debug => "debug",
         }
     }
 
-    /// Parse a `--plan-code` flag value.
+    /// Parse a `--session-mode` flag value or `session/set_config_option`
+    /// mode id. `"ask"` sets the read-only Ask mode; other valid ids set
+    /// their respective modes; unknown ids return `None`.
     #[must_use]
     pub fn from_flag(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
+            "ask" => Some(Self::Ask),
             "plan" => Some(Self::Plan),
             "code" => Some(Self::Code),
-            "debug" | "dbg" => Some(Self::Debug),
+            "debug" => Some(Self::Debug),
             _ => None,
         }
     }
@@ -54,26 +66,32 @@ pub struct TodoItem {
 }
 
 /// Mutable plan-code session state. Owned by the session engine behind a
-/// `Mutex<PlanCodeState>`.
+/// `Mutex<SessionModeState>`.
 #[derive(Debug, Clone, Default)]
-pub struct PlanCodeState {
-    /// `None` when no mode is active.
-    pub mode: Option<PlanCodeMode>,
+pub struct SessionModeState {
+    /// The active mode (`None` when no extension mode is set — the default).
+    pub mode: Option<SessionMode>,
     /// Whether execution mode is active (plan steps being tracked).
     pub executing: bool,
     /// Tracked plan steps.
     pub todos: Vec<TodoItem>,
 }
 
-impl PlanCodeState {
+impl SessionModeState {
     /// Whether plan-mode tool gating should apply.
     #[must_use]
     pub fn is_plan_mode(&self) -> bool {
-        self.mode == Some(PlanCodeMode::Plan)
+        self.mode == Some(SessionMode::Plan)
+    }
+
+    /// Whether ask-mode (read-only) tool gating should apply.
+    #[must_use]
+    pub fn is_ask_mode(&self) -> bool {
+        self.mode == Some(SessionMode::Ask)
     }
 
     /// Enter a mode, clearing todos and execution state.
-    pub fn enter(&mut self, mode: PlanCodeMode) {
+    pub fn enter(&mut self, mode: SessionMode) {
         self.mode = Some(mode);
         self.executing = false;
         self.todos.clear();
@@ -478,6 +496,16 @@ static BLOCKED_PYTHON_PATTERNS: &[&str] = &[
     r"\bgetattr\s*\(\s*os\b",
     r"\bcompile\s*\(",
     r"(?:from\s+edit\s+import)|(?:import\s+edit\s+as\s+)",
+    // subprocess: prefix form only
+    r"\bsubprocess\s*\.\s*(?:run|Popen|call|check_output|check_call|getoutput|getstatusoutput)\s*\(",
+    // shutil: prefix form only
+    r"\bshutil\s*\.\s*(?:rmtree|copy|move|copytree|copyfile|copyfileobj|make_archive)\s*\(",
+    // open() with write/append mode — file modification
+    r#"\bopen\s*\([^)]*['"][wa+]['"]"#,
+    // pathlib + file object write methods
+    r"\.write\s*\(",
+    r"\.write_text\s*\(",
+    r"\.write_bytes\s*\(",
 ];
 
 /// Check IPython code for dangerous operations in plan mode.
@@ -582,55 +610,100 @@ pub fn extract_done_steps(text: &str) -> Vec<u32> {
 /// - IPython tool: block dangerous patterns (edit bypass, shell exec, eval).
 ///
 /// The hook is only active when plan mode is engaged (checked via the
-/// shared `PlanCodeState` mutex). In non-plan modes it passes through.
+/// shared `SessionModeState` mutex). In non-plan modes it passes through.
 #[must_use]
-pub fn plan_mode_before_tool_call(
-    state: Arc<std::sync::Mutex<PlanCodeState>>,
+pub fn session_mode_before_tool_call(
+    state: Arc<std::sync::Mutex<SessionModeState>>,
 ) -> pa_agent::agent_loop::BeforeToolCallFn {
     Arc::new(move |context: BeforeToolCallContext, _signal| {
         let state = Arc::clone(&state);
         Box::pin(async move {
-            let is_plan = {
-                let guard = state.lock().expect("plan-code state lock");
-                guard.is_plan_mode()
+            let (is_plan, is_ask) = {
+                let guard = state.lock().expect("session-mode state lock");
+                (guard.is_plan_mode(), guard.is_ask_mode())
             };
-            if !is_plan {
+            if !is_plan && !is_ask {
                 return Ok(None);
             }
             let tool_name = context.tool_call.name.as_str();
-            match tool_name {
-                "edit" => {
-                    let path = context
-                        .args
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if path.contains("..") {
-                        return Ok(Some(BeforeToolCallResult {
-                            block: true,
-                            reason: Some(format!(
+            // Ask mode: read-only — edit completely blocked, bash read-only only.
+            if is_ask {
+                match tool_name {
+                    "edit" => Ok(Some(BeforeToolCallResult {
+                        block: true,
+                        reason: Some(
+                            "Ask mode: editing is not allowed. Switch to a different mode to make changes.".to_string(),
+                        ),
+                    })),
+                    "bash" => {
+                        let command = context
+                            .args
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        match classify_bash_command(command) {
+                            BashDecision::Allow => Ok(None),
+                            BashDecision::Confirm | BashDecision::Block => {
+                                Ok(Some(BeforeToolCallResult {
+                                    block: true,
+                                    reason: Some(format!(
+                                        "Ask mode: only read-only commands are allowed.\nCommand: {command}"
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "python_repl" => {
+                        let code = context
+                            .args
+                            .get("code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if let Some(violation) = check_dangerous_ipython(code) {
+                            return Ok(Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(format!("Ask mode: {violation}")),
+                            }));
+                        }
+                        Ok(None)
+                    }
+                    _ => Ok(None),
+                }
+            } else {
+                // Plan mode: edit allowed for plan files, bash classified, ipython restricted.
+                match tool_name {
+                    "edit" => {
+                        let path = context
+                            .args
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if path.contains("..") {
+                            return Ok(Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(format!(
                                 "Plan mode: path traversal (\"..\") is not allowed.\nPath: {path}"
                             )),
-                        }));
-                    }
-                    if is_plan_file_path(path) || is_tmp_path(path) {
-                        return Ok(None);
-                    }
-                    Ok(Some(BeforeToolCallResult {
+                            }));
+                        }
+                        if is_plan_file_path(path) || is_tmp_path(path) {
+                            return Ok(None);
+                        }
+                        Ok(Some(BeforeToolCallResult {
                         block: true,
                         reason: Some(format!(
                             "Plan mode: only plan files (PLAN*.md, plans/*.md) or files under {} can be edited.\nAttempted path: {path}\nTo edit source files, exit plan mode with /code.",
                             std::env::temp_dir().display()
                         )),
                     }))
-                }
-                "bash" => {
-                    let command = context
-                        .args
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    match classify_bash_command(command) {
+                    }
+                    "bash" => {
+                        let command = context
+                            .args
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        match classify_bash_command(command) {
                         BashDecision::Allow => Ok(None),
                         BashDecision::Block => Ok(Some(BeforeToolCallResult {
                             block: true,
@@ -645,38 +718,39 @@ pub fn plan_mode_before_tool_call(
                             )),
                         })),
                     }
-                }
-                "ipython" => {
-                    let code = context
-                        .args
-                        .get("code")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if let Some(violation) = check_dangerous_ipython(code) {
-                        return Ok(Some(BeforeToolCallResult {
-                            block: true,
-                            reason: Some(format!(
+                    }
+                    "python_repl" => {
+                        let code = context
+                            .args
+                            .get("code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if let Some(violation) = check_dangerous_ipython(code) {
+                            return Ok(Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(format!(
                                 "Plan mode: {violation}\nTo allow it, exit plan mode with /code."
                             )),
-                        }));
+                            }));
+                        }
+                        Ok(None)
                     }
-                    Ok(None)
+                    _ => Ok(None),
                 }
-                _ => Ok(None),
             }
         })
     })
 }
 
 // ---------------------------------------------------------------------------
-// Mode-switch banner (for /code or /dbg following /plan)
+// Mode-switch banner (for /code or /debug following /plan)
 // ---------------------------------------------------------------------------
 
 /// The banner prepended to a mode-switch prompt when transitioning from
 /// plan to code or debug, so the model stops replaying stale plan-mode
 /// restrictions from the transcript.
 #[must_use]
-pub fn mode_switch_banner(to_mode: PlanCodeMode) -> String {
+pub fn mode_switch_banner(to_mode: SessionMode) -> String {
     let mode_label = to_mode.label();
     format!(
         "The operational mode has changed from plan to {mode_label}.\n\
@@ -774,6 +848,33 @@ mod tests {
     }
 
     #[test]
+    fn ipython_blocks_file_writes_primer8() {
+        // PRIMER-8: file writes via open() in write/append mode
+        assert!(check_dangerous_ipython("open('file', 'w').write('x')").is_some());
+        assert!(check_dangerous_ipython("open('file', 'a').write('x')").is_some());
+        assert!(check_dangerous_ipython("open('file', 'w+').write('x')").is_some());
+        // pathlib write methods
+        assert!(check_dangerous_ipython("Path('f').write_text('x')").is_some());
+        assert!(check_dangerous_ipython("Path('f').write_bytes(b'x')").is_some());
+        // file object .write()
+        assert!(check_dangerous_ipython("f.write('data')").is_some());
+        // shutil destructive (prefix form only)
+        assert!(check_dangerous_ipython("shutil.rmtree('x')").is_some());
+        assert!(check_dangerous_ipython("shutil.copy('a', 'b')").is_some());
+        assert!(check_dangerous_ipython("shutil.make_archive('x', 'zip', '.')").is_some());
+        // subprocess (prefix form only)
+        assert!(check_dangerous_ipython("subprocess.run(['ls'])").is_some());
+        assert!(check_dangerous_ipython("subprocess.getoutput('ls')").is_some());
+        // read still OK
+        assert!(check_dangerous_ipython("open('file').read()").is_none());
+        assert!(check_dangerous_ipython("Path('f').read_text()").is_none());
+        // normal code not blocked
+        assert!(check_dangerous_ipython("import subprocess").is_none());
+        assert!(check_dangerous_ipython("from shutil import rmtree").is_none());
+        assert!(check_dangerous_ipython("run(['ls'])").is_none());
+    }
+
+    #[test]
     fn todo_extraction() {
         let message = "Here's the plan:\n\nPlan:\n1. Read the config file\n2. Update the database schema\n3. Run migrations\n";
         let items = extract_todo_items(message);
@@ -796,8 +897,8 @@ mod tests {
 
     #[test]
     fn mark_completed_updates_state() {
-        let mut state = PlanCodeState {
-            mode: Some(PlanCodeMode::Code),
+        let mut state = SessionModeState {
+            mode: Some(SessionMode::Code),
             executing: true,
             todos: vec![
                 TodoItem {
@@ -821,9 +922,9 @@ mod tests {
 
     #[test]
     fn status_label_reflects_mode_and_progress() {
-        let mut state = PlanCodeState::default();
+        let mut state = SessionModeState::default();
         assert_eq!(state.status_label(), "");
-        state.enter(PlanCodeMode::Plan);
+        state.enter(SessionMode::Plan);
         assert_eq!(state.status_label(), "plan");
         state.executing = true;
         state.todos = vec![
@@ -843,20 +944,19 @@ mod tests {
 
     #[test]
     fn mode_from_flag() {
-        assert_eq!(PlanCodeMode::from_flag("plan"), Some(PlanCodeMode::Plan));
-        assert_eq!(PlanCodeMode::from_flag("code"), Some(PlanCodeMode::Code));
-        assert_eq!(PlanCodeMode::from_flag("debug"), Some(PlanCodeMode::Debug));
-        assert_eq!(PlanCodeMode::from_flag("dbg"), Some(PlanCodeMode::Debug));
-        assert_eq!(PlanCodeMode::from_flag("invalid"), None);
+        assert_eq!(SessionMode::from_flag("plan"), Some(SessionMode::Plan));
+        assert_eq!(SessionMode::from_flag("code"), Some(SessionMode::Code));
+        assert_eq!(SessionMode::from_flag("debug"), Some(SessionMode::Debug));
+        assert_eq!(SessionMode::from_flag("invalid"), None);
     }
 
     #[test]
     fn enter_and_exit_transitions() {
-        let mut state = PlanCodeState::default();
+        let mut state = SessionModeState::default();
         assert!(!state.is_plan_mode());
-        state.enter(PlanCodeMode::Plan);
+        state.enter(SessionMode::Plan);
         assert!(state.is_plan_mode());
-        assert_eq!(state.mode, Some(PlanCodeMode::Plan));
+        assert_eq!(state.mode, Some(SessionMode::Plan));
         state.exit();
         assert!(!state.is_plan_mode());
         assert!(state.todos.is_empty());

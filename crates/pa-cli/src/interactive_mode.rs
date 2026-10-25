@@ -492,7 +492,7 @@ fn build_tui_options(
         // The raw `--models` patterns ride the create config (the daemon
         // owns the resolution).
         models: config.models.clone(),
-        plan_code: config.plan_code.clone(),
+        session_mode: config.session_mode.clone(),
         no_session: options.session.no_session,
         session,
         initial_message: options.initial_message.clone(),
