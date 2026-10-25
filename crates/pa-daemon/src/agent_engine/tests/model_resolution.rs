@@ -365,6 +365,7 @@ fn restore_test_engine(
 
 #[test]
 fn the_startup_chain_refuses_models_outside_the_allowlist() {
+    let _ambient_keys = crate::test_support::ScrubbedProviderEnv::acquire();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
@@ -865,6 +866,7 @@ async fn a_replacement_re_clamps_the_thinking_level_against_the_restored_model()
 
 #[test]
 fn switch_model_never_poisons_the_selection_with_a_refused_candidate() {
+    let _ambient_keys = crate::test_support::ScrubbedProviderEnv::acquire();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
@@ -1410,6 +1412,7 @@ async fn a_fresh_scoped_create_falls_back_with_a_recorded_message() {
 
 #[test]
 fn an_explicit_scope_with_no_matches_does_not_warn_about_an_excluded_default() {
+    let _ambient_keys = crate::test_support::ScrubbedProviderEnv::acquire();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
