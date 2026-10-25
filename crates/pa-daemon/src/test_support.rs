@@ -8,198 +8,50 @@
 #[cfg(test)]
 pub(crate) static TELEMETRY_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Write a harness store holding one factory spec per id (plus a memory, which never counts as a
-/// spec) — the on-disk shape the kernel's harness writes.
+/// Scrubs ambient provider credentials from the process env for the
+/// guard's lifetime: `get_available` counts a provider authenticated
+/// when its env key is set, so a developer/exported env leaks the
+/// compiled-fallback catalog into startup-chain tests. Every provider's
+/// key vars plus `PRIME_TEAM_ID` are saved on acquire and restored on
+/// drop, serialized through [`TELEMETRY_ENV_MUTEX`].
 #[cfg(test)]
-pub(crate) fn write_factory_specs(harness_dir: &std::path::Path, ids: &[&str]) {
-    let entry = |id: &str, kind: &str| {
-        serde_json::json!({
-            "id": id, "kind": kind, "title": id, "content": "", "path": "general",
-            "reference": {}, "arguments": {}, "metadata": {}, "source": "agent",
-            "created_at": "2026-10-16T00:00:00Z", "updated_at": "2026-10-16T00:00:00Z",
-            "version": 1,
-        })
-    };
-    let factory: serde_json::Map<String, serde_json::Value> = ids
-        .iter()
-        .map(|id| ((*id).to_string(), entry(id, "factory")))
-        .collect();
-    std::fs::create_dir_all(harness_dir).unwrap();
-    std::fs::write(
-        pa_core::refinement::get_harness_state_path(harness_dir),
-        serde_json::json!({
-            "schema": 1,
-            "entries": { "factory": factory, "memory": { "m": entry("m", "memory") } },
-            "refinements": [],
-        })
-        .to_string(),
-    )
-    .unwrap();
+pub(crate) struct ScrubbedProviderEnv {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    _env_lock: std::sync::MutexGuard<'static, ()>,
 }
 
-/// Hold a real file read behind a FIFO until another future on the same
-/// current-thread runtime releases it. A bounded rescue makes the synchronous
-/// regression fail without hanging the process; restore the file before asserting.
-#[cfg(all(test, unix))]
-pub(crate) async fn assert_async_file_read<T>(
-    path: &std::path::Path,
-    read: impl std::future::Future<Output = T>,
-) -> T {
-    let raw = std::fs::read(path).expect("original state");
-    std::fs::remove_file(path).expect("replace state with FIFO");
-    assert!(std::process::Command::new("mkfifo")
-        .arg(path)
-        .status()
-        .expect("mkfifo")
-        .success());
-    let (opened_tx, opened_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let fifo_path = path.to_path_buf();
-    let fifo_raw = raw.clone();
-    let writer = std::thread::spawn(move || {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(fifo_path)
-            .expect("FIFO writer");
-        opened_tx.send(()).expect("reader opened");
-        let responsive = release_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .is_ok();
-        file.write_all(&fifo_raw).expect("release file read");
-        responsive
-    });
-    let (result, ()) = tokio::join!(read, async {
-        opened_rx.await.expect("storage read started");
-        let _ = release_tx.send(());
-    });
-    let responsive = writer.join().expect("FIFO writer");
-    std::fs::remove_file(path).expect("remove FIFO");
-    std::fs::write(path, raw).expect("restore state");
-    assert!(
-        responsive,
-        "the storage read must not block the async executor"
-    );
-    result
-}
-
-/// Serve a real file through a FIFO and count how often it is read: every read receives the
-/// original bytes. A read after the first is served only once `finish` stays silent for a
-/// bounded window, so an extra read is counted instead of hanging the process.
-#[cfg(all(test, unix))]
-pub(crate) struct FileReadCounter {
-    path: std::path::PathBuf,
-    raw: Vec<u8>,
-    done: std::sync::mpsc::Sender<()>,
-    server: std::thread::JoinHandle<usize>,
-}
-
-#[cfg(all(test, unix))]
-pub(crate) fn count_file_reads(path: &std::path::Path) -> FileReadCounter {
-    let raw = std::fs::read(path).expect("original file");
-    std::fs::remove_file(path).expect("replace file with FIFO");
-    assert!(std::process::Command::new("mkfifo")
-        .arg(path)
-        .status()
-        .expect("mkfifo")
-        .success());
-    let (done, done_rx) = std::sync::mpsc::channel();
-    let fifo_path = path.to_path_buf();
-    let fifo_raw = raw.clone();
-    let server = std::thread::spawn(move || {
-        use std::io::Write;
-        let mut reads = 0;
-        loop {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&fifo_path)
-                .expect("FIFO writer");
-            if done_rx.try_recv().is_ok() {
-                return reads;
-            }
-            file.write_all(&fifo_raw).expect("serve file read");
-            drop(file);
-            reads += 1;
-            if done_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .is_ok()
-            {
-                return reads;
+#[cfg(test)]
+impl ScrubbedProviderEnv {
+    pub(crate) fn acquire() -> Self {
+        let env_lock = TELEMETRY_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut saved = Vec::new();
+        for provider in pa_ai::models_generated::get_providers() {
+            if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
+                for var in vars {
+                    saved.push((var, std::env::var_os(var)));
+                    std::env::remove_var(var);
+                }
             }
         }
-    });
-    FileReadCounter {
-        path: path.to_path_buf(),
-        raw,
-        done,
-        server,
-    }
-}
-
-#[cfg(all(test, unix))]
-impl FileReadCounter {
-    /// Stop serving, restore the file, and return how many reads it served.
-    pub(crate) fn finish(self) -> usize {
-        self.done.send(()).expect("FIFO server running");
-        let unblock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)
-            .expect("FIFO unblock");
-        let reads = self.server.join().expect("FIFO server");
-        drop(unblock);
-        std::fs::remove_file(&self.path).expect("remove FIFO");
-        std::fs::write(&self.path, self.raw).expect("restore file");
-        reads
-    }
-}
-
-/// Scoped process-env overrides for the live-kernel tests: applied on
-/// construction, restored on drop.
-#[cfg(test)]
-pub(crate) struct KernelEnvOverride {
-    saved: Vec<(String, Option<String>)>,
-}
-
-#[cfg(test)]
-impl KernelEnvOverride {
-    pub(crate) fn apply(pairs: &[(&str, Option<String>)]) -> Self {
-        let saved = pairs
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for (key, value) in pairs {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
+        saved.push(("PRIME_TEAM_ID", std::env::var_os("PRIME_TEAM_ID")));
+        std::env::remove_var("PRIME_TEAM_ID");
+        Self {
+            saved,
+            _env_lock: env_lock,
         }
-        KernelEnvOverride { saved }
     }
 }
 
 #[cfg(test)]
-impl Drop for KernelEnvOverride {
+impl Drop for ScrubbedProviderEnv {
     fn drop(&mut self) {
-        for (key, value) in &self.saved {
+        for (name, value) in self.saved.drain(..) {
             match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
             }
         }
     }
-}
-
-/// The kernel python for the live-kernel tests (skipped without one).
-#[cfg(test)]
-pub(crate) fn live_kernel_python() -> Option<std::path::PathBuf> {
-    let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!("kernel python {candidate:?} not found; skipping live kernel test");
-    None
 }
