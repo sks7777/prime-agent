@@ -205,22 +205,6 @@ pub enum AcpSessionUpdate {
     /// plan with per-entry status. bb renders this as a checklist.
     #[serde(rename = "plan")]
     Plan { entries: Vec<PlanEntry> },
-    /// The session's available slash commands (ACP `available_commands_update`):
-    /// the builtin commands the agent recognizes. bb populates autocomplete from this.
-    #[serde(rename = "available_commands_update")]
-    AvailableCommands {
-        #[serde(rename = "availableCommands")]
-        available_commands: Vec<AvailableCommand>,
-    },
-}
-
-/// One entry in the available-commands list: a slash command the agent recognizes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AvailableCommand {
-    pub name: String,
-    pub description: String,
-    #[serde(rename = "inputHint", skip_serializing_if = "Option::is_none")]
-    pub input_hint: Option<String>,
 }
 
 /// A plan entry's lifecycle status (TS `acpPlanEntryStatus`):
@@ -233,22 +217,13 @@ pub enum PlanEntryStatus {
     Completed,
 }
 
-/// The relative importance of a plan entry (ACP v1 `PlanEntryPriority`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanEntryPriority {
-    High,
-    Medium,
-    Low,
-}
-
-/// One entry in a plan update (ACP v1 `plan` entries array):
-/// `content` is the entry text, `priority` and `status` are required.
+/// One entry in a plan update (TS `acpPlanUpdate` entries array):
+/// `content` is the entry text, `status` is optional.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanEntry {
     pub content: String,
-    pub priority: PlanEntryPriority,
-    pub status: PlanEntryStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<PlanEntryStatus>,
 }
 
 impl AcpSessionUpdate {
