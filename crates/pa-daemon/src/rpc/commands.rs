@@ -224,6 +224,7 @@ pub async fn handle_command(state: &Arc<RpcState>, command: protocol::RpcCommand
         "cycle_model" => model_commands::cycle_model(state).await,
         "get_available_models" => model_commands::get_available_models(state).await,
         "set_thinking_level" => model_commands::set_thinking_level(state, &payload).await,
+        "set_mode" => model_commands::set_mode(state, &payload).await,
         "cycle_thinking_level" => model_commands::cycle_thinking_level(state).await,
         "set_steering_mode" | "set_follow_up_mode" => {
             model_commands::set_queue_mode(state, &payload, name).await

@@ -68,6 +68,39 @@ fn write_thinking_pair_models_json(agent_dir: &std::path::Path, base_url: &str) 
     .unwrap();
 }
 
+/// The connection state's `model` metadata carries the model's context
+/// window: the ACP `usage_update` seeder reads `model.contextWindow` off
+/// `get_connection_state` (PRIME-53), so a stripped field silently
+/// disables bb's context-usage reporting for the whole session.
+#[test]
+fn model_metadata_carries_the_context_window() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
+
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        cwd: dir.path().to_path_buf(),
+        agent_dir,
+        provider: Some("battery".to_string()),
+        model: Some("mock-1".to_string()),
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: None,
+        supervisor_link: None,
+        telemetry_disabled: None,
+        cron_store: None,
+        queued_steering_probe: None,
+        session_mode: None,
+    })
+    .unwrap();
+    let metadata = engine.model_metadata().expect("resolved model metadata");
+    assert_eq!(metadata["id"], "mock-1");
+    assert_eq!(metadata["provider"], "battery");
+    assert_eq!(metadata["contextWindow"], serde_json::json!(128_000));
+}
+
 #[test]
 fn create_config_flags_reach_the_engine_model_resolution() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -89,7 +122,7 @@ fn create_config_flags_reach_the_engine_model_resolution() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     engine.configure_model(EngineModelSelection {
@@ -132,7 +165,7 @@ fn settings_default_drives_unflagged_resolution() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let model = engine.resolve_registry_model().expect("resolved model");
@@ -325,7 +358,7 @@ fn restore_test_engine(
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .expect("engine")
 }
@@ -354,7 +387,7 @@ fn the_startup_chain_refuses_models_outside_the_allowlist() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let error = engine
@@ -856,7 +889,7 @@ fn switch_model_never_poisons_the_selection_with_a_refused_candidate() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let model = engine.resolve_registry_model().expect("resolved model");
@@ -904,7 +937,7 @@ fn switch_model_propagates_the_new_model_to_the_child_identity() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let children = engine
@@ -946,7 +979,7 @@ fn configure_model_merges_only_present_fields() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     engine.configure_model(EngineModelSelection {
@@ -1002,7 +1035,7 @@ fn agent_engine_reports_model_resolution_failures() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let mut events: Vec<EngineEvent> = Vec::new();
@@ -1072,7 +1105,7 @@ fn configure_model_thinking_clamps_to_the_models_supported_levels() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     // Without an explicit flag the TS default applies (medium, clamped).
@@ -1173,7 +1206,7 @@ fn a_model_switch_keeps_the_agent_slot_in_sync_with_the_reported_level() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let model = engine.resolve_model().expect("resolves mock-reason");

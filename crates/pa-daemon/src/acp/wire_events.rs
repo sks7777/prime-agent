@@ -300,7 +300,7 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
         }
         "goal_update" => {
             let goal = event.get("goal");
-            vec![AcpSessionUpdate::SessionInfoUpdate {
+            let mut updates = vec![AcpSessionUpdate::SessionInfoUpdate {
                 meta: prime_agent_meta(&PrimeAgentSessionMeta {
                     goal: Some(super::meta::PrimeAgentGoalMeta {
                         status: goal
@@ -321,7 +321,33 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                     }),
                     ..Default::default()
                 }),
-            }]
+            }];
+            // The goal's objective is the plan's content; the goal's status
+            // maps to the plan entry status (complete→completed, active→
+            // in_progress, anything else→pending). A goal without an
+            // objective carries no plan entry.
+            if let Some(objective) = goal
+                .and_then(|goal| goal.get("objective"))
+                .and_then(Value::as_str)
+                .filter(|objective| !objective.is_empty())
+            {
+                let status = goal
+                    .and_then(|goal| goal.get("status"))
+                    .and_then(Value::as_str);
+                let plan_status = match status {
+                    Some("complete") => super::types::PlanEntryStatus::Completed,
+                    Some("active") => super::types::PlanEntryStatus::InProgress,
+                    _ => super::types::PlanEntryStatus::Pending,
+                };
+                updates.push(AcpSessionUpdate::Plan {
+                    entries: vec![super::types::PlanEntry {
+                        content: objective.to_string(),
+                        priority: super::types::PlanEntryPriority::High,
+                        status: plan_status,
+                    }],
+                });
+            }
+            updates
         }
         "compaction_end" => {
             let result = event.get("result");

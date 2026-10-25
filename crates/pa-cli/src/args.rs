@@ -169,8 +169,8 @@ pub struct Args {
     pub autonomous_timeout_ms: Option<u64>,
     pub goal: Option<String>,
     pub goal_token_budget: Option<u32>,
-    /// `--plan-code <plan|code|debug>`: start in a specific mode.
-    pub plan_code: Option<String>,
+    /// `--session-mode <ask|plan|code|debug>`: start in a specific mode.
+    pub session_mode: Option<String>,
     /// The `--list-models` flag's tri-state (None = absent,
     /// Some(None) = the bare flag, Some(Some(x)) = with a value).
     #[allow(clippy::option_option)] // the CLI flag's tri-state is genuinely a double Option
@@ -423,13 +423,13 @@ pub fn parse_args(args: &[String]) -> Args {
                 let value = require_value!(arg);
                 result.goal_token_budget = parse_positive_u32(&value, arg, &mut result.diagnostics);
             }
-            "--plan-code" => {
+            "--session-mode" => {
                 let value = require_value!(arg);
                 match value.as_str() {
-                    "plan" | "code" | "debug" | "dbg" => result.plan_code = Some(value),
+                    "ask" | "plan" | "code" | "debug" => result.session_mode = Some(value),
                     _ => {
                         result.diagnostics.push(Diagnostic::error(format!(
-                            "Invalid --plan-code \"{value}\". Valid values: plan, code, debug"
+                            "Invalid --session-mode \"{value}\". Valid values: ask, plan, code, debug"
                         )));
                     }
                 }

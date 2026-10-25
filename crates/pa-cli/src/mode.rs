@@ -89,8 +89,8 @@ pub struct RuntimeConfig {
     pub telemetry_disabled: bool,
     pub serialized_refine: bool,
     pub initial_goal: Option<InitialGoal>,
-    /// `--plan-code <plan|code|debug>`: start in a specific mode.
-    pub plan_code: Option<String>,
+    /// `--session-mode <ask|plan|code|debug>`: start in a specific mode.
+    pub session_mode: Option<String>,
 }
 
 /// Session selection options that stay client-side.
@@ -278,7 +278,7 @@ pub fn runtime_config_from_args(
             objective: objective.clone(),
             token_budget: parsed.goal_token_budget,
         }),
-        plan_code: parsed.plan_code.clone(),
+        session_mode: parsed.session_mode.clone(),
     }
 }
 

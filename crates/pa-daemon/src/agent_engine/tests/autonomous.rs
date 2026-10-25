@@ -97,7 +97,7 @@ fn autonomous_gate_pass_and_failure_drive_the_loop() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
-            plan_code_mode: None,
+            session_mode: None,
         })
         .unwrap(),
     );
@@ -203,7 +203,7 @@ fn the_turn_loop_is_driven_by_the_driver_trait() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
-            plan_code_mode: None,
+            session_mode: None,
         })
         .unwrap(),
     );

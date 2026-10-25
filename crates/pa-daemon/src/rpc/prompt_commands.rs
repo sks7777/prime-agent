@@ -141,6 +141,17 @@ async fn run_session_command(
         // so this `compaction_start` publishes AFTER the prompt's response
         // (the direct `compact` handler flushes early).
     }
+    let mode_before = if matches!(&*command.name, "ask" | "plan" | "code" | "debug" | "exit") {
+        engine
+            .session_mode
+            .lock()
+            .ok()
+            .map(|state| state.mode)
+            .map(|m| m.map(|m| m.label().to_string()))
+            .flatten()
+    } else {
+        None
+    };
     let execution = {
         // The executor rebuilds session context on its compact branch:
         // serialize against the other context rebuilders.
@@ -156,6 +167,26 @@ async fn run_session_command(
         // `execution.error` and the session events.
         execute_session_command(&engine, &mut params, command, images).await
     };
+    let mode_after = if matches!(&*command.name, "ask" | "plan" | "code" | "debug" | "exit") {
+        engine
+            .session_mode
+            .lock()
+            .ok()
+            .map(|state| state.mode)
+            .map(|m| m.map(|m| m.label().to_string()))
+            .flatten()
+    } else {
+        None
+    };
+    if mode_before != mode_after {
+        state
+            .session
+            .write_connection_output(serde_json::json!({
+                "type": "mode_changed",
+                "mode": mode_after,
+            }))
+            .await;
+    }
     if is_compact {
         // The post-compaction kernel notice rides between the start and
         // the settled end (the ACP seam's order).

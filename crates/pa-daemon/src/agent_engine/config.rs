@@ -39,8 +39,8 @@ pub struct AgentEngineConfig {
     /// the next boundary and the steer delivers next (the follow-up lane
     /// never stops the run).
     pub queued_steering_probe: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
-    /// Initial plan-code mode from `--plan-code` CLI flag.
-    pub plan_code_mode: Option<pa_core::plan_code::PlanCodeMode>,
+    /// Initial session mode from `--session-mode` CLI flag.
+    pub session_mode: Option<pa_core::session_mode::SessionMode>,
 }
 
 /// Supervisor-link coordinates for a daemon worker.
@@ -92,8 +92,8 @@ pub(crate) struct CreateSessionResources {
     /// The creating client's mode (`interactive`, `acp`, ...) for the
     /// session's telemetry; absent reports `unknown` (TS parity).
     pub(crate) execution_mode: Option<String>,
-    /// `--plan-code <plan|code|debug>`: start in a specific mode.
-    pub(crate) plan_code: Option<String>,
+    /// `--session-mode <ask|plan|code|debug>`: start in a specific mode.
+    pub(crate) session_mode: Option<String>,
 }
 
 /// The create command's `--models` scope inputs: the startup chain picks
