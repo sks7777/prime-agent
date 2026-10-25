@@ -1372,6 +1372,12 @@ impl SessionEngine for AgentSessionEngine {
         if let Some(command) =
             crate::session_commands::parse_prompt_session_command(&request.message)
         {
+            let mode_before = if matches!(command.name, "ask" | "plan" | "code" | "debug" | "exit")
+            {
+                self.session_mode()
+            } else {
+                None
+            };
             let Some(execution) = crate::session_commands::run_session_command(
                 self,
                 &command,
@@ -1383,6 +1389,12 @@ impl SessionEngine for AgentSessionEngine {
             if let Some(error) = &execution.error {
                 emit(EngineEvent::Done(Err(error.clone())));
                 return;
+            }
+            if matches!(command.name, "ask" | "plan" | "code" | "debug" | "exit") {
+                let mode_after = self.session_mode();
+                if mode_before != mode_after {
+                    emit(EngineEvent::ModeChanged { mode: mode_after });
+                }
             }
             // A goal start/resume schedules its continuation context as the
             // turn (an injected custom row): the durable pair precedes the

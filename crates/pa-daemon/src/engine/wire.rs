@@ -117,6 +117,11 @@ pub enum EngineEvent {
     /// A durable custom message (wire `role: "custom"`): recorded into the
     /// session store, framed to clients as a `message_start` + `message_end` pair.
     CustomMessage(Value),
+    /// The session mode changed (TS wire `mode_changed`): ACP clients refresh
+    /// their `mode` configOption on this event.
+    ModeChanged {
+        mode: Option<String>,
+    },
     /// A compaction run started (TS `compaction_start` wire event); the
     /// payload is the complete event. Emitted before the summarizer runs so
     /// attached clients can swap their loader to the compaction label.

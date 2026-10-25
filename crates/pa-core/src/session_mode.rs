@@ -968,4 +968,31 @@ mod tests {
         assert_eq!(clean_step_text("`code` thing"), "Code thing");
         assert_eq!(clean_step_text("Run the tests"), "Tests");
     }
+
+    // Regression: websearch skill code must not trigger BLOCKED_PYTHON_PATTERNS.
+    // The ask-mode prompt previously forbade all code execution; the fix
+    // allows read-only python_repl. The tool gating must still pass websearch.
+    #[test]
+    fn websearch_code_is_not_dangerous() {
+        assert!(
+            check_dangerous_ipython("await websearch(\"latest news\")").is_none(),
+            "websearch call should not match any blocked pattern"
+        );
+        assert!(
+            check_dangerous_ipython(
+                "result = await websearch(\"query\")
+print(result)"
+            )
+            .is_none(),
+            "websearch with print should not match any blocked pattern"
+        );
+    }
+
+    // Regression: a blocked-pattern string literal in code (not a real call)
+    // must still be detected — the block reason must reach the caller.
+    #[test]
+    fn blocked_python_pattern_still_detected() {
+        assert!(check_dangerous_ipython("os.system('rm -rf /')").is_some());
+        assert!(check_dangerous_ipython("open('f.txt', 'w')").is_some());
+    }
 }
