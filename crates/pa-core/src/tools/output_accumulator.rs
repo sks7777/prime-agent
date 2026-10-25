@@ -455,5 +455,66 @@ impl OutputAccumulator {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn acc() -> OutputAccumulator {
+        OutputAccumulator::new(&OutputAccumulatorOptions {
+            max_lines: 100,
+            max_bytes: 1024,
+            temp_file_prefix: "test".to_string(),
+        })
+    }
+
+    /// Regression for Fix 3: a lone `\r` (no `\n`) counts as a line break so
+    /// the byte limit no longer cuts a progress-bar sequence mid-phrase.
+    #[test]
+    fn lone_carriage_return_counts_as_line() {
+        let mut a = acc();
+        // "B1 PASS\rB2 idle" — two visible rows, one line break at \r.
+        a.append(b"B1 PASS\rB2 idle");
+        let snap = a.snapshot();
+        assert_eq!(snap.truncation.total_lines, 2, "two rows after \r");
+        assert!(snap.content.contains("B1 PASS"));
+        assert!(snap.content.contains("B2 idle"));
+    }
+
+    /// `\r\n` counts as a single line break, not two.
+    #[test]
+    fn cr_lf_counts_as_one_line() {
+        let mut a = acc();
+        a.append(b"line1\r\nline2");
+        let snap = a.snapshot();
+        assert_eq!(snap.truncation.total_lines, 2, "CRLF is one break");
+    }
+
+    /// A trailing lone `\r` with no text after it still increments the row count
+    /// so the next append starts on a fresh row.
+    #[test]
+    fn trailing_lone_cr_starts_new_row() {
+        let mut a = acc();
+        a.append(b"row1\r");
+        a.append(b"row2");
+        let snap = a.snapshot();
+        assert_eq!(snap.truncation.total_lines, 2);
+        assert!(snap.content.contains("row1"));
+        assert!(snap.content.contains("row2"));
+    }
+
+    /// `current_line_bytes` tracks the partial trailing line after the last
+    /// break (whichever kind), so the byte-limit rescue knows the real size of
+    /// the unfinished line.
+    #[test]
+    fn current_line_bytes_after_lone_cr() {
+        let mut a = acc();
+        a.append(b"partial\r");
+        // After the \r, "partial" is a complete row; current line is empty.
+        assert_eq!(a.get_last_line_bytes(), 0);
+        a.append(b"tail");
+        assert_eq!(a.get_last_line_bytes(), "tail".len());
+    }
+}
+
 #[allow(dead_code)]
 fn _unused(_: &Path) {}
