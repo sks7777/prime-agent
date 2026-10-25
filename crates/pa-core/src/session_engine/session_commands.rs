@@ -187,7 +187,7 @@ pub async fn execute_session_command(
         "code" => execute_plan_code_mode(engine, command, &mut execution).await,
         "dbg" => execute_plan_code_mode(engine, command, &mut execution).await,
         "exit" => execute_plan_code_exit(engine, command, &mut execution).await,
-        "todos" => execute_plan_code_todos(engine, command, &mut execution),
+        "todos" => Ok(execute_plan_code_todos(engine, command, &mut execution)),
         other => Err(format!("Unknown session command: {other}")),
     };
     if let Err(message) = result {
@@ -547,7 +547,7 @@ async fn execute_plan_code_exit(
     }
     let mode_label = {
         let state = engine.plan_code.lock().expect("plan-code state lock");
-        state.mode.map(|m| m.label()).unwrap_or("unknown")
+        state.mode.map_or("unknown", |m| m.label())
     };
     {
         let mut state = engine.plan_code.lock().expect("plan-code state lock");
@@ -572,7 +572,7 @@ fn execute_plan_code_todos(
     engine: &SessionEngine,
     command: &SessionSlashCommand,
     execution: &mut SessionCommandExecution,
-) -> Result<(), String> {
+) {
     let state = engine.plan_code.lock().expect("plan-code state lock");
     if state.todos.is_empty() {
         execution.push_message(slash_command_result(
@@ -583,7 +583,7 @@ fn execute_plan_code_todos(
             None,
             true,
         ));
-        return Ok(());
+        return;
     }
     let list = state
         .todos
@@ -609,7 +609,6 @@ fn execute_plan_code_todos(
     execution.push_message(slash_command_result(
         command, content, true, "info", None, true,
     ));
-    Ok(())
 }
 
 /// A minimal custom message for a follow-up prompt (the continuation
