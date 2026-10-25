@@ -379,6 +379,7 @@ impl OutputAccumulator {
 
         let mut newlines = 0usize;
         let mut last_newline: Option<usize> = None;
+        let mut last_break_len: usize = 1;
         let mut search_from = 0usize;
         while search_from < text.len() {
             // Treat \r\n, \n, and a lone \r (no following \n) each as one line
@@ -397,6 +398,7 @@ impl OutputAccumulator {
             };
             newlines += 1;
             last_newline = Some(search_from + break_pos);
+            last_break_len = break_len;
             search_from = search_from + break_pos + break_len;
         }
         if newlines == 0 {
@@ -406,8 +408,7 @@ impl OutputAccumulator {
             let last = last_newline.unwrap_or(0);
             // Skip past the line break (1 byte for \n or \r, 2 for \r\n) so
             // current_line_bytes counts only the trailing partial line.
-            let after = text[last..].find(['\n', '\r']).map_or(0, |p| p + 1);
-            self.current_line_bytes = text[last + after..].len();
+            self.current_line_bytes = text[last + last_break_len..].len();
         }
     }
 
@@ -487,6 +488,14 @@ mod tests {
         a.append(b"line1\r\nline2");
         let snap = a.snapshot();
         assert_eq!(snap.truncation.total_lines, 2, "CRLF is one break");
+    }
+
+    /// `current_line_bytes` skips both bytes of `\r\n`, not just the `\r`.
+    #[test]
+    fn cr_lf_current_line_bytes_skips_both() {
+        let mut a = acc();
+        a.append(b"head\r\ntail");
+        assert_eq!(a.get_last_line_bytes(), "tail".len());
     }
 
     /// A trailing lone `\r` with no text after it still increments the row count
