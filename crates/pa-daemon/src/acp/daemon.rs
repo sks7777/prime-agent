@@ -1165,7 +1165,11 @@ async fn publish_available_commands(producer: &Arc<UpdateProducer>) {
             .map(|cmd| super::types::AvailableCommand {
                 name: cmd.name.to_string(),
                 description: cmd.description.to_string(),
-                input_hint: cmd.argument_hint.map(str::to_string),
+                input: cmd
+                    .argument_hint
+                    .map(|hint| super::types::AvailableCommandInput {
+                        hint: Some(hint.to_string()),
+                    }),
             })
             .collect();
     let update = super::types::AcpSessionUpdate::AvailableCommands {

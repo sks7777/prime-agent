@@ -215,12 +215,20 @@ pub enum AcpSessionUpdate {
 }
 
 /// One entry in the available-commands list: a slash command the agent recognizes.
+/// The `input` object mirrors the ACP spec shape bb parses (`input.hint`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AvailableCommand {
     pub name: String,
     pub description: String,
-    #[serde(rename = "inputHint", skip_serializing_if = "Option::is_none")]
-    pub input_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<AvailableCommandInput>,
+}
+
+/// The input hint for a slash command (ACP `input.hint`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableCommandInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 /// A plan entry's lifecycle status (TS `acpPlanEntryStatus`):
