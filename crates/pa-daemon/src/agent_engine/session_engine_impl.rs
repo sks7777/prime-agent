@@ -580,6 +580,8 @@ impl SessionEngine for AgentSessionEngine {
             "api": model.api,
             "provider": model.provider,
             "reasoning": model.reasoning,
+            // TS `toConnectionModel` returns the whole model; the ACP seeder reads `model.contextWindow`.
+            "contextWindow": model.context_window,
         }))
     }
 

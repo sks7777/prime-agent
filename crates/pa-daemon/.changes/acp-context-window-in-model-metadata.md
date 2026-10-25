@@ -1,0 +1,1 @@
+- Added `contextWindow` to the engine's `model_metadata` so the ACP `usage_update` seeder reads `model.contextWindow` off `get_connection_state` (PRIME-53); the missing field left bb's context-usage reporting unset for the whole session.

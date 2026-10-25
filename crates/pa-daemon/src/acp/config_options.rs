@@ -64,7 +64,7 @@ impl PickerModel {
     }
 
     /// Parse the `get_connection_state` `model` metadata (the daemon
-    /// engine's `{ id, name, provider, reasoning }`).
+    /// engine's `{ id, name, api, provider, reasoning, contextWindow }`).
     pub fn from_connection_state(value: &Value) -> Option<PickerModel> {
         Some(PickerModel {
             id: value.get("id")?.as_str()?.to_string(),

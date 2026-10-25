@@ -309,7 +309,10 @@ pub trait SessionEngine: Send + Sync {
     }
 
     /// The engine's resolved model as connection-state wire data
-    /// (`{ id, provider, reasoning }`), for the splash and tray labels.
+    /// (`{ id, name, api, provider, reasoning, contextWindow }`), for the
+    /// splash and tray labels. `contextWindow` feeds the ACP
+    /// `usage_update` seeding and the context-usage estimate; omitting it
+    /// disables both for the session.
     fn model_metadata(&self) -> Option<Value> {
         None
     }

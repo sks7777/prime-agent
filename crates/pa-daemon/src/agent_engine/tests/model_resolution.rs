@@ -68,6 +68,39 @@ fn write_thinking_pair_models_json(agent_dir: &std::path::Path, base_url: &str) 
     .unwrap();
 }
 
+/// The connection state's `model` metadata carries the model's context
+/// window: the ACP `usage_update` seeder reads `model.contextWindow` off
+/// `get_connection_state` (PRIME-53), so a stripped field silently
+/// disables bb's context-usage reporting for the whole session.
+#[test]
+fn model_metadata_carries_the_context_window() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
+
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        cwd: dir.path().to_path_buf(),
+        agent_dir,
+        provider: Some("battery".to_string()),
+        model: Some("mock-1".to_string()),
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: None,
+        supervisor_link: None,
+        telemetry_disabled: None,
+        cron_store: None,
+        queued_steering_probe: None,
+        plan_code_mode: None,
+    })
+    .unwrap();
+    let metadata = engine.model_metadata().expect("resolved model metadata");
+    assert_eq!(metadata["id"], "mock-1");
+    assert_eq!(metadata["provider"], "battery");
+    assert_eq!(metadata["contextWindow"], serde_json::json!(128_000));
+}
+
 #[test]
 fn create_config_flags_reach_the_engine_model_resolution() {
     let dir = tempfile::TempDir::new().unwrap();
