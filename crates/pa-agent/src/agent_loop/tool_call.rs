@@ -8,7 +8,7 @@ use crate::abort::{is_abort_error, AbortSignal};
 use crate::types::{
     AfterToolCallContext, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult,
     AgentToolUpdateCallback, AssistantMessage, BeforeToolCallContext, ToolCall,
-    ToolProgressCadence, ToolResultMessage,
+    ToolProgressCadence, ToolResultContent, ToolResultMessage,
 };
 
 use super::abort::race_with_abort;
@@ -92,7 +92,11 @@ async fn prepare_tool_call_inner(
                 .and_then(|r| r.reason)
                 .unwrap_or_else(|| "Tool execution was blocked".to_string());
             return Ok(Preparation::Immediate {
-                result: AgentToolResult::error(reason),
+                result: AgentToolResult {
+                    content: vec![ToolResultContent::text(reason.clone())],
+                    details: serde_json::json!({"blocked": true, "reason": reason}),
+                    terminate: None,
+                },
                 is_error: true,
             });
         }

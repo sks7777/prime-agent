@@ -183,7 +183,9 @@ pub async fn execute_session_command(
         "refine" => execute_refine(engine, params, command, &mut execution).await,
         "goal" => execute_goal(engine, command, images, &mut execution).await,
         "autonomous" => execute_autonomous(params, command, &mut execution),
-"ask" | "plan" | "code" | "debug" => execute_session_mode(engine, command, &mut execution).await,
+        "ask" | "plan" | "code" | "debug" => {
+            execute_session_mode(engine, command, &mut execution).await
+        }
         "exit" => execute_session_mode_exit(engine, command, &mut execution).await,
         "todos" => Ok(execute_session_mode_todos(engine, command, &mut execution)),
         other => Err(format!("Unknown session command: {other}")),

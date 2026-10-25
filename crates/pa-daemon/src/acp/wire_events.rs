@@ -221,6 +221,11 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 .get("isError")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let blocked = event
+                .get("result")
+                .and_then(|r| r.get("details"))
+                .and_then(|d| d.get("blocked"))
+                .and_then(Value::as_bool);
             let text = tool_result_text(event.get("result"));
             let rich = ipython_rich_output(event.get("result"));
             let update = AcpSessionUpdate::ToolCallUpdate {
@@ -237,6 +242,11 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                         ..Default::default()
                     })
                 }),
+                blocked: if blocked.unwrap_or(false) {
+                    Some(true)
+                } else {
+                    None
+                },
             };
             vec![update]
         }
@@ -272,6 +282,7 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 status: Some(AcpToolStatus::InProgress),
                 content: Some(vec![super::types::ToolCallContent::new(chunk)]),
                 meta: None,
+                blocked: None,
             }]
         }
         "bash_end" => {
@@ -296,6 +307,7 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 }),
                 content: None,
                 meta: None,
+                blocked: None,
             }]
         }
         "goal_update" => {

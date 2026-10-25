@@ -140,10 +140,19 @@ pub(crate) enum PanelStatus {
     Running,
     Done,
     Error,
+    Blocked,
 }
 
 pub(crate) fn panel_status(card: &ToolCallCard) -> PanelStatus {
     if let Some(result) = &card.result {
+        let blocked = result
+            .details
+            .get("blocked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if blocked {
+            return PanelStatus::Blocked;
+        }
         if !card.result_partial {
             return if result.is_error {
                 PanelStatus::Error
@@ -171,6 +180,7 @@ pub(crate) fn panel_header(card: &ToolCallCard, frame: usize, theme: &Theme) -> 
     header.push(Span::styled(" \u{00b7} ".to_string(), dim));
     let status: Line = match panel_status(card) {
         PanelStatus::Error => vec![Span::styled("error".to_string(), theme.fg_style(Error))],
+        PanelStatus::Blocked => vec![Span::styled("blocked".to_string(), theme.fg_style(Error))],
         PanelStatus::Done => vec![Span::styled("done".to_string(), theme.fg_style(Success))],
         PanelStatus::Running => vec![Span::styled(
             format!("{} running", working_icon(frame)),

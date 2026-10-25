@@ -176,6 +176,11 @@ pub enum AcpSessionUpdate {
         content: Option<Vec<ToolCallContent>>,
         #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
         meta: Option<Value>,
+        /// Set when a before-tool-call hook blocked the call (e.g. Ask/Plan
+        /// mode read-only enforcement). bb distinguishes mode-blocks from
+        /// ordinary tool errors so the UI can label them distinctly.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        blocked: Option<bool>,
     },
     /// Namespaced prime-agent state (compaction, quiescence, ...).
     #[serde(rename = "session_info_update")]
@@ -200,6 +205,22 @@ pub enum AcpSessionUpdate {
     /// plan with per-entry status. bb renders this as a checklist.
     #[serde(rename = "plan")]
     Plan { entries: Vec<PlanEntry> },
+    /// The session's available slash commands (ACP `available_commands_update`):
+    /// the builtin commands the agent recognizes. bb populates autocomplete from this.
+    #[serde(rename = "available_commands_update")]
+    AvailableCommands {
+        #[serde(rename = "availableCommands")]
+        available_commands: Vec<AvailableCommand>,
+    },
+}
+
+/// One entry in the available-commands list: a slash command the agent recognizes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
+    #[serde(rename = "inputHint", skip_serializing_if = "Option::is_none")]
+    pub input_hint: Option<String>,
 }
 
 /// A plan entry's lifecycle status (TS `acpPlanEntryStatus`):
@@ -765,6 +786,7 @@ mod tests {
             status: Some(AcpToolStatus::Completed),
             content: Some(vec![ToolCallContent::new("42")]),
             meta: None,
+            blocked: None,
         };
         let value = update.to_bare_value();
         assert_eq!(value["sessionUpdate"], "tool_call_update");

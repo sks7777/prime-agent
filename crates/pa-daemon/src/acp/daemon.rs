@@ -1154,6 +1154,28 @@ fn validate_initialize(id: &Value, params: &Value) -> std::result::Result<(), Va
     }
 }
 
+/// Publish the builtin slash commands as an `available_commands_update`
+/// so bb can populate autocomplete. Called after `session/new`, `load`,
+/// and `fork` commit their response.
+async fn publish_available_commands(producer: &Arc<UpdateProducer>) {
+    let commands: Vec<super::types::AvailableCommand> =
+        pa_types::slash_commands::SlashCommandRegistry::builtin()
+            .all()
+            .iter()
+            .map(|cmd| super::types::AvailableCommand {
+                name: cmd.name.to_string(),
+                description: cmd.description.to_string(),
+                input_hint: cmd.argument_hint.map(str::to_string),
+            })
+            .collect();
+    let update = super::types::AcpSessionUpdate::AvailableCommands {
+        available_commands: commands,
+    };
+    let _ = producer
+        .publish(&update, 0, PrimeAgentEventPhase::Event, None)
+        .await;
+}
+
 /// Admit one session over the startup daemon session and admit its MCP
 /// servers through the wire command.
 async fn handle_session_new(
@@ -1448,6 +1470,7 @@ async fn handle_session_new(
             );
         }
     }
+    publish_available_commands(&producer).await;
     producer.commit_session_new_response().await;
 }
 
@@ -1858,6 +1881,7 @@ async fn handle_session_load(
             }
         }
     }
+    publish_available_commands(&producer).await;
     producer.commit_session_new_response().await;
 }
 
@@ -2243,6 +2267,7 @@ async fn handle_session_fork(
             }
         }
     }
+    publish_available_commands(&producer).await;
     producer.commit_session_new_response().await;
 }
 

@@ -825,6 +825,10 @@ impl TurnRunner {
                     ],
                     EngineEvent::CompactionStart { event }
                     | EngineEvent::Compaction { event, .. } => vec![event],
+                    EngineEvent::ModeChanged { mode } => vec![json!({
+                        "type": "mode_changed",
+                        "mode": mode,
+                    })],
                     EngineEvent::GoalUpdate { goal } => vec![json!({
                         "type": "goal_update",
                         "goal": goal,
