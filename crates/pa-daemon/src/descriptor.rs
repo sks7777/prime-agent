@@ -422,6 +422,7 @@ pub fn load_descriptors(
             continue;
         }
         backfill_orphan_journal_path(dir, &mut descriptor);
+        backfill_acp_bridge_session(&mut descriptor);
         loaded.push((path, descriptor));
     }
     loaded
@@ -437,6 +438,29 @@ pub fn backfill_orphan_journal_path(dir: &Path, descriptor: &mut WorkerDescripto
                 .to_string_lossy()
                 .to_string(),
         );
+    }
+}
+
+/// Backfill `acp_client_id` on a pre-PRIMER-6 descriptor: a session
+/// worker whose durable create carries `executionMode: "acp"` is an ACP
+/// bridge session, so an adopted live worker must participate in the
+/// bridge-disconnect cleanup and the orphan sweep (the client id was
+/// recorded only at launch before the fix, so descriptors persisted by
+/// older builds carry none). The bridge client that launched it is gone
+/// by definition — a rebooted supervisor adopts it after the bridge
+/// process died — so the backfill marks the session as ACP-owned with no
+/// bridge client, which the orphan criterion treats as orphaned unless a
+/// live client attaches (a resumed bb thread attaches through a new
+/// bridge and re-stamps the id at create reuse).
+pub fn backfill_acp_bridge_session(descriptor: &mut WorkerDescriptor) {
+    let is_acp = descriptor
+        .create_command
+        .rest
+        .get("executionMode")
+        .and_then(Value::as_str)
+        == Some("acp");
+    if is_acp && descriptor.acp_client_id.is_none() {
+        descriptor.acp_client_id = Some(String::new());
     }
 }
 
@@ -474,6 +498,64 @@ use std::io::Write as _;
 mod tests {
     use super::*;
     use serde_json::Map;
+
+    /// PRIMER-6 backward compatibility: a pre-fix descriptor (no
+    /// `acpClient_id`) whose durable create is an ACP bridge session
+    /// backfills an empty bridge id on load, so the orphan criterion and
+    /// the bridge-disconnect cleanup treat the adopted worker as ACP-owned.
+    #[test]
+    fn load_backfills_acp_bridge_id_on_a_pre_fix_descriptor() {
+        let descriptor: WorkerDescriptor = serde_json::from_value(json!({
+            "version": 2,
+            "workerId": "w-acp-old",
+            "pid": 4242,
+            "socketPath": "/tmp/w.sock",
+            "recoveryJournalPath": "/tmp/w.recovery.jsonl",
+            "supervisorSocketPath": "/tmp/d.sock",
+            "authenticationToken": "tok",
+            "rootActiveSessionId": "w-acp-old",
+            "createdAt": "t",
+            "updatedAt": "t",
+            "lifecycle": "ready",
+            "createCommand": {
+                "sessionPath": "/tmp/s.jsonl",
+                "executionMode": "acp",
+            },
+            "consecutiveFailures": 0
+        }))
+        .expect("descriptor");
+        assert!(
+            descriptor.acp_client_id.is_none(),
+            "the pre-fix descriptor carries no bridge id"
+        );
+        let mut backfilled = descriptor.clone();
+        backfill_acp_bridge_session(&mut backfilled);
+        assert_eq!(
+            backfilled.acp_client_id.as_deref(),
+            Some(""),
+            "an ACP create without a bridge id backfills the empty bridge marker"
+        );
+        // Idempotent: a second backfill must not overwrite a live bridge id.
+        let mut stamped = descriptor.clone();
+        stamped.acp_client_id = Some("bridge-live".to_string());
+        backfill_acp_bridge_session(&mut stamped);
+        assert_eq!(
+            stamped.acp_client_id.as_deref(),
+            Some("bridge-live"),
+            "an existing bridge id is never overwritten"
+        );
+        // A non-ACP create never gains a bridge marker.
+        let mut plain = descriptor;
+        plain.create_command.rest.insert(
+            "executionMode".to_string(),
+            serde_json::json!("interactive"),
+        );
+        backfill_acp_bridge_session(&mut plain);
+        assert!(
+            plain.acp_client_id.is_none(),
+            "an interactive create gains no bridge marker"
+        );
+    }
 
     #[test]
     fn write_file_atomic_replaces_an_existing_destination() {

@@ -777,6 +777,10 @@ impl Supervisor {
             // bridge processes without stopping the daemon worker).
             let orphaned = match (&owner, &acp_client) {
                 (Some(owner), _) => !self.client_connected(owner),
+                // A backfilled empty bridge id marks a pre-fix ACP session
+                // adopted after its bridge died: orphaned unless a live
+                // client attached (the subscribers guard below).
+                (None, Some(acp_client)) if acp_client.is_empty() => true,
                 (None, Some(acp_client)) => !self.client_connected(acp_client),
                 (None, None) => continue,
             };
