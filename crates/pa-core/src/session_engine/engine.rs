@@ -877,9 +877,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     agent.set_before_tool_call(Some(crate::session_mode::session_mode_before_tool_call(
         session_mode_for_hook,
     )));
-    let session_mode_saved_tools =
-        std::sync::Arc::new(std::sync::Mutex::new(active_tool_names.clone()));
-
     turn_boundary.bind(super::turn_boundary::TurnBoundaryRuntime {
         agent,
         session: wiring.session.clone(),

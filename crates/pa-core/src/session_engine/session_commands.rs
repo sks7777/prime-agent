@@ -183,10 +183,7 @@ pub async fn execute_session_command(
         "refine" => execute_refine(engine, params, command, &mut execution).await,
         "goal" => execute_goal(engine, command, images, &mut execution).await,
         "autonomous" => execute_autonomous(params, command, &mut execution),
-        "ask" => execute_session_mode(engine, command, &mut execution).await,
-        "plan" => execute_session_mode(engine, command, &mut execution).await,
-        "code" => execute_session_mode(engine, command, &mut execution).await,
-        "debug" => execute_session_mode(engine, command, &mut execution).await,
+"ask" | "plan" | "code" | "debug" => execute_session_mode(engine, command, &mut execution).await,
         "exit" => execute_session_mode_exit(engine, command, &mut execution).await,
         "todos" => Ok(execute_session_mode_todos(engine, command, &mut execution)),
         other => Err(format!("Unknown session command: {other}")),
@@ -450,7 +447,7 @@ async fn execute_session_mode(
         _ => return Err(format!("Unknown session mode: {}", command.name)),
     };
 
-    let (previous_mode, from_plan) = {
+    let from_plan = {
         let mut state = engine.session_mode.lock().expect("session-mode state lock");
         let prev = state.mode;
         state.enter(mode);
@@ -463,11 +460,8 @@ async fn execute_session_mode(
                 state.set_todos(todos);
             }
         }
-        (prev, prev == Some(crate::session_mode::SessionMode::Plan))
+        prev == Some(crate::session_mode::SessionMode::Plan)
     };
-
-    // Adjust tools: in plan mode, disable edit; otherwise restore all tools.
-    adjust_tools_for_mode(engine, mode).await;
 
     // Rebuild the system prompt with the mode-specific layer.
     rebuild_system_prompt(engine, Some(mode)).await;
@@ -579,7 +573,6 @@ pub async fn set_session_mode(
             let mut state = engine.session_mode.lock().expect("session-mode state lock");
             state.enter(mode);
         }
-        adjust_tools_for_mode(engine, mode).await;
         rebuild_system_prompt(engine, Some(mode)).await;
         Some(mode.label().to_string())
     } else {
@@ -647,16 +640,6 @@ fn prompt_custom_message(custom_type: &str, content: String) -> CustomMessage {
         timestamp: now_millis(),
         rest: serde_json::Map::default(),
     }
-}
-
-/// Adjust the agent's tool set for the active mode.
-/// All modes keep the full tool set — the `before_tool_call` hook
-/// enforces read-only restrictions in Plan and Ask modes. This avoids
-/// the tool-restoration problem when switching modes.
-async fn adjust_tools_for_mode(engine: &SessionEngine, _mode: crate::session_mode::SessionMode) {
-    // No tool filtering: the before_tool_call hook blocks edit/bash
-    // in Plan and Ask modes. Keeping all tools registered avoids
-    // losing edit when switching Plan/Ask → Code/Debug.
 }
 
 /// Rebuild the system prompt with the active plan-code mode layer.

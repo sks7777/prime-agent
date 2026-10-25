@@ -380,6 +380,7 @@ fn options(socket: PathBuf) -> InteractiveOptions {
         model_configured_providers: std::collections::HashSet::default(),
         model_recent_models: Vec::new(),
         models: None,
+        session_mode: None,
         default_thinking_level: None,
         no_session: false,
         session: SessionSelection::New,

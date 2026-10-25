@@ -242,6 +242,7 @@ fn options(socket: PathBuf, catalog: Vec<Model>) -> InteractiveOptions {
     configured_providers.insert("openrouter".to_string());
     InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket,
         cwd: PathBuf::from("/tmp"),
         session_dir: None,

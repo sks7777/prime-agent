@@ -476,6 +476,7 @@ async fn tui_attaches_prompts_streams_lists_and_switches() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -1282,6 +1283,7 @@ async fn ensure_daemon_running_spawns_supervisor_and_tui_attaches() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -1364,6 +1366,7 @@ async fn tui_dispatches_slash_commands_menu_and_suggestions() {
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -1578,6 +1581,7 @@ async fn tui_model_picker_applies_and_effort_reports() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -1724,6 +1728,7 @@ async fn tui_effort_applies_on_a_map_addressable_model_without_the_reasoning_fla
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -1823,6 +1828,7 @@ async fn tui_compact_on_a_short_session_warns_nothing_to_compact() {
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -1942,6 +1948,7 @@ async fn tui_compact_shows_the_loader_then_the_summary_and_rebuilds() {
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -2112,6 +2119,7 @@ async fn tui_session_tree_navigates_forks_and_clones() {
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -2286,6 +2294,7 @@ async fn tui_big_streamed_turns_render_at_the_producer_rate() {
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -2404,6 +2413,7 @@ async fn tui_renders_and_fires_user_keybindings_from_settings() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -2554,6 +2564,7 @@ async fn tui_prompts_queued_behind_a_turn_render_the_queue_strip() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -2661,6 +2672,7 @@ async fn tui_flagged_model_turn_reports_the_ts_preflight_error_without_credentia
     .expect("catalog entry");
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -2793,6 +2805,7 @@ async fn tui_model_pick_refreshes_the_label_and_the_next_turn_resolves() {
     );
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -2954,6 +2967,7 @@ fn base_options(
 ) -> pa_tui::interactive::InteractiveOptions {
     pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.to_path_buf(),
         session_dir: Some(session_dir.to_path_buf()),
@@ -5106,6 +5120,7 @@ async fn tui_two_back_to_back_submits_reach_the_daemon_in_order() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -5227,6 +5242,7 @@ async fn tui_submit_outlived_by_switch_stays_silent_on_the_new_session() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -5340,6 +5356,7 @@ async fn tui_headless_done_with_a_turn_settling_parks_the_closed_input_channel()
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -5459,6 +5476,7 @@ async fn tui_refused_submit_restores_the_draft_after_the_round_trip() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
@@ -5582,6 +5600,7 @@ async fn tui_accepted_then_killed_turn_renders_closed_error() {
     });
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir),
@@ -5735,6 +5754,7 @@ async fn assert_close_reason_survives_late_turn_status(reason: &str, explanation
     });
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir),

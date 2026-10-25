@@ -202,6 +202,7 @@ fn attach_data(id: &str, prompt_age_ms: u64) -> Value {
 fn options(socket: PathBuf) -> InteractiveOptions {
     InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket,
         cwd: PathBuf::from("/tmp"),
         session_dir: None,

@@ -318,6 +318,7 @@ fn interactive_session_rss_plateaus_over_long_stream() {
     }
     let options = InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket,
         cwd: PathBuf::from("/tmp"),
         session_dir: None,
