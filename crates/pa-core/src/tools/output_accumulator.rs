@@ -380,17 +380,34 @@ impl OutputAccumulator {
         let mut newlines = 0usize;
         let mut last_newline: Option<usize> = None;
         let mut search_from = 0usize;
-        while let Some(pos) = text[search_from..].find('\n') {
+        while search_from < text.len() {
+            // Treat \r\n, \n, and a lone \r (no following \n) each as one line
+            // break. A lone \r is a carriage return without newline (progress
+            // bars, old Mac line endings); counting it keeps `current_line_bytes`
+            // aligned with what the user sees on a row.
+            let rest = &text[search_from..];
+            let (break_len, break_pos) = if let Some(p) = rest.find("\r\n") {
+                (2usize, p)
+            } else if let Some(p) = rest.find('\n') {
+                (1usize, p)
+            } else if let Some(p) = rest.find('\r') {
+                (1usize, p)
+            } else {
+                break;
+            };
             newlines += 1;
-            last_newline = Some(search_from + pos);
-            search_from = search_from + pos + 1;
+            last_newline = Some(search_from + break_pos);
+            search_from = search_from + break_pos + break_len;
         }
         if newlines == 0 {
             self.current_line_bytes += bytes;
         } else {
             self.total_lines += newlines;
             let last = last_newline.unwrap_or(0);
-            self.current_line_bytes = text[last + 1..].len();
+            // Skip past the line break (1 byte for \n or \r, 2 for \r\n) so
+            // current_line_bytes counts only the trailing partial line.
+            let after = text[last..].find(['\n', '\r']).map_or(0, |p| p + 1);
+            self.current_line_bytes = text[last + after..].len();
         }
     }
 

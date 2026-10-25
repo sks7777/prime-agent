@@ -397,8 +397,18 @@ pub async fn execute_bash(
             last_update_at = Some(std::time::Instant::now());
             if let Some(on_update) = &on_update {
                 let snapshot = acc.lock().unwrap().snapshot();
+                // The snapshot captured a running process: append a streaming
+                // marker so the model knows the output is partial and more may
+                // arrive. Drop the marker when the snapshot is empty (the
+                // process has produced no output yet, or the tail was trimmed
+                // to nothing).
+                let streaming_content = if snapshot.content.is_empty() {
+                    snapshot.content.clone()
+                } else {
+                    format!("{}\n⟨streaming…⟩", snapshot.content)
+                };
                 on_update(ToolUpdate {
-                    content: vec![ToolContentBlock::text(snapshot.content.clone())],
+                    content: vec![ToolContentBlock::text(streaming_content)],
                     details: Some(json!({
                         "truncation": if snapshot.truncation.truncated {
                             truncation_to_json(&snapshot.truncation)
