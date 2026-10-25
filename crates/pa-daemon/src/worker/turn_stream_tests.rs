@@ -313,6 +313,7 @@ async fn a_suppressed_abort_still_ends_the_engine_turn() {
                     queue_visible: true,
                     policy: TurnPolicy::Queued,
                     forced_batch: false,
+                    resume_pending_user_message: None,
                 }],
             )
             .await;

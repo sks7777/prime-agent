@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 // large_futures: stack-resident futures on hot paths by design.
 // too_many_lines: style gate. Casts: 64-bit targets; narrowing sits at
 // bounded OS/protocol boundaries.

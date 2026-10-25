@@ -283,6 +283,7 @@ mod tests {
                 telemetry_disabled: None,
                 cron_store: None,
                 queued_steering_probe: None,
+                session_mode: None,
             })
             .unwrap(),
         );

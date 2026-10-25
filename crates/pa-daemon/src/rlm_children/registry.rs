@@ -114,7 +114,7 @@ impl SupervisorChildSessionsInner {
                 self.resolve_waiting_mirror_run(record, "Cancelled by user")
                     .await;
             }
-            {
+            let notice_was_delivered = {
                 let mut record = record.lock().await;
                 // The no-reply terminal notice is suppressed for a
                 // cancelled run; a settle watcher that already claimed it

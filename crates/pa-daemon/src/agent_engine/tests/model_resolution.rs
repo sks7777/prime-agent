@@ -92,7 +92,7 @@ fn model_metadata_carries_the_context_window() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
-        plan_code_mode: None,
+        session_mode: None,
     })
     .unwrap();
     let metadata = engine.model_metadata().expect("resolved model metadata");

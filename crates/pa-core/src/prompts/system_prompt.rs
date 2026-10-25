@@ -157,9 +157,10 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
     // it rides the tail (mode is session-specific state, not cacheable).
     if let Some(mode) = options.session_mode {
         let (layer_name, layer_text) = match mode {
-            crate::plan_code::PlanCodeMode::Plan => ("plan-mode", layers::PLAN_MODE_LAYER),
-            crate::plan_code::PlanCodeMode::Code => ("code-mode", layers::CODE_MODE_LAYER),
-            crate::plan_code::PlanCodeMode::Debug => ("debug-mode", layers::DEBUG_MODE_LAYER),
+            crate::session_mode::SessionMode::Plan => ("plan-mode", layers::PLAN_MODE_LAYER),
+            crate::session_mode::SessionMode::Code => ("code-mode", layers::CODE_MODE_LAYER),
+            crate::session_mode::SessionMode::Debug => ("debug-mode", layers::DEBUG_MODE_LAYER),
+            crate::session_mode::SessionMode::Ask => ("ask-mode", layers::ASK_MODE_LAYER),
         };
         if !layer_text.is_empty() {
             segments.push(PromptSegment::dynamic_segment(

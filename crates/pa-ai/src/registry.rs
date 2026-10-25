@@ -42,6 +42,7 @@ fn registry() -> &'static RwLock<HashMap<String, RegisteredProvider>> {
 /// # Panics
 ///
 /// Panics if the registry `RwLock` is poisoned (a thread panicked while holding it).
+#[allow(clippy::items_after_statements)]
 pub fn register_api_provider(provider: Arc<dyn Provider>, source_id: Option<&str>) {
     let mut registry = registry().write().unwrap();
     registry.insert(
@@ -217,6 +218,7 @@ mod tests {
     /// with a `source_id`): a faux/extension provider must survive a reset that
     /// reloads built-in transport wiring.
     #[test]
+    #[allow(clippy::items_after_statements, clippy::needless_lifetimes)]
     fn reset_preserves_dynamic_providers() {
         // Start from a clean state: only built-ins.
         clear_api_providers();

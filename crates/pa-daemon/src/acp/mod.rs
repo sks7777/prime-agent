@@ -11,7 +11,7 @@ mod types;
 mod wire_config;
 mod wire_events;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -86,7 +86,7 @@ pub(crate) fn same_cwd(requested: &Path, actual: &Path) -> bool {
             }
             Some((metadata.dev(), metadata.ino()))
         };
-        if let (Some(left), Some(right)) = (identity(canonical_requested), identity(&actual)) {
+        if let (Some(left), Some(right)) = (identity(&requested), identity(&actual)) {
             return left == right;
         }
     }

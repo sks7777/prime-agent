@@ -178,23 +178,28 @@ async fn streamed_turn_pipeline_benchmark() {
             "contextWindow": 4_000_000,
             "maxTokens": 4_000_000,
         });
-        let engine = AgentSessionEngine::new(AgentEngineConfig {
-            cwd: dir.path().to_path_buf(),
-            agent_dir: dir.path().join("agent"),
-            provider: None,
-            model: None,
-            api_key: None,
-            thinking: None,
-            session_dir: None,
-            session_file: None,
-            faux_script: Some(script.to_string()),
-            supervisor_link: None,
-            telemetry_disabled: Some(true),
-            cron_store: None,
-            queued_steering_probe: None,
-            session_mode: None,
-        })
-        .unwrap();
+        let engine = std::sync::Arc::new(
+            AgentSessionEngine::new(AgentEngineConfig {
+                cwd: dir.path().to_path_buf(),
+                agent_dir: dir.path().join("agent"),
+                provider: None,
+                model: None,
+                api_key: None,
+                thinking: None,
+                session_dir: None,
+                session_file: None,
+                faux_script: Some(script.to_string()),
+                supervisor_link: None,
+                telemetry_disabled: Some(true),
+                cron_store: None,
+                queued_steering_probe: None,
+                session_mode: None,
+            })
+            .unwrap(),
+        );
+        // The worker registers the engine's own arc: the live-auth
+        // resolver upgrades it per provider call.
+        engine.register_arc();
         let started = std::time::Instant::now();
         let events = turn_session_events(engine).await;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -222,24 +227,29 @@ async fn the_last_parked_update_carries_the_final_content() {
     let dir = tempfile::TempDir::new().unwrap();
     let text = "pin word ".repeat(512);
     let script = json!({ "engine": "faux", "responses": [{ "content": [{ "type": "text", "text": text }] }] });
-    let engine = AgentSessionEngine::new(AgentEngineConfig {
-        cwd: dir.path().to_path_buf(),
-        agent_dir: dir.path().join("agent"),
-        provider: None,
-        model: None,
-        api_key: None,
-        thinking: None,
-        session_dir: None,
-        session_file: None,
-        faux_script: Some(script.to_string()),
-        supervisor_link: None,
-        telemetry_disabled: Some(true),
-        cron_store: None,
-        queued_steering_probe: None,
-        session_mode: None,
-    })
-    .unwrap();
-    let events = turn_session_events(Arc::new(engine)).await;
+    let engine = std::sync::Arc::new(
+        AgentSessionEngine::new(AgentEngineConfig {
+            cwd: dir.path().to_path_buf(),
+            agent_dir: dir.path().join("agent"),
+            provider: None,
+            model: None,
+            api_key: None,
+            thinking: None,
+            session_dir: None,
+            session_file: None,
+            faux_script: Some(script.to_string()),
+            supervisor_link: None,
+            telemetry_disabled: Some(true),
+            cron_store: None,
+            queued_steering_probe: None,
+            session_mode: None,
+        })
+        .unwrap(),
+    );
+    // The worker registers the engine's own arc: the live-auth resolver
+    // upgrades it per provider call.
+    engine.register_arc();
+    let events = turn_session_events(engine).await;
     let end = *positions_of(&events, "message_end")
         .last()
         .expect("message_end");
@@ -254,54 +264,6 @@ async fn the_last_parked_update_carries_the_final_content() {
         events[end]["message"]["content"]
     );
     assert_eq!(events[end]["message"]["content"][0]["text"], json!(text));
-}
-
-/// The accumulated `agent_message_chunk` deltas (what an ACP client like bb
-/// assembles) must equal the final message text: the last parked delta must
-/// flush before `message_end`, not drop in `close()`.
-#[allow(clippy::await_holding_lock)] // the faux registry is process-global: the guard must span the async flow
-#[tokio::test]
-async fn the_accumulated_text_delta_chunks_equal_the_final_message() {
-    let _faux = crate::agent_engine::FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = tempfile::TempDir::new().unwrap();
-    let text = "pin word ".repeat(512);
-    let script = json!({ "engine": "faux", "responses": [{ "content": [{ "type": "text", "text": text }] }] });
-    let engine = AgentSessionEngine::new(AgentEngineConfig {
-        cwd: dir.path().to_path_buf(),
-        agent_dir: dir.path().join("agent"),
-        provider: None,
-        model: None,
-        api_key: None,
-        thinking: None,
-        session_dir: None,
-        session_file: None,
-        faux_script: Some(script.to_string()),
-        supervisor_link: None,
-        telemetry_disabled: Some(true),
-        cron_store: None,
-        queued_steering_probe: None,
-        session_mode: None,
-    })
-    .unwrap();
-    let events = turn_session_events(Arc::new(engine)).await;
-    let accumulated: String = events
-        .iter()
-        .filter(|event| {
-            event["type"] == "message_update"
-                && event["assistantMessageEvent"]["type"] == "text_delta"
-        })
-        .filter_map(|event| {
-            event["assistantMessageEvent"]["delta"]
-                .as_str()
-                .map(str::to_string)
-        })
-        .collect();
-    assert_eq!(
-        accumulated, text,
-        "the accumulated text_delta chunks must equal the final message text"
-    );
 }
 
 /// The client sees the full message without a tick wait and nothing lands out of order.

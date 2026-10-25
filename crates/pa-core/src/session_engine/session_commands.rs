@@ -588,6 +588,7 @@ pub async fn set_session_mode(
 }
 
 /// Execute `/todos`: show current plan progress.
+#[allow(clippy::unnecessary_wraps)]
 fn execute_session_mode_todos(
     engine: &SessionEngine,
     command: &SessionSlashCommand,

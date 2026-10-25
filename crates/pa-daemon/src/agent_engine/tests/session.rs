@@ -120,6 +120,7 @@ fn the_built_session_carries_the_durable_header_id_across_rebuilds() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
+        session_mode: None,
     })
     .unwrap();
     let model = engine.resolve_model().expect("faux model");
@@ -639,6 +640,7 @@ fn an_unbuilt_engine_branch_summary_carries_the_request_session_id() {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
+        session_mode: None,
     })
     .unwrap();
     engine.resolve_model().expect("faux model");

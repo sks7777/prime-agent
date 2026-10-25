@@ -1,5 +1,12 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(crate) enum RosterFamilySeedOwner {
+    Create,
+    Adopt,
+    Registration,
+}
+
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 
@@ -1279,7 +1286,6 @@ async fn adoption_settles_then_seeds_the_roster_once() {
         worker_instance_id: None,
         root_active_session_id: "w-root".to_string(),
         owner_client_id: None,
-        acp_client_id: None,
         root_session_id: None,
         session_file: Some(root_file.to_string_lossy().to_string()),
         session_dir: Some(sessions_dir.to_string_lossy().to_string()),
@@ -1298,6 +1304,7 @@ async fn adoption_settles_then_seeds_the_roster_once() {
         last_failure_at: None,
         last_error: None,
         rest: Map::default(),
+        acp_client_id: None,
     };
     supervisor
         .registry
@@ -1355,7 +1362,7 @@ async fn a_create_while_shutting_down_is_refused() {
         rest: Map::default(),
     };
     let refused = supervisor
-        .launch_worker(&create, WorkerOwnership::default())
+        .launch_worker(&create, /* ownership */ Default::default())
         .await
         .err()
         .expect("the shutting-down supervisor accepted a create");
@@ -1425,7 +1432,6 @@ async fn a_failed_stop_persist_gates_the_kill_stop_belt() {
         worker_instance_id: None,
         root_active_session_id: "w-live".to_string(),
         owner_client_id: None,
-        acp_client_id: None,
         root_session_id: Some("live-1".to_string()),
         session_file: Some(session_file.to_string_lossy().to_string()),
         session_dir: Some(sessions_dir.to_string_lossy().to_string()),
@@ -1444,6 +1450,7 @@ async fn a_failed_stop_persist_gates_the_kill_stop_belt() {
         last_failure_at: None,
         last_error: None,
         rest: Map::default(),
+        acp_client_id: None,
     };
     // The persist target is a directory: the atomic write's rename cannot land there,
     // so the stop never durably starts.
@@ -1499,7 +1506,6 @@ async fn an_existing_tombstone_carries_the_stop_past_its_failed_re_write() {
         worker_instance_id: None,
         root_active_session_id: "w-live".to_string(),
         owner_client_id: None,
-        acp_client_id: None,
         root_session_id: Some("live-1".to_string()),
         session_file: None,
         session_dir: Some(sessions_dir.to_string_lossy().to_string()),
@@ -1520,6 +1526,7 @@ async fn an_existing_tombstone_carries_the_stop_past_its_failed_re_write() {
         last_failure_at: None,
         last_error: None,
         rest: Map::default(),
+        acp_client_id: None,
     };
     // The persist target is a directory: the tombstone's redundant
     // re-write fails (the rename onto a directory cannot land).
@@ -1623,7 +1630,7 @@ async fn first_signal_drains_a_settling_turn_and_rejects_new_work() {
         "the first signal must start the drain"
     );
     let refused = supervisor
-        .launch_worker(&create, WorkerOwnership::default())
+        .launch_worker(&create, /* ownership */ Default::default())
         .await
         .err()
         .expect("a create during the drain must be rejected");
@@ -1921,7 +1928,6 @@ async fn idle_passivation_refuses_a_client_owned_worker() {
         worker_instance_id: None,
         root_active_session_id: "w-owned".to_string(),
         owner_client_id: Some("client-1".to_string()),
-        acp_client_id: None,
         root_session_id: Some("root-1".to_string()),
         session_file: None,
         session_dir: None,
@@ -1940,12 +1946,12 @@ async fn idle_passivation_refuses_a_client_owned_worker() {
         last_failure_at: None,
         last_error: None,
         rest: Map::default(),
+        acp_client_id: None,
     };
     let idle = pa_types::daemon::DaemonWorkerDescriptor {
         worker_id: "w-idle".to_string(),
         authentication_token: "idle-token".to_string(),
         owner_client_id: None,
-        acp_client_id: None,
         ..descriptor.clone()
     };
     let resident = ResidentWorker::new("w-owned".to_string(), descriptor, dir.path().join("w.d"));
@@ -2039,7 +2045,6 @@ async fn a_passivated_row_prompt_joins_an_already_hosting_resident() {
         worker_instance_id: None,
         root_active_session_id: "w-revived".to_string(),
         owner_client_id: None,
-        acp_client_id: None,
         root_session_id: Some("child-1".to_string()),
         session_file: Some(session_file.to_string_lossy().into_owned()),
         session_dir: Some(artifacts.to_string_lossy().into_owned()),
@@ -2058,6 +2063,7 @@ async fn a_passivated_row_prompt_joins_an_already_hosting_resident() {
         last_failure_at: None,
         last_error: None,
         rest: Map::default(),
+        acp_client_id: None,
     };
     let resident = ResidentWorker::new("w-revived".to_string(), descriptor, artifacts.join("w.d"));
     supervisor
@@ -2539,7 +2545,6 @@ async fn a_ledger_child_wake_joins_an_already_hosting_resident() {
         worker_instance_id: None,
         root_active_session_id: "w-kid".to_string(),
         owner_client_id: None,
-        acp_client_id: None,
         root_session_id: Some("kid-1".to_string()),
         session_file: Some(session_file.to_string_lossy().into_owned()),
         session_dir: Some(artifacts.to_string_lossy().into_owned()),
@@ -2558,6 +2563,7 @@ async fn a_ledger_child_wake_joins_an_already_hosting_resident() {
         last_failure_at: None,
         last_error: None,
         rest: Map::default(),
+        acp_client_id: None,
     };
     let resident = ResidentWorker::new("w-kid".to_string(), descriptor, artifacts.join("w.d"));
     supervisor
@@ -2750,131 +2756,47 @@ proptest! {
     }
 }
 
-/// A worker whose ACP bridge client disconnected is passivated by the orphan
-/// sweep (red-first: the pre-fix sweep skipped every worker without an
-/// `owner_client_id`, so a reaped bb bridge left the session lease held and
-/// the next `session/load` degraded to a fresh session).
 #[tokio::test]
-async fn orphan_sweep_passivates_a_disconnected_acp_bridge_worker() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let agent_dir = dir.path().join("agent");
-    std::fs::create_dir_all(&agent_dir).unwrap();
-    let supervisor = Arc::new(
-        Supervisor::new(SupervisorOptions {
-            socket_path: dir.path().join("daemon.sock"),
-            agent_dir,
-        })
-        .expect("supervisor"),
+async fn a_restarted_supervisors_registration_seeds_the_roster_family() {
+    let (dir, supervisor, root_file, child_file) =
+        crate::supervisor_roster_seed::tests::roster_fixture().await;
+    let agent_dir = dir.join("agent");
+    crate::supervisor_roster_seed::tests::append_family_edge(
+        &agent_dir,
+        &agent_dir.join("sessions"),
+        "sub-9",
+        &root_file,
+        &child_file,
     );
-    let descriptor = pa_types::daemon::DaemonWorkerDescriptor {
-        version: 1,
-        worker_id: "w-acp".to_string(),
+    crate::supervisor_roster_seed::tests::register_root_worker(&supervisor, "w-root", &root_file)
+        .await;
+    let command = DaemonCommand::WorkerRegister {
+        id: None,
+        active_session_id: "w-root".to_string(),
+        session_id: None,
+        socket_path: "/tmp/none.sock".to_string(),
+        worker_instance_id: String::new(),
+        token: "w-root-token".to_string(),
         pid: 4242,
-        process_start_id: None,
-        socket_path: "/tmp/none.sock".to_string(),
-        recovery_journal_path: "/tmp/none.jsonl".to_string(),
-        orphan_process_journal_path: None,
-        supervisor_socket_path: "/tmp/none.sock".to_string(),
-        authentication_token: "t".to_string(),
-        worker_instance_id: None,
-        root_active_session_id: "w-acp".to_string(),
-        owner_client_id: None,
-        acp_client_id: Some("bridge-1".to_string()),
-        root_session_id: Some("root-1".to_string()),
-        session_file: None,
-        session_dir: None,
-        telemetry_disabled: None,
-        created_at: "t".to_string(),
-        updated_at: "t".to_string(),
-        lifecycle: DaemonWorkerLifecycle::Ready,
-        create_command: pa_types::daemon::DurableDaemonCreateCommand {
-            session_path: None,
-            no_session: None,
-            rest: Map::default(),
-        },
-        consecutive_failures: 0,
-        stop_requested_at: None,
-        archive_on_stop: None,
-        last_failure_at: None,
-        last_error: None,
         rest: Map::default(),
     };
-    let resident = ResidentWorker::new(
-        "w-acp".to_string(),
-        descriptor,
-        dir.path().join("w-acp.descriptor.json"),
+    let registered = supervisor
+        .handle_worker_register("r1", "worker_register", &command)
+        .await;
+    assert!(registered.success, "registration refused: {registered:?}");
+    assert_eq!(
+        registered.data.expect("registration response")["epoch"],
+        1,
+        "the re-registration is the first under the restarted supervisor"
     );
-    supervisor.registry.insert(Arc::clone(&resident)).await;
-    supervisor.passivate_orphaned_workers().await;
-    assert!(
-        supervisor.registry.get("w-acp").await.is_none(),
-        "the orphaned ACP bridge worker must leave the registry (its session lease released)"
+    crate::supervisor_roster_seed::tests::drain_pending_seeds_for_tests(&supervisor).await;
+    let row = crate::supervisor_roster_seed::tests::roster_row_for_child(&supervisor, "sub-9");
+    assert_eq!(row.summary["rlmChildId"], "sub-9");
+    assert_eq!(
+        row.summary["parentSessionPath"],
+        root_file.to_string_lossy().to_string()
     );
-}
-
-/// The sweep keeps a live bridge connected: a worker whose ACP bridge
-/// client still speaks over the socket is not an orphan.
-#[tokio::test]
-async fn orphan_sweep_keeps_a_connected_acp_bridge_worker() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let agent_dir = dir.path().join("agent");
-    std::fs::create_dir_all(&agent_dir).unwrap();
-    let supervisor = Arc::new(
-        Supervisor::new(SupervisorOptions {
-            socket_path: dir.path().join("daemon.sock"),
-            agent_dir,
-        })
-        .expect("supervisor"),
-    );
-    let descriptor = pa_types::daemon::DaemonWorkerDescriptor {
-        version: 1,
-        worker_id: "w-acp-live".to_string(),
-        pid: 4243,
-        process_start_id: None,
-        socket_path: "/tmp/none.sock".to_string(),
-        recovery_journal_path: "/tmp/none.jsonl".to_string(),
-        orphan_process_journal_path: None,
-        supervisor_socket_path: "/tmp/none.sock".to_string(),
-        authentication_token: "t".to_string(),
-        worker_instance_id: None,
-        root_active_session_id: "w-acp-live".to_string(),
-        owner_client_id: None,
-        acp_client_id: Some("bridge-live".to_string()),
-        root_session_id: Some("root-2".to_string()),
-        session_file: None,
-        session_dir: None,
-        telemetry_disabled: None,
-        created_at: "t".to_string(),
-        updated_at: "t".to_string(),
-        lifecycle: DaemonWorkerLifecycle::Ready,
-        create_command: pa_types::daemon::DurableDaemonCreateCommand {
-            session_path: None,
-            no_session: None,
-            rest: Map::default(),
-        },
-        consecutive_failures: 0,
-        stop_requested_at: None,
-        archive_on_stop: None,
-        last_failure_at: None,
-        last_error: None,
-        rest: Map::default(),
-    };
-    let resident = ResidentWorker::new(
-        "w-acp-live".to_string(),
-        descriptor,
-        dir.path().join("w-acp-live.descriptor.json"),
-    );
-    supervisor.registry.insert(Arc::clone(&resident)).await;
-    // The bridge client still holds a live connection.
-    let connection = Arc::new(std::sync::Mutex::new("bridge-live".to_string()));
-    supervisor
-        .client_connections
-        .lock()
-        .unwrap()
-        .insert("conn-live".to_string(), Arc::clone(&connection));
-    supervisor.passivate_orphaned_workers().await;
-    assert!(
-        supervisor.registry.get("w-acp-live").await.is_some(),
-        "a live bridge connection keeps its worker resident"
-    );
+    assert_eq!(row.summary["runtimeKind"], "subagent");
+    assert_eq!(row.worker_id, None, "the seeded row, never a worker's");
+    let _ = std::fs::remove_dir_all(&dir);
 }

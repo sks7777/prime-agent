@@ -20,7 +20,7 @@ use pa_agent::types::{BeforeToolCallContext, BeforeToolCallResult};
 #[serde(rename_all = "lowercase")]
 pub enum SessionMode {
     /// Read-only Q&A mode: edit blocked, bash restricted to read-only,
-    /// python_repl gated. No file modifications.
+    /// `python_repl` gated. No file modifications.
     Ask,
     /// Read-only exploration: edit tool disabled, bash mutations gated,
     /// plan markdown writes allowed.
@@ -160,12 +160,14 @@ impl SessionModeState {
 #[must_use]
 pub fn is_plan_file_path(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
-    if parts.iter().any(|p| *p == "..") {
+    if parts.contains(&"..") {
         return false;
     }
     let base = parts.last().copied().unwrap_or("");
-    if parts.iter().any(|p| *p == "plans") {
-        return base.ends_with(".md");
+    if parts.contains(&"plans") {
+        return std::path::Path::new(base)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
     }
     is_plan_filename(base)
 }
@@ -173,7 +175,11 @@ pub fn is_plan_file_path(path: &str) -> bool {
 /// Matches `PLAN*.md` (case-insensitive).
 fn is_plan_filename(base: &str) -> bool {
     let upper = base.to_ascii_uppercase();
-    if !upper.starts_with("PLAN") || !base.ends_with(".md") {
+    if !upper.starts_with("PLAN")
+        || !std::path::Path::new(base)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
         return false;
     }
     let mid = &base[4..base.len() - 3];
@@ -423,6 +429,7 @@ fn starts_with_prefix(segment: &str) -> bool {
 
 /// Classify a bash command for plan mode.
 #[must_use]
+#[allow(clippy::missing_panics_doc)]
 pub fn classify_bash_command(command: &str) -> BashDecision {
     // Check catastrophic patterns against the full command.
     for pattern in CATASTROPHIC_PATTERNS {
@@ -435,7 +442,7 @@ pub fn classify_bash_command(command: &str) -> BashDecision {
     let redirect_re = Regex::new(REDIRECT_RE).expect("redirect regex");
     let segments: Vec<&str> = split_re
         .split(command)
-        .filter_map(|s| s.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|s| !s.trim().is_empty())
         .collect();
     let mut all_read_only = true;
@@ -444,7 +451,7 @@ pub fn classify_bash_command(command: &str) -> BashDecision {
         stripped = strip_assignment(&stripped);
         // Check plan-file redirect first.
         if let Some(caps) = redirect_re.captures(&stripped).unwrap_or(None) {
-            let target = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let target = caps.get(1).map_or("", |m| m.as_str());
             if is_plan_redirect_target(target) {
                 continue;
             }
@@ -459,7 +466,7 @@ pub fn classify_bash_command(command: &str) -> BashDecision {
         if let Some(caps) = mkdir_re.captures(&stripped).unwrap_or(None) {
             let targets: Vec<&str> = caps
                 .get(1)
-                .map(|m| m.as_str().trim().split_whitespace().collect())
+                .map(|m| m.as_str().split_whitespace().collect())
                 .unwrap_or_default();
             if targets.iter().all(|t| {
                 !t.contains("..")
@@ -508,9 +515,10 @@ static BLOCKED_PYTHON_PATTERNS: &[&str] = &[
     r"\.write_bytes\s*\(",
 ];
 
-/// Check IPython code for dangerous operations in plan mode.
+/// Check `IPython` code for dangerous operations in plan mode.
 /// Returns a description of the first violation, or `None` if clean.
 #[must_use]
+#[allow(clippy::missing_panics_doc)]
 pub fn check_dangerous_ipython(code: &str) -> Option<String> {
     for pattern in BLOCKED_PYTHON_PATTERNS {
         let re = Regex::new(pattern).expect("blocked python pattern regex");
@@ -527,6 +535,7 @@ pub fn check_dangerous_ipython(code: &str) -> Option<String> {
 
 /// Clean step text: strip formatting, remove leading verbs, truncate.
 #[must_use]
+#[allow(clippy::missing_panics_doc)]
 pub fn clean_step_text(text: &str) -> String {
     let bold_re = Regex::new(r"\*{1,2}([^*]+)\*{1,2}").unwrap();
     let code_re = Regex::new(r"`([^`]+)`").unwrap();
@@ -550,6 +559,7 @@ pub fn clean_step_text(text: &str) -> String {
 
 /// Extract todo items from a "Plan:" section in an assistant message.
 #[must_use]
+#[allow(clippy::missing_panics_doc)]
 pub fn extract_todo_items(message: &str) -> Vec<TodoItem> {
     let header_re = Regex::new(r"(?i)\*{0,2}Plan:\*{0,2}\s*\n").unwrap();
     let Some(header_match) = header_re.find(message).unwrap_or(None) else {
@@ -559,15 +569,11 @@ pub fn extract_todo_items(message: &str) -> Vec<TodoItem> {
     let numbered_re = Regex::new(r"(?m)^\s*(\d+)[.)]\s+\*{0,2}([^*\n]+)").unwrap();
     let mut items = Vec::new();
     for caps in numbered_re.captures_iter(plan_section) {
-        let caps = match caps {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Ok(caps) = caps else {
+            continue;
         };
-        let raw_text = caps.get(2).map(|m| m.as_str()).unwrap_or("").trim();
-        let text = raw_text
-            .trim_end_matches(|c: char| c == '*')
-            .trim()
-            .to_string();
+        let raw_text = caps.get(2).map_or("", |m| m.as_str()).trim();
+        let text = raw_text.trim_end_matches('*').trim().to_string();
         if text.len() > 5
             && !text.starts_with('`')
             && !text.starts_with('/')
@@ -588,6 +594,7 @@ pub fn extract_todo_items(message: &str) -> Vec<TodoItem> {
 
 /// Extract `[DONE:n]` step numbers from text.
 #[must_use]
+#[allow(clippy::missing_panics_doc)]
 pub fn extract_done_steps(text: &str) -> Vec<u32> {
     let re = Regex::new(r"(?i)\[DONE:(\d+)\]").expect("done steps regex");
     re.captures_iter(text)
@@ -607,11 +614,12 @@ pub fn extract_done_steps(text: &str) -> Vec<u32> {
 /// - Edit tool: allow plan files (`PLAN*.md`, `plans/*.md`, `/tmp/`), block
 ///   everything else.
 /// - Bash tool: classify as allow/confirm/block.
-/// - IPython tool: block dangerous patterns (edit bypass, shell exec, eval).
+/// - `IPython` tool: block dangerous patterns (edit bypass, shell exec, eval).
 ///
 /// The hook is only active when plan mode is engaged (checked via the
 /// shared `SessionModeState` mutex). In non-plan modes it passes through.
 #[must_use]
+#[allow(clippy::missing_panics_doc)]
 pub fn session_mode_before_tool_call(
     state: Arc<std::sync::Mutex<SessionModeState>>,
 ) -> pa_agent::agent_loop::BeforeToolCallFn {

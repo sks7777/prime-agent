@@ -1156,7 +1156,11 @@ async fn publish_available_commands(producer: &Arc<UpdateProducer>) {
             .map(|cmd| super::types::AvailableCommand {
                 name: cmd.name.to_string(),
                 description: cmd.description.to_string(),
-                input_hint: cmd.argument_hint.map(str::to_string),
+                input: cmd
+                    .argument_hint
+                    .map(|hint| super::types::AvailableCommandInput {
+                        hint: Some(hint.to_string()),
+                    }),
             })
             .collect();
     let update = super::types::AcpSessionUpdate::AvailableCommands {
@@ -2307,14 +2311,11 @@ async fn handle_session_prompt(
 
         let should_rebind = {
             let guard = state.lock().await;
-            guard
-                .session
-                .as_ref()
-                .is_some_and(|hosted| {
-                    hosted.acp_session_id == prompt_params.session_id
-                        && !hosted.cancelling
-                        && !hosted.mirror_rebind_attempted
-                })
+            guard.session.as_ref().is_some_and(|hosted| {
+                hosted.acp_session_id == prompt_params.session_id
+                    && !hosted.cancelling
+                    && !hosted.mirror_rebind_attempted
+            })
         };
 
         if let Some(mirror) = &mirror {
@@ -2348,10 +2349,7 @@ async fn handle_session_prompt(
                     );
                 }
                 // Strip the marker from the prompt text.
-                let stripped_params = strip_mirror_marker_from_params(
-                    &params,
-                    &mirror.claim_nonce,
-                );
+                let stripped_params = strip_mirror_marker_from_params(&params, &mirror.claim_nonce);
                 stripped_params
             } else {
                 // Already attempted or wrong session: strip and run normally.
@@ -2409,14 +2407,13 @@ async fn rebind_to_rlm_mirror_session(
         });
 
     // Read and validate the claim.
-    let claim =
-        match crate::rlm_bb_mirror::read_rlm_mirror_claim(claim_nonce, &agent_dir) {
-            Some(claim) => claim,
-            None => {
-                // Stale/invalid claim: degrade silently.
-                return Ok(());
-            }
-        };
+    let claim = match crate::rlm_bb_mirror::read_rlm_mirror_claim(claim_nonce, &agent_dir) {
+        Some(claim) => claim,
+        None => {
+            // Stale/invalid claim: degrade silently.
+            return Ok(());
+        }
+    };
 
     // Get the current (draft) session's state for the cwd match.
     let draft_session_id = {

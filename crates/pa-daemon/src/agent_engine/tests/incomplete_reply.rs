@@ -82,6 +82,7 @@ fn run_request(
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        session_mode: None,
     })
     .unwrap();
     let engine = std::sync::Arc::new(engine);
@@ -96,6 +97,7 @@ fn run_request(
             source: "user".to_string(),
             agent_message_id: None,
             custom_message,
+            resume_pending_user_message: None,
         },
         &|| false,
         &mut |event| {

@@ -196,6 +196,7 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
         queued_steering_probe: None,
         should_stop_after_turn: None,
         image_model_router: None,
+        session_mode: None,
     })
     .await
     .expect("create_session");

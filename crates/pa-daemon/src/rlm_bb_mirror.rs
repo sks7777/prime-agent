@@ -706,12 +706,16 @@ mod tests {
         ));
     }
 
-
-
     #[test]
     fn bb_model_id_from_selector_returns_id_part() {
-        assert_eq!(bb_model_id_from_selector("anthropic/claude-sonnet-4"), "claude-sonnet-4");
-        assert_eq!(bb_model_id_from_selector("claude-sonnet-4"), "claude-sonnet-4");
+        assert_eq!(
+            bb_model_id_from_selector("anthropic/claude-sonnet-4"),
+            "claude-sonnet-4"
+        );
+        assert_eq!(
+            bb_model_id_from_selector("claude-sonnet-4"),
+            "claude-sonnet-4"
+        );
     }
 
     #[test]
@@ -719,13 +723,31 @@ mod tests {
         assert_eq!(bb_reasoning_level_from_thinking(Some("off")), None);
         assert_eq!(bb_reasoning_level_from_thinking(Some("minimal")), None);
         assert_eq!(bb_reasoning_level_from_thinking(None), None);
-        assert_eq!(bb_reasoning_level_from_thinking(Some("low")), Some("low".to_string()));
-        assert_eq!(bb_reasoning_level_from_thinking(Some("medium")), Some("medium".to_string()));
-        assert_eq!(bb_reasoning_level_from_thinking(Some("high")), Some("high".to_string()));
-        assert_eq!(bb_reasoning_level_from_thinking(Some("xhigh")), Some("xhigh".to_string()));
-        assert_eq!(bb_reasoning_level_from_thinking(Some("max")), Some("max".to_string()));
+        assert_eq!(
+            bb_reasoning_level_from_thinking(Some("low")),
+            Some("low".to_string())
+        );
+        assert_eq!(
+            bb_reasoning_level_from_thinking(Some("medium")),
+            Some("medium".to_string())
+        );
+        assert_eq!(
+            bb_reasoning_level_from_thinking(Some("high")),
+            Some("high".to_string())
+        );
+        assert_eq!(
+            bb_reasoning_level_from_thinking(Some("xhigh")),
+            Some("xhigh".to_string())
+        );
+        assert_eq!(
+            bb_reasoning_level_from_thinking(Some("max")),
+            Some("max".to_string())
+        );
         // A provider-specific id passes through unchanged.
-        assert_eq!(bb_reasoning_level_from_thinking(Some("acp-level-3")), Some("acp-level-3".to_string()));
+        assert_eq!(
+            bb_reasoning_level_from_thinking(Some("acp-level-3")),
+            Some("acp-level-3".to_string())
+        );
     }
 
     #[test]

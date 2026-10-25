@@ -4,11 +4,11 @@
 //! with the spawn-admission helpers only this surface uses.
 use super::{
     assert_thinking_supported, bail, create_default_rlm_subagent_session_name, json, now_ms,
-    resolve_child_model, rlm_child_label, rlm_depth_limit_error, spawn_name_unavailable_error, Arc,
-    ChildCloseReason, ChildObservationSource, ChildRecord, Context, DaemonCommand, Duration,
-    Instant, Mutex, Path, PathBuf, Result, RlmChildResult, RlmCreateSessionHandle,
-    RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle,
-    RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
+    resolve_child_cwd, resolve_child_model, rlm_child_label, rlm_depth_limit_error,
+    spawn_name_unavailable_error, Arc, ChildCloseReason, ChildObservationSource, ChildRecord,
+    Context, DaemonCommand, Duration, Instant, Mutex, Path, PathBuf, Result, RlmChildResult,
+    RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture,
+    RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
     SupervisorChildSessions, SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS,
     RENAME_TIMEOUT_MS, STATE_TIMEOUT_MS,
 };
@@ -207,6 +207,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     mirror_claim_nonce: None,
                     mirror_admission_waker: None,
                     mirror_wait_settled: false,
+                    retiring: false,
                 };
                 let record = Arc::new(Mutex::new(record));
                 this.children.lock().await.push(Arc::clone(&record));
@@ -456,12 +457,10 @@ impl RlmSubagentHost for SupervisorChildSessions {
             // Capture the current turn boundary before detaching: spawn
             // admission happens mid-turn, so the parent's continuation
             // request reaches the provider first (see `wait_turn_done`).
-            let turn_generation = *this.turn_done.subscribe().borrow();
+            let turn_generation = this.parent_turn.subscribe().borrow().completed;
             let mirror_failed = runtime_mirror_failed.clone();
             tokio::spawn(async move {
-                if let Some(generation) = spawning_turn {
-                    watcher_this.wait_turn_done(generation).await;
-                }
+                watcher_this.wait_turn_done(turn_generation).await;
                 // The parent closed before the prompt admitted: the
                 // child is closed with it, so the detached task prompt
                 // never fires.

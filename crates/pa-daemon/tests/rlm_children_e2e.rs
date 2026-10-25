@@ -236,6 +236,7 @@ fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
         spawned_by_request_id: None,
         temperature: None,
         bb_mirror: None,
+        factory: None,
     }
 }
 

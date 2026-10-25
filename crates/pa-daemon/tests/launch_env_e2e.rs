@@ -549,6 +549,7 @@ async fn an_rlm_spawn_child_inherits_the_parent_worker_env() {
             spawned_by_request_id: None,
             temperature: None,
             bb_mirror: None,
+            factory: None,
         })
         .await
         .expect("spawn");

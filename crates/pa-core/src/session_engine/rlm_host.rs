@@ -143,6 +143,16 @@ pub struct RlmChildResult {
 // Requests into the host
 
 /// Validated `rlm.spawn` request handed to the child-session host.
+/// The factory executor's run tag on a spawned child (`rlm.spawn`'s
+/// private `factory` kwarg, wire shape `{runId, specId, stateId}`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RlmFactoryTag {
+    pub run_id: String,
+    pub spec_id: String,
+    pub state_id: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RlmSpawnRequest {
     pub prompt: String,
@@ -152,10 +162,16 @@ pub struct RlmSpawnRequest {
     pub model: Option<String>,
     /// Validated thinking level; the host checks model support.
     pub thinking: Option<String>,
+    /// Working directory; the host resolves relative paths against the session cwd.
+    pub cwd: Option<String>,
+    /// Sampling temperature for the child's LLM calls (None = provider default).
+    pub temperature: Option<f64>,
     /// The parent's in-flight turn request the spawn anchors to (TS
     /// `spawnedByRequestId`): `None` for a spawn outside an active run.
     pub spawned_by_request_id: Option<String>,
-    pub temperature: Option<f64>,
+    /// The factory run that spawned the child; the daemon records it on
+    /// the child's ledger spawn edge.
+    pub factory: Option<RlmFactoryTag>,
     /// bb mirror intent (PRIME-11/PRIME-24): `None` = auto-mirror (host
     /// decides), `Some(true)` = explicit mirror (caller brings its own
     /// thread), `Some(false)` = force plain headless child.
@@ -689,11 +705,13 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     let cwd = cwd_kwarg(&kwargs, OPERATION)?;
     let factory = match kwargs.get("factory") {
         None | Some(Value::Null) => None,
-        Some(tag) => Some(serde_json::from_value(tag.clone()).map_err(|_| {
-            anyhow::anyhow!(
-                "{OPERATION} factory must be an object with string runId, specId, and stateId"
-            )
-        })?),
+        Some(tag) => Some(
+            serde_json::from_value::<RlmFactoryTag>(tag.clone()).map_err(|_| {
+                anyhow::anyhow!(
+                    "{OPERATION} factory must be an object with string runId, specId, and stateId"
+                )
+            })?,
+        ),
     };
     let temperature = optional_f64_kwarg(&kwargs, "temperature", OPERATION)?;
     let bb_mirror = optional_bool_kwarg(&kwargs, "bb_mirror", OPERATION)?;
@@ -702,8 +720,10 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
         name,
         model,
         thinking,
-        spawned_by_request_id: None,
+        cwd,
         temperature,
+        spawned_by_request_id: None,
+        factory,
         bb_mirror,
     })
 }

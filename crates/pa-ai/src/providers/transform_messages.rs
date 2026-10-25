@@ -465,7 +465,7 @@ mod tests {
                 content: vec![
                     AssistantContent::ToolCall(ToolCall {
                         id: "nameless".to_string(),
-                        name: "".to_string(),
+                        name: String::new(),
                         arguments: Map::default(),
                         thought_signature: None,
                         rest: Map::default(),

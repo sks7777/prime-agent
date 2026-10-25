@@ -401,6 +401,8 @@ async fn spawn_child(sessions: &SupervisorChildSessions) -> RlmSpawnHandle {
             spawned_by_request_id: None,
             temperature: None,
             bb_mirror: None,
+            cwd: None,
+            factory: None,
         })
         .await
         .expect("spawn must succeed against the fake supervisor")
@@ -468,6 +470,8 @@ async fn a_factory_child_settles_without_a_parent_notice() {
                 spec_id: "spec".to_string(),
                 state_id: "state".to_string(),
             }),
+            temperature: None,
+            bb_mirror: None,
         })
         .await
         .expect("spawn must succeed against the fake supervisor");
@@ -482,50 +486,6 @@ async fn a_factory_child_settles_without_a_parent_notice() {
         notice.is_err(),
         "a factory child must not notify the parent: {notice:?}"
     );
-}
-
-/// [`sessions_with_fake_supervisor`] whose fake answers `list_agent_peers`
-/// from `peers`: the supervisor's pushed worker roster that the live roster
-/// read joins each child row onto.
-async fn sessions_with_roster_peers(
-    peers: Arc<std::sync::Mutex<Vec<Value>>>,
-    idle_delay_ms: u64,
-) -> (SupervisorChildSessions, mpsc::UnboundedReceiver<Value>) {
-    let socket = std::env::temp_dir().join(format!(
-        "pa-rlm-peers-{}.sock",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let (kill_tx, kill_rx) = mpsc::unbounded_channel();
-    spawn_fake_supervisor(
-        socket.clone(),
-        mpsc::unbounded_channel().0,
-        idle_delay_ms,
-        kill_tx,
-        FakeSupervisorScript {
-            kill: FakeKill::Success,
-            child: FakeChild::Healthy,
-            child_subagents: Arc::new(FakeChildSubagents::default()),
-            peers,
-        },
-    )
-    .await;
-    let link = Arc::new(crate::supervisor_link::SupervisorLink::new(socket));
-    let sessions = SupervisorChildSessions::new(
-        link,
-        std::env::temp_dir(),
-        "parent-live".to_string(),
-        std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-            std::env::temp_dir(),
-            /*telemetry_disabled*/ true,
-        )),
-        String::new(),
-    );
-    sessions.set_identity(ParentIdentity {
-        model: Some("mock/mock-1".to_string()),
-        cwd: Some(std::env::temp_dir().to_string_lossy().to_string()),
-        ..ParentIdentity::with_default_depth()
-    });
-    (sessions, kill_rx)
 }
 
 #[tokio::test]
@@ -2124,7 +2084,6 @@ fn returned_children(path: &Path) -> Vec<String> {
 async fn a_refused_abort_leaves_the_child_running_and_a_later_cancel_records_the_edge() {
     let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
     let child_subagents = Arc::new(FakeChildSubagents::default());
-    child_subagents.abort_fails.store(true, Ordering::SeqCst);
     let (sessions, _kill_rx) = sessions_with_fake_child_subagents(
         follow_up_tx,
         10_000,
@@ -2188,7 +2147,6 @@ async fn a_refused_abort_leaves_the_child_running_and_a_later_cancel_records_the
 
     // A later confirmed cancel records the edge the refused attempt could
     // not: the settle undo left the row live for the retry.
-    child_subagents.abort_fails.store(false, Ordering::SeqCst);
     assert!(
         sessions.cancel_child_run(&handle.rlm_child_id).await,
         "the retry claims the still-live row"
@@ -2756,6 +2714,7 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         mirror_claim_nonce: None,
         mirror_admission_waker: None,
         mirror_wait_settled: false,
+        retiring: false,
     };
     // A running child that goes unreachable is the error class.
     assert!(super::lifecycle::should_mark_error(&base()));
@@ -2841,6 +2800,8 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         mirror_claim_nonce: None,
         mirror_admission_waker: None,
         mirror_wait_settled: false,
+        retiring: false,
+        factory: false,
     }));
     let claimed = sessions
         .inner

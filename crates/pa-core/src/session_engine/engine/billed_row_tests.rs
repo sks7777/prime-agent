@@ -67,6 +67,7 @@ async fn scripted_engine(
         kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
+        session_mode: None,
     })
     .await
     .unwrap();

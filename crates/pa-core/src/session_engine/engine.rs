@@ -156,7 +156,7 @@ pub struct SessionEngine {
     /// loops the graph and keeps a dropped session's kernel process alive
     /// until the process exits.
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
-    /// Plan-code mode state (shared with the before_tool_call hook).
+    /// `Plan-code` mode state (shared with the `before_tool_call` hook).
     pub session_mode: std::sync::Arc<std::sync::Mutex<crate::session_mode::SessionModeState>>,
 }
 
@@ -889,8 +889,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let session_mode = std::sync::Arc::new(std::sync::Mutex::new(
         crate::session_mode::SessionModeState::default(),
     ));
-    if let Some(initial_mode) = config.plan_code_mode {
-        plan_code
+    if let Some(initial_mode) = config.session_mode {
+        session_mode
             .lock()
             .expect("plan-code state lock")
             .enter(initial_mode);
@@ -899,7 +899,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     agent.set_before_tool_call(Some(crate::session_mode::session_mode_before_tool_call(
         session_mode_for_hook,
     )));
-    let plan_code_saved_tools =
+    let _session_mode_saved_tools =
         std::sync::Arc::new(std::sync::Mutex::new(active_tool_names.clone()));
 
     turn_boundary.bind(super::turn_boundary::TurnBoundaryRuntime {

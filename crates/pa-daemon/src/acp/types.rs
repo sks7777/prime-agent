@@ -205,6 +205,30 @@ pub enum AcpSessionUpdate {
     /// plan with per-entry status. bb renders this as a checklist.
     #[serde(rename = "plan")]
     Plan { entries: Vec<PlanEntry> },
+    /// The session's available slash commands (ACP `available_commands_update`):
+    /// the builtin commands the agent recognizes. bb populates autocomplete from this.
+    #[serde(rename = "available_commands_update")]
+    AvailableCommands {
+        #[serde(rename = "availableCommands")]
+        available_commands: Vec<AvailableCommand>,
+    },
+}
+
+/// One entry in the available-commands list: a slash command the agent recognizes.
+/// The `input` object mirrors the ACP spec shape bb parses (`input.hint`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<AvailableCommandInput>,
+}
+
+/// The input hint for a slash command (ACP `input.hint`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableCommandInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 /// A plan entry's lifecycle status (TS `acpPlanEntryStatus`):
@@ -363,9 +387,7 @@ pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
                 };
                 let trimmed = text.trim();
                 // A whole wrapper block.
-                if rest_texts.is_empty()
-                    && regex_safe_match_whole(trimmed)
-                {
+                if rest_texts.is_empty() && regex_safe_match_whole(trimmed) {
                     instruction_texts.push(text.to_string());
                     continue;
                 }
@@ -396,8 +418,10 @@ pub fn split_acp_prompt_blocks(prompt: &[Value]) -> AcpPromptSplit {
     }
 
     AcpPromptSplit {
-        instructions_text: instruction_texts.join("
-"),
+        instructions_text: instruction_texts.join(
+            "
+",
+        ),
         rest_texts,
         images,
     }
@@ -789,7 +813,7 @@ Do work" },
     fn split_acp_prompt_blocks_handles_merged_wrapper_and_text() {
         let prompt = json!([
             { "type": "text", "text": "<system_instructions>instructions</system_instructions>[rlm-mirror:abcdef0123456789abcdef0123456789]
-body" },
+        body" },
         ]);
         let split = split_acp_prompt_blocks(prompt.as_array().unwrap());
         assert!(split.instructions_text.contains("system_instructions"));
