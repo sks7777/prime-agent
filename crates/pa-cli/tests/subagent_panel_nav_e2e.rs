@@ -209,6 +209,7 @@ fn session_options(
 ) -> pa_tui::interactive::InteractiveOptions {
     pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket.to_path_buf(),
         cwd: PathBuf::from("/tmp"),
         model_catalog: Vec::new(),

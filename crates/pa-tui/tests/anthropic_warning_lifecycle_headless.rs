@@ -449,6 +449,7 @@ fn options(
         model_recent_models: Vec::new(),
         default_thinking_level: None,
         models: None,
+        session_mode: None,
         no_session: false,
         session: SessionSelection::New,
         initial_message: None,

@@ -306,6 +306,7 @@ async fn panel_expand_drill_in_and_back_re_expands_the_tree() {
     // (TS `getTrayLocationLabel`).
     let child_options = pa_tui::interactive::InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: supervisor.socket.clone(),
         cwd: PathBuf::from("/tmp"),
         model_catalog: Vec::new(),

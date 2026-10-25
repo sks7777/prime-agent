@@ -216,6 +216,7 @@ async fn wait_for_daemon(socket: &Path) {
 fn tui_options(socket: &Path, session_dir: &Path, script: &Path) -> InteractiveOptions {
     InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket.to_path_buf(),
         cwd: session_dir.to_path_buf(),
         model_catalog: Vec::new(),

@@ -206,6 +206,7 @@ fn options(
 ) -> InteractiveOptions {
     InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket,
         cwd: PathBuf::from("/tmp"),
         session_dir: None,

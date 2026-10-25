@@ -171,6 +171,7 @@ fn session_options(
 ) -> InteractiveOptions {
     InteractiveOptions {
         models: None,
+        session_mode: None,
         socket_path: socket.to_path_buf(),
         cwd: PathBuf::from("/tmp"),
         model_catalog: Vec::new(),
