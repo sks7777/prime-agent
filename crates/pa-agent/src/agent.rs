@@ -578,7 +578,6 @@ impl AgentInner {
         config.get_continuation_messages = continuation;
         config.tool_execution = self.tool_execution;
         config.tool_progress = self.tool_progress;
-        config.before_tool_call.clone_from(&self.before_tool_call);
         config.after_tool_call.clone_from(&self.after_tool_call);
         config
     }
