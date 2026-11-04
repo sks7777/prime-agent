@@ -629,21 +629,21 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
         .contains("await mcp.list_tools(\"notion\")"));
 }
 
-// Async turn discipline
-
-/// Since #3580 every session kind wakes on bash completion: daemonless runs
-/// get a queued `[bash-done]` turn, so the static usage layer must not carry
-/// the pre-#3580 rule to await commands before ending the turn — the
-/// no-polling rule right below it already ends turns on the done
-/// notification, and an unscoped await rule would contradict that wake.
+/// The usage layer sanctions proactive handle checks when the [bash-done]
+/// notification does not arrive: the agent may re-await once after a degrade
+/// and must proactively check the saved handle on the next turn.
 #[test]
-fn usage_layer_ends_turns_on_the_done_notification_not_an_await_rule() {
+fn usage_layer_sanctions_proactive_handle_checks_after_degrade() {
     assert!(
-        !USAGE_LAYER.contains("await commands before ending the turn"),
-        "every session kind has completion notifications: the await-before-turn-end rule is stale"
+        USAGE_LAYER.contains("proactively checks the saved handle"),
+        "the usage layer must sanction proactive handle checks when the notification does not arrive"
     );
     assert!(
-        USAGE_LAYER.contains("end the turn and collect the result on the done notification"),
-        "the no-polling rule keeps the collect-on-notice turn-end contract"
+        USAGE_LAYER.contains("re-await the handle once"),
+        "the usage layer must allow one re-await after a degraded bash()"
+    );
+    assert!(
+        !USAGE_LAYER.contains("repeated awaits of a still-running handle"),
+        "the blanket ban on re-awaiting a still-running handle is removed"
     );
 }
