@@ -804,11 +804,12 @@ impl Supervisor {
             {
                 continue;
             }
-            // Skip workers with in-flight routes (still serving a turn).
-            if resident.inflight.available_permits() < crate::backpressure::WORKER_INFLIGHT_CAPACITY
-            {
-                continue;
-            }
+            // The orphan criterion (above) already confirmed the worker's
+            // owner or ACP bridge client disconnected; the subscriber guard
+            // confirmed no live client is attached. In-flight permits from
+            // the dead client are stale — they release when the socket
+            // closure is processed, which may lag behind this sweep. Skip
+            // them only for a live client, not for a confirmed orphan.
             match self.stop_worker_releasing(&resident, None).await {
                 Ok(()) => self.log_line(&format!(
                     "session worker {} passivated by orphan sweep (client {lifetime} disconnected)",
@@ -850,11 +851,33 @@ impl Supervisor {
             {
                 continue;
             }
-            // In-flight routes keep the holder like the sweep.
-            if resident.inflight.available_permits() < crate::backpressure::WORKER_INFLIGHT_CAPACITY
-            {
+            // Only passivate if the worker's ACP bridge client (or owner)
+            // is actually disconnected — a live client with no subscribers
+            // and a saturated inflight must not be stopped. The caller
+            // (session/load's foreign-holder retry) already knows the lease
+            // is held by another worker; this check confirms that worker is
+            // unattended before force-stopping it.
+            let (owner, acp_client) = {
+                let descriptor = resident.descriptor.lock().await;
+                (
+                    descriptor.owner_client_id.clone(),
+                    descriptor.acp_client_id.clone(),
+                )
+            };
+            let live = match (&owner, &acp_client) {
+                (Some(owner), _) => self.client_connected(owner),
+                (None, Some(acp_client)) => self.client_connected(acp_client),
+                (None, None) => false,
+            };
+            if live {
                 continue;
             }
+            // The orphan and subscriber guards confirmed no live client is
+            // attached. In-flight permits from the dead client are stale
+            // (they release when the socket closure processes, which may
+            // lag behind this call). Stopping the worker despite them is
+            // correct — the dead client's routes complete with errors,
+            // not duplicate work.
             match self.stop_worker_releasing(&resident, None).await {
                 Ok(()) => {
                     self.log_line(&format!(
@@ -1401,6 +1424,119 @@ mod tests {
         assert!(!descriptor_path.exists());
         assert!(crate::descriptor::read_identity_pending(&descriptor_path).is_none());
         assert!(supervisor.retire_worker_after_stop(&resident, false).await);
+    }
+
+    /// Regression: an orphaned ACP-bridge worker with a stale in-flight
+    /// permit (the cancelled prompt's route has not been processed yet)
+    /// must still be passivated. Before the fix, the inflight-skip guard
+    /// in `passivate_orphaned_workers` and `handle_passivate_file_holder`
+    /// prevented the stop, so `session/load` could not acquire the lease
+    /// and the bridge fell back to a fresh session.
+    #[tokio::test]
+    async fn an_orphaned_worker_with_stale_inflight_is_passivated() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let supervisor = supervisor_in(dir.path());
+        let session_file = dir.path().join("session.jsonl");
+        std::fs::write(&session_file, "").expect("session file");
+        let pid = reaped_pid();
+        let descriptor: DaemonWorkerDescriptor = serde_json::from_value(json!({
+            "version": 2,
+            "workerId": "w-orphan",
+            "pid": pid,
+            "socketPath": "/tmp/w-orphan.sock",
+            "recoveryJournalPath": dir.path().join("w-orphan.recovery.jsonl").to_string_lossy(),
+            "supervisorSocketPath": supervisor.options.socket_path.to_string_lossy(),
+            "authenticationToken": "token",
+            "rootActiveSessionId": "w-orphan",
+            "acpClientId": "dead-bridge",
+            "sessionFile": session_file.to_string_lossy(),
+            "createdAt": "2026-10-07T00:00:00Z",
+            "updatedAt": "2026-10-07T00:00:00Z",
+            "lifecycle": "ready",
+            "createCommand": {},
+            "consecutiveFailures": 0,
+        }))
+        .expect("descriptor");
+        let descriptor_path = supervisor.descriptor_dir.join("w-orphan.json");
+        crate::descriptor::persist_worker(&descriptor_path, &descriptor)
+            .expect("descriptor persisted");
+        let resident = ResidentWorker::new("w-orphan".to_string(), descriptor, descriptor_path);
+        supervisor.registry.insert(Arc::clone(&resident)).await;
+        // Hold an in-flight permit to simulate a stale route from the dead
+        // ACP bridge client (the route response has not been processed yet).
+        let _stale_permit = resident
+            .inflight
+            .clone()
+            .try_acquire_owned()
+            .expect("acquire inflight permit");
+        assert!(
+            resident.inflight.available_permits() < crate::backpressure::WORKER_INFLIGHT_CAPACITY,
+            "precondition: a permit is held"
+        );
+        // The ACP bridge client "dead-bridge" is not connected, so the
+        // orphan criterion fires. The subscriber set is empty, so the
+        // subscriber guard does not block. Before the fix, the inflight
+        // skip would have prevented the stop here.
+        supervisor.passivate_orphaned_workers().await;
+        assert!(
+            supervisor.registry.get("w-orphan").await.is_none(),
+            "the orphaned worker was not passivated despite a stale inflight permit"
+        );
+    }
+
+    /// Same regression for `handle_passivate_file_holder`: the targeted
+    /// passivation must stop the worker even with a stale in-flight permit.
+    #[tokio::test]
+    async fn passivate_file_holder_stops_worker_with_stale_inflight() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let supervisor = supervisor_in(dir.path());
+        let session_file = dir.path().join("session.jsonl");
+        std::fs::write(&session_file, "").expect("session file");
+        let pid = reaped_pid();
+        let descriptor: DaemonWorkerDescriptor = serde_json::from_value(json!({
+            "version": 2,
+            "workerId": "w-holder",
+            "pid": pid,
+            "socketPath": "/tmp/w-holder.sock",
+            "recoveryJournalPath": dir.path().join("w-holder.recovery.jsonl").to_string_lossy(),
+            "supervisorSocketPath": supervisor.options.socket_path.to_string_lossy(),
+            "authenticationToken": "token",
+            "rootActiveSessionId": "w-holder",
+            "acpClientId": "dead-bridge",
+            "sessionFile": session_file.to_string_lossy(),
+            "createdAt": "2026-10-07T00:00:00Z",
+            "updatedAt": "2026-10-07T00:00:00Z",
+            "lifecycle": "ready",
+            "createCommand": {},
+            "consecutiveFailures": 0,
+        }))
+        .expect("descriptor");
+        let descriptor_path = supervisor.descriptor_dir.join("w-holder.json");
+        crate::descriptor::persist_worker(&descriptor_path, &descriptor)
+            .expect("descriptor persisted");
+        let resident = ResidentWorker::new("w-holder".to_string(), descriptor, descriptor_path);
+        supervisor.registry.insert(Arc::clone(&resident)).await;
+        let _stale_permit = resident
+            .inflight
+            .clone()
+            .try_acquire_owned()
+            .expect("acquire inflight permit");
+        let response = supervisor
+            .handle_passivate_file_holder(
+                "cmd-1",
+                "passivate_file_holder",
+                Some(&session_file.to_string_lossy()),
+            )
+            .await;
+        assert!(
+            response.success,
+            "passivate_file_holder should succeed: {:?}",
+            response.error
+        );
+        assert!(
+            supervisor.registry.get("w-holder").await.is_none(),
+            "the file holder was not passivated despite a stale inflight permit"
+        );
     }
 
     #[tokio::test]
