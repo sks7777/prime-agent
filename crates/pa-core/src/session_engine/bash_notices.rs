@@ -9,6 +9,7 @@
 use std::sync::{Arc, Mutex, Weak};
 
 use serde_json::Value;
+use tracing::instrument;
 
 use crate::kernel::shared::{host_handler, HostRequestHandlers, BASH_COMPLETED_REQUEST_TYPE};
 use pa_agent::types::AgentMessage;
@@ -77,6 +78,7 @@ pub fn register_kernel_notice_host_handlers(
     handlers: &mut HostRequestHandlers,
 ) {
     let completion = Arc::clone(&notice);
+    tracing::debug!("registering bash.completed host handler");
     handlers.register(
         BASH_COMPLETED_REQUEST_TYPE,
         host_handler(move |payload| {
@@ -116,6 +118,7 @@ pub fn register_kernel_notice_host_handlers(
 
 /// TS `createAsyncBashCompletionHostHandler` validation: a positive
 /// integer pid, a non-empty string command, an integer exit code.
+#[instrument(skip(data), fields(custom_type = "bash.completed"))]
 fn validate_completion(data: &Value) -> anyhow::Result<KernelNotice> {
     let consumed = validate_consumed(data)?;
     let exit_code = data
@@ -131,6 +134,7 @@ fn validate_completion(data: &Value) -> anyhow::Result<KernelNotice> {
 
 /// TS `createAsyncBashConsumedHostHandler` validation: a positive integer pid and a
 /// non-empty command (pids are reused across handles, so the command disambiguates).
+#[instrument(skip(data))]
 fn validate_consumed(data: &Value) -> anyhow::Result<BashConsumedNotice> {
     let pid = data
         .get("pid")

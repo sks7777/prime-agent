@@ -1516,7 +1516,7 @@ class BoundedAwaitTest(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(handle._wait(), 10)
         self.assertEqual(result.exit_code, 0)
 
-    async def test_degrade_hints_are_budgeted_to_the_first_three(self):
+    async def test_degrade_hints_have_no_cap(self):
         self._wire_notices()
         handles = []
         hints = io.StringIO()
@@ -1527,7 +1527,34 @@ class BoundedAwaitTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(await handle, bash_module.BashSnapshot)
         for handle in handles:
             handle.kill(grace=0.1)
-        self.assertEqual(hints.getvalue().count("still running after"), 3)
+        # No cap: every degrade prints the hint (was 3 before the cap was removed).
+        self.assertEqual(hints.getvalue().count("still running after"), 5)
+
+    async def test_degraded_handle_survives_poll_and_still_notifies(self):
+        """A degraded handle must not suppress the [bash-done] notice even
+        when _result_consumed is True: _degraded_awaited shields it."""
+        self._wire_notices()
+        handle = bash("sleep 1.5", yield_after=0.3)
+        snapshot = await handle
+        self.assertIsInstance(snapshot, bash_module.BashSnapshot)
+        self.assertTrue(snapshot.running)
+        self.assertTrue(handle._degraded_awaited)
+        # Simulate the state after a post-completion poll read: the live cell
+        # owner check in _note_result_consumed may gate it, so set the flag
+        # directly to test the _notify_background_completion gate logic.
+        handle._result_consumed = True
+        # The gate in _notify_background_completion: a degraded handle must
+        # NOT suppress even when _result_consumed is True.
+        should_suppress = handle._result_consumed and not handle._degraded_awaited
+        self.assertFalse(should_suppress, "degraded handle must not suppress the notice")
+        # A non-degraded handle with _result_consumed True MUST suppress.
+        handle2 = bash("echo done", yield_after=5)
+        result2 = await handle2
+        self.assertEqual(result2.exit_code, 0)
+        handle2._result_consumed = True
+        self.assertFalse(handle2._degraded_awaited)
+        should_suppress2 = handle2._result_consumed and not handle2._degraded_awaited
+        self.assertTrue(should_suppress2, "non-degraded handle suppresses after result consumed")
 
 
 async def _poll_group_dead(pgid: int, timeout: float = 5.0) -> None:

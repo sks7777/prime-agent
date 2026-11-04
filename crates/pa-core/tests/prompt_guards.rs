@@ -614,3 +614,22 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
         .assembled
         .contains("await mcp.list_tools(\"notion\")"));
 }
+
+/// The usage layer sanctions proactive handle checks when the [bash-done]
+/// notification does not arrive: the agent may re-await once after a degrade
+/// and must proactively check the saved handle on the next turn.
+#[test]
+fn usage_layer_sanctions_proactive_handle_checks_after_degrade() {
+    assert!(
+        USAGE_LAYER.contains("proactively checks the saved handle"),
+        "the usage layer must sanction proactive handle checks when the notification does not arrive"
+    );
+    assert!(
+        USAGE_LAYER.contains("re-await the handle once"),
+        "the usage layer must allow one re-await after a degraded bash()"
+    );
+    assert!(
+        !USAGE_LAYER.contains("repeated awaits of a still-running handle"),
+        "the blanket ban on re-awaiting a still-running handle is removed"
+    );
+}

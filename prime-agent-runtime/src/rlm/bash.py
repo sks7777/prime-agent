@@ -87,17 +87,16 @@ def _effective_yield_after(yield_after: float | None) -> float | None:
     return min(yield_after, _MAX_YIELD_AFTER_SECONDS)
 
 
-# One stderr hint per degrade, budgeted per kernel (nano-rlm's
-# MAX_LONG_RUN_NOTES shape): the first few degrades teach the contract, later
-# ones stay quiet.
-_MAX_DEGRADE_HINTS = 3
+# One stderr hint per degrade: every degrade teaches the contract (the
+# agent's only reminder that a [bash-done] notification will arrive).
+_MAX_DEGRADE_HINTS = None  # no cap: every degrade prints the hint
 _degrade_hints_written = 0
 
 
 def _note_degrade(handle: "BashHandle", bound: float) -> None:
-    """Write the degrade hint to the awaiting cell's stderr, within budget."""
+    """Write the degrade hint to the awaiting cell's stderr."""
     global _degrade_hints_written
-    if _degrade_hints_written >= _MAX_DEGRADE_HINTS:
+    if _MAX_DEGRADE_HINTS is not None and _degrade_hints_written >= _MAX_DEGRADE_HINTS:
         return
     _degrade_hints_written += 1
     sys.stderr.write(
@@ -403,6 +402,7 @@ class BashHandle:
         self._callbacks: list[Callable[[], None]] = []
         self._reap_callback: Callable[[], None] | None = None
         self._result_consumed = False
+        self._degraded_awaited = False
         self._consumed_notice: Callable[[], None] | None = None
         self._callback_lock = threading.Lock()
         # Serializes kill/reap so a pid fallback can never outlive the process handle.
@@ -861,7 +861,13 @@ class BashHandle:
             # The cell may do other work before awaiting this handle. Do not classify
             # it as detached until that whole cell has crossed its completion barrier.
             await cell_finished.wait()
-            if self._awaited_by_creating_cell or self._result_consumed or not repl.is_active():
+            if self._awaited_by_creating_cell or not repl.is_active():
+                return
+            # A degraded handle that was later polled/output() still needs the
+            # notice: the agent checked progress but has not collected the final
+            # result. Only a non-degraded handle whose result was already read
+            # (a direct poll after completion) suppresses the notice.
+            if self._result_consumed and not self._degraded_awaited:
                 return
             command = _capped(self.command)
             reply = await repl.host_request(
@@ -1101,6 +1107,7 @@ class BashHandle:
             if completed:
                 self._note_result_consumed(current_task)
         if degraded:
+            self._degraded_awaited = True
             _note_degrade(self, cast("float", bound))
             return self._degrade_snapshot()
         return cast("BashResult", result)
@@ -1199,6 +1206,7 @@ class PersistentBashHandle(BashHandle):
         self._callbacks: list[Callable[[], None]] = []
         self._reap_callback: Callable[[], None] | None = None
         self._result_consumed = False
+        self._degraded_awaited = False
         self._consumed_notice: Callable[[], None] | None = None
         self._callback_lock = threading.Lock()
         self._reaped = False
@@ -1298,7 +1306,9 @@ class PersistentBashHandle(BashHandle):
             result = await self._wait()
             if self._creating_cell_finished is not None:
                 await self._creating_cell_finished.wait()
-            if self._awaited_by_creating_cell or self._result_consumed or not repl.is_active():
+            if self._awaited_by_creating_cell or not repl.is_active():
+                return
+            if self._result_consumed and not self._degraded_awaited:
                 return
             command = _capped(self.command)
             reply = await repl.host_request(
