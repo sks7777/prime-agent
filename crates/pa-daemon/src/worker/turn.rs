@@ -726,11 +726,16 @@ impl TurnRunner {
                         let starts_message = stream_kind == Some("start");
                         // A block-end event settles the parked delta run, so it travels
                         // direct (flushing the parked update first, in order).
+                        // Thinking deltas also go direct: the TS product never coalesces
+                        // them, and a delta-mapping ACP consumer (bb) expects per-token
+                        // chunks, not merged runs — merged deltas cause cumulative
+                        // duplication in bb's thinking-block renderer.
                         let settles_run = matches!(
                             stream_kind,
                             Some("text_end" | "thinking_end" | "toolcall_end")
                         );
-                        if !starts_message && !settles_run {
+                        let bypass_coalescer = matches!(stream_kind, Some("thinking_delta"));
+                        if !starts_message && !settles_run && !bypass_coalescer {
                             // Streaming updates park in the coalescer; `park_update` only
                             // returns false after the turn joined, which cannot race this closure.
                             if let Ok(path) = std::env::var("PA_DAEMON_EVENT_LOG") {
