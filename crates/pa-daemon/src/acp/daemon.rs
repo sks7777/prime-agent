@@ -25,8 +25,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pa_types::daemon::{
-    DaemonCommand, DaemonCommandEnvelope, DaemonCommandFrameType, DaemonProtocolInfo,
-    DaemonResponse, DaemonSessionLifecycle, DAEMON_PROTOCOL_NAME, DAEMON_PROTOCOL_VERSION,
+    DaemonCommand, DaemonCommandEnvelope, DaemonCommandFrameType, DaemonErrorInfo,
+    DaemonProtocolInfo, DaemonResponse, DaemonSessionLifecycle, DAEMON_PROTOCOL_NAME,
+    DAEMON_PROTOCOL_VERSION,
 };
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -1580,12 +1581,16 @@ async fn handle_session_load(
             return;
         }
     }
+    // The daemon session id the admit logic routes through. A reattach
+    // (when a live holder blocks the switch) updates this to the
+    // holder's session id so the subsequent admit uses the right session.
+    let mut daemon_session_id = binding.active_session_id.clone();
     // If the resolved session file exists, switch this process onto it.
     if let Some(session_file) = source.session_file.as_ref() {
         let switch = link
             .request(DaemonCommand::SwitchSession {
                 id: None,
-                active_session_id: binding.active_session_id.clone(),
+                active_session_id: daemon_session_id.clone(),
                 session_path: session_file.to_string_lossy().to_string(),
                 cwd_override: None,
                 rest: Map::default(),
@@ -1602,90 +1607,123 @@ async fn handle_session_load(
                     let _ = tx.send(super::internal_error(&id, &switch_err));
                     return;
                 }
-                // "Session is already active" has two meanings. Self-hosted:
-                // this worker already hosts the target file, so the switch
-                // is a no-op and the admit logic may proceed. Foreign: a
-                // still-live worker from the previous connection keeps
-                // hosting the file (the client's stop released the ACP
-                // side, the resident worker stayed). Admitting on this
-                // process's fresh boot session in the foreign case drops
-                // the session's whole history — fail the load instead so
-                // the client surfaces the failed restore.
-                let current = fetch_connection_state(link, &binding.active_session_id).await;
-                // Only fail when we have a positive signal that this
-                // worker hosts a *different* file (foreign holder). A
-                // transient state-fetch failure (None) must not regress
-                // the self-hosted no-op path — fall through to admit.
-                let foreign_holder = current
-                    .as_ref()
-                    .and_then(|state| state.get("sessionFile"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|file| file != session_file.to_string_lossy());
-                if foreign_holder {
-                    // The foreign holder may have released the lease between
-                    // the failed switch and this check (e.g., worker-driven
-                    // passivation on a clean client disconnect). Trigger an
-                    // immediate orphan sweep to passivate the foreign holder
-                    // and release its lease, then retry the switch. If the
-                    // sweep command fails (transport error), still attempt
-                    // the retry — the holder may have released independently.
-                    // The 300s periodic sweep is the backstop if the sweep
-                    // and retry both miss.
-                    let _ = link
-                        .request(DaemonCommand::TriggerOrphanSweep {
-                            id: None,
-                            rest: Map::default(),
-                        })
-                        .await;
-                    let retry = link
-                        .request(DaemonCommand::SwitchSession {
-                            id: None,
-                            active_session_id: binding.active_session_id.clone(),
-                            session_path: session_file.to_string_lossy().to_string(),
-                            cwd_override: None,
-                            rest: Map::default(),
-                        })
-                        .await;
-                    let switched = match retry {
-                        Ok(response) if response.success => true,
-                        Ok(_) => {
-                            // The sweep only passivates workers a recorded
-                            // client orphaned. A wake-launched holder (no
-                            // owner, no bridge id — a message or heartbeat
-                            // wake over this file) is invisible to it, so
-                            // the load asks the supervisor to passivate the
-                            // file's unattended holder directly, then
-                            // retries the switch once more.
+                // "Session is already active" — the typed error_info
+                // carries the holder's active_session_id. TS parity:
+                // reattach to the holder's session instead of trying to
+                // kill it. A live holder keeps the full session history;
+                // reattach streams the snapshot from the already-active
+                // session so the load preserves it.
+                let holder_session_id = response.error_info.as_ref().and_then(|info| match info {
+                    DaemonErrorInfo::SessionAlreadyActive {
+                        active_session_id, ..
+                    } => active_session_id.clone(),
+                    _ => None,
+                });
+                match holder_session_id {
+                    Some(holder_id) if holder_id == daemon_session_id => {
+                        // Self-hosted: this worker already hosts the
+                        // target file, so the switch is a no-op and the
+                        // admit logic may proceed.
+                    }
+                    Some(holder_id) => {
+                        // Foreign live holder: reattach to the holder's
+                        // session instead of killing it (TS parity with
+                        // `switchSession` -> `reattachSession`).
+                        let reattach = link
+                            .request(DaemonCommand::Reattach {
+                                id: None,
+                                active_session_id: daemon_session_id.clone(),
+                                target_active_session_id: holder_id.clone(),
+                                client_id: None,
+                                capabilities: None,
+                                resume_cursor: None,
+                                telemetry_disabled: None,
+                                recovery_config: None,
+                                env: None,
+                                launch_env: None,
+                                rest: Map::default(),
+                            })
+                            .await;
+                        match reattach {
+                            Ok(reattach_response) if reattach_response.success => {
+                                daemon_session_id = holder_id;
+                            }
+                            _ => {
+                                state.lock().await.session_new_in_flight = false;
+                                let _ = tx.send(super::internal_error(
+                                    &id,
+                                    &format!(
+                                        "ACP session {} cannot be loaded: {switch_err}",
+                                        params.session_id,
+                                    ),
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                    None => {
+                        // No typed error_info — legacy or edge case.
+                        // Fall back to the orphan sweep + passivate +
+                        // retry chain (the 300s periodic sweep is the
+                        // backstop if the sweep and retry both miss).
+                        let current = fetch_connection_state(link, &daemon_session_id).await;
+                        let foreign_holder = current
+                            .as_ref()
+                            .and_then(|state| state.get("sessionFile"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|file| file != session_file.to_string_lossy());
+                        if foreign_holder {
                             let _ = link
-                                .request(DaemonCommand::PassivateFileHolder {
+                                .request(DaemonCommand::TriggerOrphanSweep {
                                     id: None,
-                                    session_path: Some(session_file.to_string_lossy().to_string()),
                                     rest: Map::default(),
                                 })
                                 .await;
-                            link.request(DaemonCommand::SwitchSession {
-                                id: None,
-                                active_session_id: binding.active_session_id.clone(),
-                                session_path: session_file.to_string_lossy().to_string(),
-                                cwd_override: None,
-                                rest: Map::default(),
-                            })
-                            .await
-                            .map(|response| response.success)
-                            .unwrap_or(false)
+                            let retry = link
+                                .request(DaemonCommand::SwitchSession {
+                                    id: None,
+                                    active_session_id: daemon_session_id.clone(),
+                                    session_path: session_file.to_string_lossy().to_string(),
+                                    cwd_override: None,
+                                    rest: Map::default(),
+                                })
+                                .await;
+                            let switched = match retry {
+                                Ok(response) if response.success => true,
+                                Ok(_) => {
+                                    let _ = link
+                                        .request(DaemonCommand::PassivateFileHolder {
+                                            id: None,
+                                            session_path: Some(
+                                                session_file.to_string_lossy().to_string(),
+                                            ),
+                                            rest: Map::default(),
+                                        })
+                                        .await;
+                                    link.request(DaemonCommand::SwitchSession {
+                                        id: None,
+                                        active_session_id: daemon_session_id.clone(),
+                                        session_path: session_file.to_string_lossy().to_string(),
+                                        cwd_override: None,
+                                        rest: Map::default(),
+                                    })
+                                    .await
+                                    .is_ok_and(|r| r.success)
+                                }
+                                Err(_) => false,
+                            };
+                            if !switched {
+                                state.lock().await.session_new_in_flight = false;
+                                let _ = tx.send(super::internal_error(
+                                    &id,
+                                    &format!(
+                                        "ACP session {} cannot be loaded: {switch_err}",
+                                        params.session_id,
+                                    ),
+                                ));
+                                return;
+                            }
                         }
-                        Err(_) => false,
-                    };
-                    if !switched {
-                        state.lock().await.session_new_in_flight = false;
-                        let _ = tx.send(super::internal_error(
-                            &id,
-                            &format!(
-                                "ACP session {} cannot be loaded: {switch_err}",
-                                params.session_id,
-                            ),
-                        ));
-                        return;
                     }
                 }
             }
@@ -1706,8 +1744,8 @@ async fn handle_session_load(
     let producer = UpdateProducer::new(acp_session_id.clone(), tx.clone());
     // Fetch fresh state after the switch (the model and context window may differ).
     let (state_value, models) = (
-        fetch_connection_state(link, &binding.active_session_id).await,
-        fetch_available_models(link, &binding.active_session_id)
+        fetch_connection_state(link, &daemon_session_id).await,
+        fetch_available_models(link, &daemon_session_id)
             .await
             .unwrap_or_default(),
     );
@@ -1719,7 +1757,7 @@ async fn handle_session_load(
     });
     let mut hosted = HostedSession {
         acp_session_id: acp_session_id.clone(),
-        daemon_active_session_id: binding.active_session_id.clone(),
+        daemon_active_session_id: daemon_session_id.clone(),
         producer,
         config,
         cancelling: false,
@@ -1751,21 +1789,13 @@ async fn handle_session_load(
                 .map(str::to_string)
                 .collect();
         }
-        if let Err(error) = replace_connection_servers(
-            link,
-            &binding.active_session_id,
-            &binding.mcp_owner_id,
-            &resolved,
-        )
-        .await
+        if let Err(error) =
+            replace_connection_servers(link, &daemon_session_id, &binding.mcp_owner_id, &resolved)
+                .await
         {
-            let _ = clear_connection_servers(
-                link,
-                &binding.active_session_id,
-                &binding.mcp_owner_id,
-                state,
-            )
-            .await;
+            let _ =
+                clear_connection_servers(link, &daemon_session_id, &binding.mcp_owner_id, state)
+                    .await;
             state.lock().await.session_new_in_flight = false;
             let _ = tx.send(super::internal_error(&id, &error.to_string()));
             return;
@@ -1793,16 +1823,12 @@ async fn handle_session_load(
             .zip(guard.closed_input_pause_key.clone())
     };
     // Publish the initial child snapshot.
-    let children = match fetch_rlm_children(link, &binding.active_session_id).await {
+    let children = match fetch_rlm_children(link, &daemon_session_id).await {
         Ok(children) => children,
         Err(error) => {
-            let _ = clear_connection_servers(
-                link,
-                &binding.active_session_id,
-                &binding.mcp_owner_id,
-                state,
-            )
-            .await;
+            let _ =
+                clear_connection_servers(link, &daemon_session_id, &binding.mcp_owner_id, state)
+                    .await;
             let mut guard = state.lock().await;
             guard.session = None;
             guard.session_new_in_flight = false;
@@ -1830,7 +1856,7 @@ async fn handle_session_load(
         }
     }
     // Register in the registry (best-effort).
-    let reg_state = fetch_connection_state(link, &binding.active_session_id).await;
+    let reg_state = fetch_connection_state(link, &daemon_session_id).await;
     if let Some(rs) = reg_state.as_ref() {
         let session_dir = rs.get("sessionDir").and_then(Value::as_str);
         let runtime_id = rs
@@ -1854,7 +1880,7 @@ async fn handle_session_load(
     }
     let _ = tx.send(jsonrpc::response(&id, &result));
     if let Some((pause_id, lease_key)) = inherited_pause {
-        match release_session_input_pause(link, &binding.active_session_id, &pause_id).await {
+        match release_session_input_pause(link, &daemon_session_id, &pause_id).await {
             Ok(()) => {
                 let mut guard = state.lock().await;
                 if guard.closed_input_pause_id.as_deref() == Some(&pause_id) {
@@ -4542,6 +4568,175 @@ mod tests {
             registry["acp-1"]["runtimeSessionId"],
             json!("runtime-history"),
             "the successful load must keep the real session mapping"
+        );
+        drop(link);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_load_reattaches_when_holder_is_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let history_file = sessions_dir.join("runtime-history.jsonl");
+        std::fs::write(
+            &history_file,
+            r#"{"type":"session","version":3,"id":"runtime-history","timestamp":"2026-10-22T00:00:00.000Z","cwd":"PLACEHOLDER"}"#,
+        )
+        .unwrap();
+        crate::acp::session_registry::register_session(
+            &sessions_dir,
+            "acp-1",
+            Some("runtime-history".to_string()),
+            Some(history_file.to_string_lossy().to_string()),
+            &cwd,
+        );
+        // The boot session state (self-hosted).
+        let self_state = json!({
+            "sessionDir": sessions_dir.to_string_lossy(),
+            "sessionId": "runtime-history",
+            "sessionFile": history_file.to_string_lossy(),
+            "cwd": cwd.clone(),
+        });
+        // The holder's session state (the live worker that keeps the lease).
+        let holder_state = json!({
+            "sessionDir": sessions_dir.to_string_lossy(),
+            "sessionId": "orphan-1",
+            "sessionFile": history_file.to_string_lossy(),
+            "cwd": cwd.clone(),
+        });
+        let (writer, mut commands) = mpsc::unbounded_channel::<String>();
+        let (_frames_tx, frames) = mpsc::unbounded_channel();
+        let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let link = Arc::new(DaemonLink {
+            writer,
+            pending: Arc::clone(&pending),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            frames: Mutex::new(frames),
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        });
+        let hs = holder_state.clone();
+        let ss = self_state.clone();
+        let hf = history_file.clone();
+        let worker = tokio::spawn(async move {
+            let state_count = std::sync::atomic::AtomicU32::new(0);
+            while let Some(line) = commands.recv().await {
+                let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
+                let id = envelope.id;
+                let (command, data, success, error, error_info) = match envelope.command {
+                    DaemonCommand::GetConnectionState { .. } => {
+                        let n = state_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let payload = if n == 0 { ss.clone() } else { hs.clone() };
+                        ("get_connection_state", Some(payload), true, None, None)
+                    }
+                    DaemonCommand::SwitchSession { session_path, .. } => {
+                        // The first (and only) switch fails: a live holder
+                        // keeps the lease. The typed error_info carries the
+                        // holder's active_session_id so the ACP layer
+                        // reattaches instead of killing the holder.
+                        (
+                            "switch_session",
+                            None,
+                            false,
+                            Some("Session is already active in orphan-1".to_string()),
+                            Some(DaemonErrorInfo::SessionAlreadyActive {
+                                session_path,
+                                active_session_id: Some("orphan-1".to_string()),
+                            }),
+                        )
+                    }
+                    DaemonCommand::Reattach {
+                        target_active_session_id,
+                        ..
+                    } => {
+                        assert_eq!(
+                            target_active_session_id, "orphan-1",
+                            "the reattach must target the live holder's session id"
+                        );
+                        ("reattach", None, true, None, None)
+                    }
+                    DaemonCommand::GetRlmChildren { .. } => (
+                        "get_rlm_children",
+                        Some(json!({"children": []})),
+                        true,
+                        None,
+                        None,
+                    ),
+                    DaemonCommand::ReplaceAcpMcpServers { .. } => {
+                        ("replace_acp_mcp_servers", None, true, None, None)
+                    }
+                    DaemonCommand::TriggerOrphanSweep { .. } => {
+                        panic!("the reattach path must not trigger an orphan sweep");
+                    }
+                    DaemonCommand::PassivateFileHolder { .. } => {
+                        panic!("the reattach path must not passivate the holder");
+                    }
+                    DaemonCommand::GetAvailableModels { .. } => {
+                        ("get_available_models", Some(json!([])), true, None, None)
+                    }
+                    other => {
+                        panic!("unexpected command: {other:?}");
+                    }
+                };
+                let reply = pending.lock().unwrap().remove(&id).unwrap();
+                reply
+                    .send(DaemonResponse {
+                        id: Some(id),
+                        command: command.to_string(),
+                        success,
+                        data,
+                        error,
+                        error_info,
+                    })
+                    .unwrap();
+            }
+        });
+        let state = Arc::new(Mutex::new(state(None)));
+        let binding = DaemonBinding {
+            active_session_id: "daemon-1".to_string(),
+            client_owned: false,
+            mcp_owner_id: "owner-1".to_string(),
+        };
+        let options = DaemonAcpOptions {
+            socket_path: PathBuf::new(),
+            actual_cwd: PathBuf::from(&cwd),
+            product_version: "test".to_string(),
+            create: DaemonCommand::GetConnectionState {
+                id: None,
+                active_session_id: "daemon-1".to_string(),
+                rest: Map::default(),
+            },
+        };
+        let (tx, mut responses) = mpsc::unbounded_channel();
+        let cwd_value = cwd.clone();
+        let history_path = hf.clone();
+        tokio::task::spawn_blocking(move || {
+            let header = std::fs::read_to_string(&history_path).unwrap();
+            std::fs::write(&history_path, header.replace("PLACEHOLDER", &cwd_value)).unwrap();
+        })
+        .await
+        .unwrap();
+        handle_session_load(
+            json!(1),
+            json!({ "sessionId": "acp-1", "cwd": cwd }),
+            &link,
+            &state,
+            &options,
+            &binding,
+            tx,
+        )
+        .await;
+        let response = responses.recv().await.unwrap();
+        let session_id = response
+            .get("result")
+            .and_then(|r| r.get("sessionId"))
+            .and_then(Value::as_str);
+        assert_eq!(
+            session_id,
+            Some("acp-1"),
+            "the reattached load must admit the session: {response}"
         );
         drop(link);
         worker.await.unwrap();
