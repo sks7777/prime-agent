@@ -74,7 +74,7 @@ impl SupervisorChildSessionsInner {
         depth: u32,
         model: &str,
         thinking: Option<&str>,
-        temperature: Option<f64>,
+        _temperature: Option<f64>,
         cwd: &str,
         session_dir: &Path,
         // The parent's in-flight turn request the child anchors to (TS
