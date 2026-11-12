@@ -173,6 +173,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     session_id: created.session_id.clone(),
                     session_dir: created.session_dir.clone(),
                     model: model.clone(),
+                    thinking_level: thinking.unwrap_or("").to_string(),
                     label: rlm_child_label(&request.prompt),
                     started_at_ms: now_ms(),
                     settled_status: None,

@@ -156,6 +156,7 @@ struct ChildRecord {
     session_id: Option<String>,
     session_dir: String,
     model: String,
+    thinking_level: String,
     label: String,
     started_at_ms: u64,
     /// Terminal state (`done` | `error` | `cancelled`); running while absent.
@@ -272,6 +273,9 @@ impl ChildRecord {
         });
         if !self.model.is_empty() {
             snapshot["model"] = json!(self.model);
+        }
+        if !self.thinking_level.is_empty() {
+            snapshot["thinkingLevel"] = json!(self.thinking_level);
         }
         if let Some(answer) = &self.answer_preview {
             snapshot["answerPreview"] = json!(answer);

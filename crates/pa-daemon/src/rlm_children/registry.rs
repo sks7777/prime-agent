@@ -669,6 +669,7 @@ fn ledger_child_records(
                     ))
                 })
                 .unwrap_or_default(),
+            thinking_level: String::new(),
             label: rlm_child_label(
                 display
                     .as_ref()
