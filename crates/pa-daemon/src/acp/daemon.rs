@@ -1095,6 +1095,12 @@ async fn handle_incoming(
         "session/new" => {
             handle_session_new(id, params, link, state, options, binding, tx).await;
         }
+        "session/load" => {
+            handle_session_load(id, params, link, state, options, binding, tx).await;
+        }
+        "session/fork" => {
+            handle_session_fork(id, params, link, state, options, binding, tx).await;
+        }
         "session/set_config_option" => {
             handle_set_config_option(id, params, link, state, tx).await;
         }
