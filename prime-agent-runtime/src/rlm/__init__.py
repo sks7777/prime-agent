@@ -221,6 +221,7 @@ async def spawn(
     thinking: str | None = None,
     temperature: float | None = None,
     bb_mirror: bool | None = None,
+    cwd: str | None = None,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -238,7 +239,7 @@ async def spawn(
     from a bb mirror thread the caller brings itself (the thread's prompt is the
     task with a leading ``[rlm-mirror:<claim-nonce>]`` marker line).
     """
-    return await _spawn(prompt, name=name, model=model, thinking=thinking, cwd=cwd)
+    return await _spawn(prompt, name=name, model=model, thinking=thinking, temperature=temperature, bb_mirror=bb_mirror, cwd=cwd)
 
 
 async def _spawn(
@@ -248,6 +249,8 @@ async def _spawn(
     model: str | None = None,
     thinking: str | None = None,
     cwd: str | None = None,
+    temperature: float | None = None,
+    bb_mirror: bool | None = None,
     factory: dict[str, str] | None = None,
 ) -> RLMSpawnHandle:
     """``spawn`` plus the factory executor's run tag (``{runId, specId,
